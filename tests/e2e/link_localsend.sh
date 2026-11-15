@@ -7,8 +7,9 @@
 # waits for consent: accepted, the upload lands in Downloads with the sender's SHA-256; declined, prepare-upload gets
 # 403; a second prepare-upload while one is open gets 409; hostile names (`../evil`, `.bashrc`) are sanitized; a body
 # longer than the announced size gets 400 and a wrong SHA-256 gets 422, both leaving nothing; SendFiles to the peer's
-# `localsend:<fingerprint>` id delivers the file intact, and a peer announcing a fingerprint that is not its
-# certificate's is refused at the handshake. Writes results.jsonl, peer.jsonl, peer-fake.jsonl, signals.txt, and
+# `localsend:<fingerprint>` id delivers the file intact; a peer announcing a fingerprint that is not its
+# certificate's fails the pinned handshake and never shows in Nearby; and an offer naming a peer's fingerprint from
+# another address is marked localsend-unverified. Writes results.jsonl, peer.jsonl, peer-fake.jsonl, signals.txt, and
 # linkd.log to $OUT (default ./artifacts/link-localsend).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -181,12 +182,23 @@ record '{"step":"send","bytes":1048576,"sha256_match":true}'
 kill "$PEER"; wait "$PEER" 2> /dev/null || true
 nsenter -t "$PEER_NS" -n -- python3 "$ROOT/tests/e2e/localsend_peer.py" --cert "$RUNTIME/peer.pem" --key "$RUNTIME/peer.key" \
   --out "$RUNTIME/peer-in" --alias "Impostor" --fingerprint "$(printf 'a%.0s' $(seq 64))" > "$OUT/peer-fake.jsonl" 2>&1 &
-wait_for 10 "Nearby does not list the impostor" eval "prop Nearby | grep -qF 'localsend:$(printf 'a%.0s' $(seq 64))'"
-FAKE=$(python3 "$ROOT/tests/e2e/link_send_files.py" "localsend:$(printf 'a%.0s' $(seq 64))" "$RUNTIME/src/to-peer.bin") \
-  || fail "SendFiles to the impostor"
-wait_for 20 "the send to the impostor never ended" eval "[[ -n \$(finished $FAKE) ]]"
-[[ $(finished "$FAKE") == failed ]] || fail "a send to a wrong fingerprint ended $(finished "$FAKE")"
+IMPOSTOR_FP=$(printf 'a%.0s' $(seq 64))
+wait_for 10 "the daemon never tried the impostor's key" grep -qF 'registering with "Impostor"' "$OUT/linkd.log"
+prop Nearby | grep -qF "localsend:$IMPOSTOR_FP" && fail "Nearby lists a peer that did not prove its key"
+python3 "$ROOT/tests/e2e/link_send_files.py" "localsend:$IMPOSTOR_FP" "$RUNTIME/src/to-peer.bin" > /dev/null 2>&1 \
+  && fail "SendFiles to the impostor was taken"
 grep -q '"event": "prepare-upload"' "$OUT/peer-fake.jsonl" && fail "the impostor got the offer"
-record '{"step":"fingerprint-pinned","impostor":"failed at the handshake"}'
+record '{"step":"fingerprint-pinned","impostor":"never nearby"}'
+
+# A sender at another address that names the real peer's fingerprint is offered as unverified, not as the peer.
+SPOOFED=$(offers)
+body=$(python3 -c 'import json,sys; print(json.dumps({"info": {"alias": "Peer", "version": "2.1", "deviceModel": "curl", "deviceType": "headless", "fingerprint": sys.argv[1], "port": 53317, "protocol": "https", "download": False}, "files": {"f1": {"id": "f1", "fileName": "spoof.bin", "size": 1, "fileType": "application/octet-stream"}}}))' "$PEER_FP")
+curl -sk --max-time 30 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$body" "$API/prepare-upload" > "$RUNTIME/spoof" &
+wait_for 10 "no offer from the spoofing sender" eval "(( \$(offers) > $SPOOFED ))"
+grep -A2 'member=TransferOffered' "$OUT/signals.txt" | tail -3 | grep -qF '"localsend-unverified:10.78.0.1/Peer"' \
+  || fail "the spoofed offer is not marked unverified"
+link DeclineTransfer "'$(offered)'" > /dev/null || fail "DeclineTransfer"
+wait_for 10 "the spoofed prepare-upload did not return" test -s "$RUNTIME/spoof"
+record '{"step":"sender-unverified","offer":"localsend-unverified"}'
 cat "$OUT/results.jsonl"
 echo "PASS; artifacts: $OUT"

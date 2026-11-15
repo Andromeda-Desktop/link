@@ -75,7 +75,7 @@ async fn serve(
             let Ok(request) = serde_json::from_slice::<PrepareUpload>(&bytes) else {
                 return http::write_response(&mut write, 400, None).await;
             };
-            match handle.prepare(request).await {
+            match handle.prepare(request, from.ip()).await {
                 Answer::Accepted(prepared) => {
                     http::write_response(&mut write, 200, Some(&serde_json::to_vec(&prepared)?)).await
                 }

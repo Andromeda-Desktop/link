@@ -51,6 +51,11 @@ async fn post_json(
     Ok((head.status, bytes))
 }
 
+/// Succeeds only if the peer at `address` holds the key of its announced fingerprint: the TLS pin fails otherwise.
+pub async fn verify(peer: &Info, address: IpAddr) -> anyhow::Result<()> {
+    connect(peer, address).await.map(drop)
+}
+
 pub async fn register(own: &Info, peer: &Info, address: IpAddr) -> anyhow::Result<()> {
     let body = serde_json::to_vec(own)?;
     let (status, _) = post_json(peer, address, "/api/localsend/v2/register", &body, CONNECT_TIMEOUT).await?;

@@ -31,6 +31,9 @@ use crate::hub::Signal;
 use wire::{Announcement, FileInfo, Info, PrepareUpload, Prepared};
 
 pub const PREFIX: &str = "localsend:";
+/// `localsend-unverified:<ip>/<alias>`: an offer from an address that has not proven the key it names; the alias is the
+/// sender's own claim.
+pub const UNVERIFIED: &str = "localsend-unverified:";
 
 /// `(localsend:<fingerprint>, alias)` of each peer on the LAN.
 pub type Nearby = watch::Receiver<Vec<(String, String)>>;
@@ -59,13 +62,14 @@ enum Received {
 
 enum Command {
     SetVisible { visible: bool },
-    Prepare { request: PrepareUpload, reply: oneshot::Sender<Answer> },
+    Prepare { request: PrepareUpload, from: IpAddr, reply: oneshot::Sender<Answer> },
     Upload { session: String, file: String, token: String, reply: oneshot::Sender<Result<Ticket, u16>> },
     Uploaded { session: String, file: String, received: Received, reply: oneshot::Sender<u16> },
     Progress { id: TransferId, bytes: u64 },
     SessionProgress { session: String, bytes: u64 },
     CancelSession { session: String },
     Announced { announcement: Announcement, from: IpAddr },
+    Verified { info: Info, from: IpAddr },
     Decide { id: TransferId, accept: bool, reply: oneshot::Sender<bool> },
     Cancel { id: TransferId, reply: oneshot::Sender<bool> },
     Send { fingerprint: String, sources: Vec<Source>, reply: oneshot::Sender<Result<TransferId, String>> },
@@ -169,7 +173,7 @@ impl LocalSend {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::SetVisible { visible } => self.set_visible(visible).await,
-            Command::Prepare { request, reply } => self.prepare(request, reply),
+            Command::Prepare { request, from, reply } => self.prepare(request, from.to_canonical(), reply),
             Command::Upload { session, file, token, reply } => drop(reply.send(self.upload(&session, &file, &token))),
             Command::Uploaded { session, file, received, reply } => {
                 let _ = reply.send(self.uploaded(&session, &file, received));
@@ -185,7 +189,8 @@ impl LocalSend {
                     self.finish_session(Status::Cancelled);
                 }
             }
-            Command::Announced { announcement, from } => self.announced(announcement, from),
+            Command::Announced { announcement, from } => self.announced(announcement, from.to_canonical()),
+            Command::Verified { info, from } => self.verified(info, from),
             Command::Decide { id, accept, reply } => {
                 let waiting =
                     self.session.as_ref().is_some_and(|session| session.id == id && session.pending.is_some());
@@ -242,14 +247,32 @@ impl LocalSend {
             return;
         }
         log::info!("LocalSend: {:?} at {from}", info.alias);
-        if announce {
-            let (own, peer, udp) = (self.info.clone(), info.clone(), self.udp.clone());
-            self.listening.spawn(async move {
-                if let Err(error) = client::register(&own, &peer, from).await {
-                    log::info!("LocalSend: registering with {:?}: {error:#}; answering by multicast", peer.alias);
+        let proven = self.peers.get(&info.fingerprint).is_some_and(|(_, address)| *address == from);
+        if proven && !announce {
+            self.verified(info, from);
+            return;
+        }
+        // Anyone on the LAN can announce any fingerprint: the peer joins only after a TLS handshake pinned to that
+        // fingerprint succeeds at the announcing address.
+        let (own, udp, handle) = (self.info.clone(), self.udp.clone(), self.handle.clone());
+        self.listening.spawn(async move {
+            let result =
+                if announce { client::register(&own, &info, from).await } else { client::verify(&info, from).await };
+            match result {
+                Ok(()) => handle.tell(Command::Verified { info, from }).await,
+                Err(error) if announce => {
+                    log::info!("LocalSend: registering with {:?}: {error:#}; answering by multicast", info.alias);
                     reply_by_multicast(udp, own).await;
                 }
-            });
+                Err(error) => log::info!("LocalSend: {:?} at {from} did not prove its key: {error:#}", info.alias),
+            }
+        });
+    }
+
+    fn verified(&mut self, info: Info, from: IpAddr) {
+        // A check queued before the service was hidden.
+        if self.udp.is_none() {
+            return;
         }
         self.peers.insert(info.fingerprint.clone(), (info, from));
         self.publish_nearby();
@@ -269,7 +292,7 @@ impl LocalSend {
         });
     }
 
-    fn prepare(&mut self, request: PrepareUpload, reply: oneshot::Sender<Answer>) {
+    fn prepare(&mut self, request: PrepareUpload, from: IpAddr, reply: oneshot::Sender<Answer>) {
         if self.session.is_some() {
             drop(reply.send(Answer::Status(409)));
             return;
@@ -281,7 +304,12 @@ impl LocalSend {
         }
         let id = random_id();
         let total = files.values().map(|file| file.size).fold(0, u64::saturating_add);
-        let device = format!("{PREFIX}{}", info.fingerprint);
+        // LocalSend senders show no certificate: the offer is from a known peer only if it comes from the address
+        // that proved that peer's key.
+        let device = match self.peers.get(&info.fingerprint) {
+            Some((_, address)) if *address == from => format!("{PREFIX}{}", info.fingerprint),
+            _ => format!("{UNVERIFIED}{from}/{}", info.alias),
+        };
         let space = self.inbox.space().map_or(0, |space| space.free);
         if total > space {
             log::info!("LocalSend: {:?} offers {total} bytes, more than the free space", info.alias);
@@ -529,8 +557,8 @@ impl LocalSendHandle {
             .unwrap_or_else(|| Err("LocalSend stopped".to_owned()))
     }
 
-    async fn prepare(&self, request: PrepareUpload) -> Answer {
-        self.request(|reply| Command::Prepare { request, reply }).await.unwrap_or(Answer::Status(500))
+    async fn prepare(&self, request: PrepareUpload, from: IpAddr) -> Answer {
+        self.request(|reply| Command::Prepare { request, from, reply }).await.unwrap_or(Answer::Status(500))
     }
 
     async fn upload(&self, session: String, file: String, token: String) -> Result<Ticket, u16> {
