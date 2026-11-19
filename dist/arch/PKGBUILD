@@ -20,6 +20,7 @@ optdepends=('iw: Wi-Fi power save off while mirroring, for a faster picture'
   'android-tools: adb for andromeda-link-apps')
 provides=(andromeda-link)
 conflicts=(andromeda-link-git)
+replaces=(andromeda-link-git)
 backup=(etc/ufw/applications.d/andromeda-link)
 install=andromeda-link.install
 ROOT=$(cd "$startdir/../.." && pwd)
