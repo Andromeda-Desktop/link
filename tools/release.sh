@@ -2,7 +2,7 @@
 # Builds every Link package for a release into target/dist: the Android APK (signed when
 # ~/.config/andromeda-link/signing.env exists), the macOS app zip, the Ubuntu 24.04 .deb and Fedora RPM (each built in
 # its distrobox, ubuntu-link and fedora-link, so they link the target's libraries), and the Flatpak bundle of the app.
-# Usage: release.sh [android macos deb rpm flatpak]; no argument builds them all.
+# Usage: release.sh [android macos deb rpm]; no argument builds them all.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/target/dist
@@ -10,7 +10,7 @@ VERSION="r$(git -C "$ROOT" rev-list --count HEAD).g$(git -C "$ROOT" rev-parse --
 # A build with uncommitted changes gets its time, so it never takes a committed build's name.
 git -C "$ROOT" diff --quiet HEAD || VERSION+=".dirty$(date +%m%d%H%M)"
 SIGNING=$HOME/.config/andromeda-link/signing.env
-SERVICES=(-p link-daemon -p link-session -p link-mount -p link-mirror)
+SERVICES=(-p link-daemon -p link-session -p link-mount)
 mkdir -p "$OUT"
 cd "$ROOT"
 
@@ -37,38 +37,25 @@ macos() {
 
 deb() {
   local target=$HOME/.cache/ubuntu-link/target
-  # Ubuntu 24.04's Qt is too old for the app, so it builds against Qt for Linux from aqtinstall and the .deb carries it.
-  local qt=${QT_LINUX:-$HOME/.cache/qt-linux/6.12.0/gcc_64}
   distrobox enter ubuntu-link -- bash -c "
     set -e
     export RUSTUP_HOME=$HOME/.local/share/ubuntu-link/rustup CARGO_HOME=$HOME/.local/share/ubuntu-link/cargo
     export PATH=$HOME/.local/share/ubuntu-link/cargo/bin:\$PATH CARGO_TARGET_DIR=$target
     cd '$ROOT'
     cargo build --release --locked ${SERVICES[*]}
-    QMAKE=$qt/bin/qmake cargo rustc --release --locked -p link-desk --bin andromeda-link -- \
-      -C link-arg=-Wl,-rpath,/usr/lib/andromeda-link/qt/lib
-    QT_BUNDLE=$qt dist/deb/build-deb.sh $target/release '$OUT'"
+    dist/deb/build-deb.sh $target/release '$OUT'"
 }
 
 rpm() {
   local target=$HOME/.cache/fedora-link/target
   distrobox enter fedora-link -- bash -c "
     export CARGO_TARGET_DIR=$target PATH=$HOME/.cargo/bin:\$PATH
-    cd '$ROOT' && cargo build --release --locked ${SERVICES[*]} -p link-desk &&
+    cd '$ROOT' && cargo build --release --locked ${SERVICES[*]} &&
     rpmbuild -bb dist/rpm/andromeda-link.spec --define 'linkroot $ROOT' --define 'linkbin $target/release' \
       --define 'linkversion 0~$VERSION' --define '_rpmdir $OUT'"
 }
 
-flatpak() {
-  local build=$HOME/.cache/link-flatpak
-  python3 tools/flatpak-cargo-sources.py Cargo.lock dist/flatpak/cargo-sources.json
-  command flatpak run org.flatpak.Builder --user --force-clean --disable-rofiles-fuse --repo="$build/repo" \
-    --state-dir="$build/state" "$build/build" dist/flatpak/org.andromeda.Link.yml
-  command flatpak build-bundle "$build/repo" "$OUT/andromeda-link-$VERSION.flatpak" org.andromeda.Link \
-    --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
-}
-
-for kind in "${@:-android macos deb rpm flatpak}"; do
+for kind in "${@:-android macos deb rpm}"; do
   for step in $kind; do
     echo "== $step"
     "$step"

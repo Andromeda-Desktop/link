@@ -7,14 +7,10 @@ pkgdesc='Andromeda Link: your Android phone and your Linux desktop as one (relea
 arch=(x86_64)
 url='https://github.com/Andromeda-Desktop/link'
 license=(GPL-3.0-or-later)
-depends=(glibc gcc-libs dbus fuse3 gtk4 qt6-base qt6-declarative qt6-multimedia gstreamer gst-plugins-base-libs
-  gst-plugins-bad gst-plugin-gtk4)
+depends=(glibc gcc-libs dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-bad)
 optdepends=('bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
   "networkmanager: joining the phone's hotspot or Wi-Fi Direct group for large transfers away from Wi-Fi"
-  'gst-plugin-va: hardware decoding of the mirrored phone screen'
-  'gst-libav: software decoding of the mirrored phone screen without VA-API'
-  'scrcpy: phone apps in their own windows (andromeda-link-apps)'
-  'android-tools: adb for andromeda-link-apps')
+  'andromeda-link-app: the Link window (from the Andromeda desktop repository)')
 provides=(andromeda-link)
 conflicts=(andromeda-link andromeda-link-git)
 backup=(etc/ufw/applications.d/andromeda-link)

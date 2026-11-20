@@ -8,16 +8,12 @@ pkgdesc='Andromeda Link: your Android phone and your Linux desktop as one'
 arch=(x86_64)
 url='https://github.com/Andromeda-Desktop/link'
 license=(GPL-3.0-or-later)
-depends=(glibc gcc-libs dbus fuse3 gtk4 qt6-base qt6-declarative qt6-multimedia gstreamer gst-plugins-base-libs
-  gst-plugins-bad gst-plugin-gtk4)
+depends=(glibc gcc-libs dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-bad)
 makedepends=(cargo protobuf clang lld)
 optdepends=('iw: Wi-Fi power save off while mirroring, for a faster picture'
   'bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
   "networkmanager: joining the phone's hotspot or Wi-Fi Direct group for large transfers away from Wi-Fi"
-  'gst-plugin-va: hardware decoding of the mirrored phone screen'
-  'gst-libav: software decoding of the mirrored phone screen without VA-API'
-  'scrcpy: phone apps in their own windows (andromeda-link-apps)'
-  'android-tools: adb for andromeda-link-apps')
+  'andromeda-link-app: the Link window (from the Andromeda desktop repository)')
 provides=(andromeda-link)
 conflicts=(andromeda-link-git)
 replaces=(andromeda-link-git)
@@ -32,13 +28,12 @@ build() {
   # Own target dir: makepkg flags differ from dev builds, so a shared dir rebuilds everything each time.
   export CARGO_TARGET_DIR=$ROOT/target/arch
   RUSTFLAGS="${RUSTFLAGS//-C target-cpu=native/}" CFLAGS="${CFLAGS//-flto=auto/}" CXXFLAGS="${CXXFLAGS//-flto=auto/}" cargo build --release --locked \
-    -p link-daemon -p link-session -p link-mount -p link-mirror -p link-desk
+    -p link-daemon -p link-session -p link-mount
 }
 
 package() {
   local bin=$ROOT/target/arch/release dist=$ROOT/dist user=$pkgdir/usr/lib/systemd/user
-  for b in andromeda-link andromeda-linkd andromeda-link-mount andromeda-link-mirror andromeda-link-apps \
-    andromeda-link-session; do
+  for b in andromeda-linkd andromeda-link-mount andromeda-link-session; do
     install -Dm755 "$bin/$b" "$pkgdir/usr/bin/$b"
   done
   install -d "$user/graphical-session.target.wants"
@@ -58,7 +53,6 @@ package() {
   install -Dm755 "$dist/andromeda-link-wifi-power-save" "$pkgdir/usr/lib/andromeda-link/wifi-power-save"
   install -Dm644 "$dist/org.andromeda.link.wifi-power-save.policy" \
     "$pkgdir/usr/share/polkit-1/actions/org.andromeda.link.wifi-power-save.policy"
-  install -Dm644 "$dist/org.andromeda.Link.desktop" "$pkgdir/usr/share/applications/org.andromeda.Link.desktop"
   cp -r "$dist/icons" "$pkgdir/usr/share/"
   install -Dm644 "$ROOT/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

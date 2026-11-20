@@ -6,19 +6,18 @@ Version:        %{linkversion}
 Release:        1%{?dist}
 Summary:        Andromeda Link: phone and desktop continuity
 License:        GPL-3.0-or-later
-Requires:       dbus fuse3 gtk4 gstreamer1-plugins-base gstreamer1-plugins-bad-free
-Requires:       qt6-qtbase >= 6.7 qt6-qtdeclarative qt6-qtmultimedia
-Obsoletes:      andromeda-link-app < %{version}-%{release}
-Provides:       andromeda-link-app = %{version}-%{release}
-Recommends:     gstreamer1-plugin-gtk4 (xdg-desktop-portal-gnome or xdg-desktop-portal-kde)
-Suggests:       bluez NetworkManager scrcpy android-tools iw
+Requires:       dbus fuse3 gstreamer1-plugins-base gstreamer1-plugins-bad-free
+# Below 1 is the old Qt app package; the Andromeda Link window (2026.x) keeps the name.
+Obsoletes:      andromeda-link-app < 1
+Recommends:     andromeda-link-app (xdg-desktop-portal-gnome or xdg-desktop-portal-kde)
+Suggests:       bluez NetworkManager iw
 %global debug_package %{nil}
 
 %description
 Clipboard, notifications, media, files, texts, and screen mirroring between an Android phone and the desktop.
 
 %install
-for b in andromeda-linkd andromeda-link-mount andromeda-link-mirror andromeda-link-apps andromeda-link-session andromeda-link; do
+for b in andromeda-linkd andromeda-link-mount andromeda-link-session; do
   install -Dm755 %{linkbin}/$b %{buildroot}%{_bindir}/$b
 done
 for s in andromeda-linkd andromeda-link-mount andromeda-link-session; do
@@ -38,7 +37,6 @@ install -Dm644 %{linkroot}/dist/60-andromeda-link-uinput.rules %{buildroot}%{_ud
 install -Dm755 %{linkroot}/dist/andromeda-link-wifi-power-save %{buildroot}%{_prefix}/lib/andromeda-link/wifi-power-save
 install -Dm644 %{linkroot}/dist/org.andromeda.link.wifi-power-save.policy \
   %{buildroot}%{_datadir}/polkit-1/actions/org.andromeda.link.wifi-power-save.policy
-install -Dm644 %{linkroot}/dist/org.andromeda.Link.desktop %{buildroot}%{_datadir}/applications/org.andromeda.Link.desktop
 cp -r %{linkroot}/dist/icons %{buildroot}%{_datadir}/
 install -Dm644 %{linkroot}/LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
 
@@ -58,8 +56,6 @@ fi
 %license %{_licensedir}/%{name}/LICENSE
 %{_bindir}/andromeda-linkd
 %{_bindir}/andromeda-link-mount
-%{_bindir}/andromeda-link-mirror
-%{_bindir}/andromeda-link-apps
 %{_bindir}/andromeda-link-session
 %{_userunitdir}/*.service
 %{_userunitdir}/graphical-session.target.wants/*.service
@@ -69,8 +65,6 @@ fi
 %{_prefix}/lib/firewalld/services/andromeda-link*.xml
 %{_datadir}/wireplumber/wireplumber.conf.d/60-andromeda-link-bluetooth.conf
 %{_udevrulesdir}/60-andromeda-link-uinput.rules
-%{_bindir}/andromeda-link
 %{_prefix}/lib/andromeda-link/wifi-power-save
 %{_datadir}/polkit-1/actions/org.andromeda.link.wifi-power-save.policy
-%{_datadir}/applications/org.andromeda.Link.desktop
 %{_datadir}/icons/hicolor/*/apps/org.andromeda.Link*
