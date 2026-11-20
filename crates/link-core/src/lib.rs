@@ -102,6 +102,9 @@ pub enum Error {
     ClipRefused(#[from] link_proto::clip::ClipRefused),
     #[error("too large to send over Bluetooth")]
     TooLargeForBluetooth,
+    /// Too large for Bluetooth, and the faster path failed for the reason held.
+    #[error("too large to send over Bluetooth: {0}")]
+    NoFasterPath(String),
     #[error("hotspot: {0}")]
     Hotspot(String),
 }

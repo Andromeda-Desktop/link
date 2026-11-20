@@ -377,7 +377,7 @@ impl Client {
                     }
                     Err(error) => {
                         log::info!("{id}: no faster path: {error}");
-                        Err(Error::TooLargeForBluetooth)
+                        Err(Error::NoFasterPath(error.to_string()))
                     }
                 }
             }
