@@ -1,9 +1,11 @@
 //! The phone's one nearby network for bulk, a Wi-Fi Direct group or its hotspot: which desktop it serves and what it
 //! waits for. Pure: the client applies the effects.
 
+use std::time::Duration;
+
 use tokio::time::Instant;
 
-use crate::hotspot::{IDLE, UPGRADE_TIMEOUT, WIFI_DIRECT_TIMEOUT};
+use crate::hotspot::{UPGRADE_TIMEOUT, WIFI_DIRECT_TIMEOUT};
 use crate::identity::DeviceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,8 @@ pub enum Event {
     Used {
         peer: DeviceId,
     },
+    /// The phone's idle time changed with its screen: an armed idle timer starts again with the new time.
+    IdleChanged,
     /// The desktop ended the network.
     DesktopEnded {
         peer: DeviceId,
@@ -100,7 +104,7 @@ impl Event {
             | Self::Used { peer }
             | Self::DesktopEnded { peer, .. }
             | Self::SessionEnded { peer } => Some(peer),
-            Self::Tick => None,
+            Self::IdleChanged | Self::Tick => None,
         }
     }
 }
@@ -132,8 +136,8 @@ impl Slot {
         }
     }
 
-    /// The only place the slot changes.
-    pub fn apply(&mut self, event: Event, now: Instant) -> Result<Vec<Effect>, Stale> {
+    /// The only place the slot changes. `idle` is how long an unused network stays up now.
+    pub fn apply(&mut self, event: Event, now: Instant, idle: Duration) -> Result<Vec<Effect>, Stale> {
         let (next, effects) = match (&*self, event) {
             (Self::Idle, Event::Request { peer, group, hotspot }) => match (group, hotspot) {
                 (true, fallback) => (forming(peer, Kind::Group, fallback, now), vec![Effect::Start(Kind::Group)]),
@@ -153,13 +157,16 @@ impl Slot {
                 fail(peer, *kind, *fallback, reason, now)
             }
             (Self::Forming { peer, kind, .. }, Event::Adopted { peer: from, busy }) if *peer == from => {
-                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(busy, now) }, Vec::new())
+                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(busy, now, idle) }, Vec::new())
             }
             (Self::Up { peer, kind, .. }, Event::Busy { peer: from, busy }) if *peer == from => {
-                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(busy, now) }, Vec::new())
+                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(busy, now, idle) }, Vec::new())
             }
             (Self::Up { peer, kind, idle_at: Some(_) }, Event::Used { peer: from }) if *peer == from => {
-                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(false, now) }, Vec::new())
+                (Self::Up { peer: from, kind: *kind, idle_at: idle_at(false, now, idle) }, Vec::new())
+            }
+            (Self::Up { peer, kind, idle_at: Some(_) }, Event::IdleChanged) => {
+                (Self::Up { peer: peer.clone(), kind: *kind, idle_at: idle_at(false, now, idle) }, Vec::new())
             }
             (slot, Event::DesktopEnded { peer, reason }) if slot.serves(&peer) => {
                 (Self::Idle, vec![Effect::Stop(kind_of(slot)), Effect::Fail(reason)])
@@ -198,8 +205,8 @@ fn refuse(reason: &str) -> Vec<Effect> {
     vec![Effect::Tell(Some(reason.to_owned())), Effect::Fail(reason.to_owned())]
 }
 
-fn idle_at(busy: bool, now: Instant) -> Option<Instant> {
-    (!busy).then(|| now + IDLE)
+fn idle_at(busy: bool, now: Instant, idle: Duration) -> Option<Instant> {
+    (!busy).then(|| now + idle)
 }
 
 fn kind_of(slot: &Slot) -> Kind {
@@ -208,13 +215,13 @@ fn kind_of(slot: &Slot) -> Kind {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
+    use crate::hotspot::{IDLE_SCREEN_OFF, IDLE_SCREEN_ON};
 
-    /// Random event sequences on a fake clock. Invariants: a provider runs exactly while the slot holds its kind;
-    /// a tick leaves no deadline in the past; a stale event changes nothing; every failure that ends the slot answers
-    /// the waiting sends.
+    /// Random event sequences on a fake clock, with the idle time switching between screen on and off. Invariants: a
+    /// provider runs exactly while the slot holds its kind; a tick leaves no deadline in the past; an idle timer never
+    /// runs past the current idle time; a stale event changes nothing; every failure that ends the slot answers the
+    /// waiting sends.
     #[test]
     fn random_sequences_keep_the_invariants() {
         let mut seed = 0x2545_f491_4f6c_dd1d_u64;
@@ -230,11 +237,12 @@ mod tests {
             let mut now = Instant::now();
             let mut slot = Slot::Idle;
             let mut running: Vec<Kind> = Vec::new();
+            let mut idle = IDLE_SCREEN_OFF;
             for _ in 0..60 {
                 now += Duration::from_millis(next(30_000));
                 let peer = peers[usize::from(next(2) == 0)].clone();
                 let kind = kinds[usize::from(next(2) == 0)];
-                let event = match next(9) {
+                let event = match next(10) {
                     0 => Event::Request { peer, group: next(2) == 0, hotspot: next(2) == 0 },
                     1 => Event::Failed { peer, kind, reason: "x".into() },
                     2 => Event::Adopted { peer, busy: next(2) == 0 },
@@ -242,11 +250,15 @@ mod tests {
                     4 => Event::Used { peer },
                     5 => Event::DesktopEnded { peer, reason: "x".into() },
                     6 => Event::SessionEnded { peer },
+                    7 => {
+                        idle = if idle == IDLE_SCREEN_OFF { IDLE_SCREEN_ON } else { IDLE_SCREEN_OFF };
+                        Event::IdleChanged
+                    }
                     _ => Event::Tick,
                 };
                 let before = slot.clone();
                 let is_tick = event == Event::Tick;
-                match slot.apply(event.clone(), now) {
+                match slot.apply(event.clone(), now, idle) {
                     Err(Stale) => assert_eq!(slot, before, "a stale {event:?} changed the slot"),
                     Ok(effects) => {
                         for effect in &effects {
@@ -269,6 +281,9 @@ mod tests {
                     }
                 }
                 assert_eq!(running, slot.kind().into_iter().collect::<Vec<_>>(), "providers vs {slot:?}");
+                if let Slot::Up { idle_at: Some(at), .. } = &slot {
+                    assert!(*at <= now + idle, "{slot:?} idles later than {idle:?} after {event:?}");
+                }
                 if is_tick {
                     assert!(slot.deadline().is_none_or(|deadline| deadline > now), "{slot:?} is past due at a tick");
                 }

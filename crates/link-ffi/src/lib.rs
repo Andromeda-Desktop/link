@@ -1153,6 +1153,12 @@ impl LinkClient {
         self.run(async move { client.set_present(present).await }).await
     }
 
+    /// Whether the phone's screen is on: a nearby network nothing uses stays up longer while it is.
+    pub async fn set_screen_on(&self, on: bool) -> Result<(), LinkError> {
+        let client = self.client.clone();
+        self.run(async move { client.set_screen_on(on).await }).await
+    }
+
     /// Sends text or a link, connecting first if needed, and returns once the desktop acknowledged it.
     pub async fn share(&self, desktop_id: String, kind: ShareKind, text: String) -> Result<ShareSent, LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);

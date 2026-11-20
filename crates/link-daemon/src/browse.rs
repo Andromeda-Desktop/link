@@ -60,6 +60,11 @@ impl Request {
         matches!(self, Self::Write { .. } | Self::Delete { .. })
     }
 
+    /// Whether it moves file contents or pictures, which Bluetooth carries too slowly: photos and file reads.
+    pub fn bulk(&self) -> bool {
+        matches!(self, Self::Read { .. } | Self::Thumb { .. } | Self::Write { .. } | Self::Recent { .. })
+    }
+
     /// What a phone from before `fs-stat` understands: a stat lists the parent, a thumbnail has no stand-in.
     pub fn for_older_phone(self) -> Result<Self, Failure> {
         match self {

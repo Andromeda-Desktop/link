@@ -1121,7 +1121,7 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(reply.send(Err(browse::Failure::NotConnected)));
         };
-        if matches!(request, browse::Request::Read { .. }) && session.connection().quic().is_none() {
+        if request.bulk() && session.connection().quic().is_none() {
             self.ask_hotspot_once(&id, &session).await;
         }
         if request.writes() {

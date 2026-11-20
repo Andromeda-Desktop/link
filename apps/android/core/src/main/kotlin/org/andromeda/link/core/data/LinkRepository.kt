@@ -610,6 +610,9 @@ class LinkRepository(
             call { it.setPresent(present) }
         }
 
+    /** A nearby network nothing uses stays up longer while the screen is on. */
+    suspend fun setScreenOn(on: Boolean): Result<Unit> = call { it.setScreenOn(on) }
+
     private suspend fun <T> callAndRefresh(block: suspend (LinkClient) -> T): Result<T> {
         val result = call(block)
         refresh()

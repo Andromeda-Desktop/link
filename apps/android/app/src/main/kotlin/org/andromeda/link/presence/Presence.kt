@@ -2,12 +2,15 @@ package org.andromeda.link.presence
 
 import android.Manifest
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
@@ -55,6 +58,7 @@ class Presence(
                 }
             },
         )
+        watchScreen()
         scope.launch {
             combine(foreground, _stayConnected) { visible, stay -> visible || stay }
                 .distinctUntilChanged()
@@ -89,6 +93,24 @@ class Presence(
                 }
             },
         )
+    }
+
+    private fun watchScreen() {
+        val screenOn = MutableStateFlow(application.getSystemService(PowerManager::class.java).isInteractive)
+        val filter = IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) }
+        // Protected system broadcasts: only Android sends them, so the receiver needs no export flag.
+        application.registerReceiver(
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    context: Context,
+                    intent: Intent,
+                ) {
+                    screenOn.value = intent.action == Intent.ACTION_SCREEN_ON
+                }
+            },
+            filter,
+        )
+        scope.launch { screenOn.collect { repository.setScreenOn(it) } }
     }
 
     /** Called after a pairing: the first one turns "Stay connected" on unless the user already chose. */

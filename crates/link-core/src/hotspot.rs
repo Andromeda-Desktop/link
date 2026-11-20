@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use link_proto::message::Hotspot;
 
-/// A hotspot nothing moved through for this long is stopped.
-pub const IDLE: Duration = Duration::from_secs(60);
+/// A group or hotspot nothing moved through for this long is stopped, while the phone's screen is on: the user may
+/// browse or send again soon.
+pub const IDLE_SCREEN_ON: Duration = Duration::from_secs(300);
+/// The same while the screen is off.
+pub const IDLE_SCREEN_OFF: Duration = Duration::from_secs(60);
 /// How long a send over the size limit waits for the session to move to the hotspot.
 pub const UPGRADE_TIMEOUT: Duration = Duration::from_secs(60);
 

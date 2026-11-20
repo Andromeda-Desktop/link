@@ -21,7 +21,7 @@ use tokio::time::Instant;
 
 use crate::browse;
 use crate::camera::{self, Camera};
-use crate::hotspot::UPGRADE_TIMEOUT;
+use crate::hotspot::{self, UPGRADE_TIMEOUT};
 use crate::identity::DeviceId;
 use crate::inbox::Inbox;
 use crate::link_state::LinkState;
@@ -138,6 +138,9 @@ enum Command {
     SetPresent {
         present: bool,
     },
+    SetScreenOn {
+        on: bool,
+    },
     Forget {
         id: DeviceId,
         reply: oneshot::Sender<Result<(), Error>>,
@@ -211,6 +214,8 @@ pub struct ClientActor {
     seen: Seen,
     transfer_events: mpsc::UnboundedReceiver<TransferEvent>,
     present: bool,
+    /// False until the app reports it: an unused network then stops after the shorter idle time.
+    screen_on: bool,
     /// Desktops with an open transfer, kept connected like a present phone until it ends.
     busy: HashSet<DeviceId>,
     /// Desktops whose last `capabilities` this session said they granted this phone "Control system".
@@ -286,6 +291,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         seen: Seen::default(),
         transfer_events,
         present: false,
+        screen_on: false,
         busy: HashSet::new(),
         controlled_by: HashSet::new(),
         status_to: HashMap::new(),
@@ -329,6 +335,11 @@ impl Client {
     /// sessions are opened on demand and idle out.
     pub async fn set_present(&self, present: bool) -> Result<(), Error> {
         self.commands.send(Command::SetPresent { present }).await.map_err(|_| Error::Stopped)
+    }
+
+    /// Whether the phone's screen is on: a nearby network nothing uses stays up longer while it is.
+    pub async fn set_screen_on(&self, on: bool) -> Result<(), Error> {
+        self.commands.send(Command::SetScreenOn { on }).await.map_err(|_| Error::Stopped)
     }
 
     /// Queues `share` for the desktop, connecting first if needed; returns once the desktop acknowledged it, or when
@@ -629,6 +640,10 @@ impl ClientActor {
                 drop(reply.send(result));
             }
             Command::SetPresent { present } => self.set_present(present),
+            Command::SetScreenOn { on } => {
+                self.screen_on = on;
+                self.slot_event(slot::Event::IdleChanged).await;
+            }
             Command::Forget { id, reply } => {
                 self.outbox.forget(id.clone());
                 self.retries.remove(&id);
@@ -769,7 +784,7 @@ impl ClientActor {
             return;
         }
         if let TransferEvent::Busy { peer, busy } = &event {
-            drop(self.slot.apply(slot::Event::Busy { peer: peer.clone(), busy: *busy }, Instant::now()));
+            drop(self.slot.apply(slot::Event::Busy { peer: peer.clone(), busy: *busy }, Instant::now(), self.idle()));
             if *busy {
                 self.busy.insert(peer.clone());
             } else {
@@ -1095,7 +1110,7 @@ impl ClientActor {
     /// Applies `event` to the slot and carries out its effects for the desktop it concerns.
     async fn slot_event(&mut self, event: slot::Event) {
         let Some(peer) = event.peer().or(self.slot.peer()).cloned() else { return };
-        let Ok(effects) = self.slot.apply(event, Instant::now()) else { return };
+        let Ok(effects) = self.slot.apply(event, Instant::now(), self.idle()) else { return };
         for effect in effects {
             match effect {
                 Effect::Start(kind) => self.start_provider(&peer, kind),
@@ -1234,7 +1249,7 @@ impl ClientActor {
             }
             return;
         }
-        drop(self.slot.apply(slot::Event::Used { peer: from.clone() }, Instant::now()));
+        drop(self.slot.apply(slot::Event::Used { peer: from.clone() }, Instant::now(), self.idle()));
         drop(self.browsing.spawn(browse::answer(self.phone.browse_roots().clone(), handle, request)));
     }
 
@@ -1291,6 +1306,10 @@ impl ClientActor {
                 }
             }
         }
+    }
+
+    fn idle(&self) -> std::time::Duration {
+        if self.screen_on { hotspot::IDLE_SCREEN_ON } else { hotspot::IDLE_SCREEN_OFF }
     }
 
     fn set_present(&mut self, present: bool) {
@@ -1366,7 +1385,7 @@ impl ClientActor {
             self.mirroring.remove(id);
         }
         let busy = self.is_busy(id);
-        drop(self.slot.apply(slot::Event::Busy { peer: id.clone(), busy }, Instant::now()));
+        drop(self.slot.apply(slot::Event::Busy { peer: id.clone(), busy }, Instant::now(), self.idle()));
     }
 
     /// Whether a lost session to `id` should be redialled.
