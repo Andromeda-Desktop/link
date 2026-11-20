@@ -5,86 +5,214 @@ import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.MIRROR_UNIT
 import org.andromeda.link.core.domain.PointerButton
 import org.andromeda.link.core.domain.RemoteInput
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.components.SlidingPillControl
+import org.andromeda.link.core.domain.RemoteKey
+import org.andromeda.link.ui.kit.BackKey
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.GroupCard
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.RoundKey
+import org.andromeda.link.ui.kit.Sheet
+import org.andromeda.link.ui.kit.SwitchRow
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
+import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
+import org.andromeda.link.ui.theme.elevation
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+/** What the Viewer shows under its picture, one at a time. */
+enum class ViewerMode {
+    Pad,
+    Keys,
+    Typing,
+    Sources,
+    More,
+    ;
+
+    /** [next] when the Viewer can go there from here, else this mode: typing opens only from the keys. */
+    fun to(next: ViewerMode): ViewerMode = if (next == Typing && this != Keys) this else next
+}
+
+/** The picture's transform: [scale] screen px per desktop px, [offset] of the desktop's top left in the view. */
+@Immutable
+data class Camera(
+    val scale: Float,
+    val offset: Offset,
+)
+
+/** Camera rules for a [view] showing a [desk] of desktop px: fit, follow, the middle band, pinch limits. */
+@Immutable
+class Lens(
+    val view: Size,
+    val desk: Size,
+    private val zoom: Float,
+) {
+    val fit = minOf(view.width / desk.width, view.height / desk.height)
+    private val follow = maxOf(fit, view.width / desk.width) * zoom
+
+    fun whole() = clamp(Camera(fit, Offset.Zero))
+
+    /** [zoom] x the width fit around [pointer] (a fraction of the desktop). */
+    fun follow(pointer: Offset) = clamp(Camera(follow, Offset(view.width / 2, view.height / 2) - at(pointer, follow)))
+
+    fun isWhole(camera: Camera) = camera.scale <= fit * WHOLE_SLACK
+
+    /** The camera moves only as far as keeps [pointer] inside the middle band of the view. */
+    fun keep(
+        camera: Camera,
+        pointer: Offset,
+    ): Camera {
+        val p = camera.offset + at(pointer, camera.scale)
+        val bx = view.width * (1 - Tok.Phone.followBand) / 2
+        val by = view.height * (1 - Tok.Phone.followBand) / 2
+        val dx = (bx - p.x).coerceAtLeast(0f) - (p.x - (view.width - bx)).coerceAtLeast(0f)
+        val dy = (by - p.y).coerceAtLeast(0f) - (p.y - (view.height - by)).coerceAtLeast(0f)
+        return clamp(camera.copy(offset = camera.offset + Offset(dx, dy)))
+    }
+
+    /** Zooms by [factor] around [centroid] and moves by [moved]; the place under the fingers stays under them. */
+    fun pinch(
+        camera: Camera,
+        centroid: Offset,
+        factor: Float,
+        moved: Offset,
+    ): Camera {
+        val scale = (camera.scale * factor).coerceIn(fit, fit * Tok.Phone.maxZoom)
+        return clamp(Camera(scale, centroid - (centroid - camera.offset) * (scale / camera.scale) + moved))
+    }
+
+    fun pan(
+        camera: Camera,
+        by: Offset,
+    ) = clamp(camera.copy(offset = camera.offset + by))
+
+    /** The desktop fraction under [at] on the view, on the picture. */
+    fun fraction(
+        camera: Camera,
+        at: Offset,
+    ): Offset {
+        val local = (at - camera.offset) / camera.scale
+        return Offset((local.x / desk.width).coerceIn(0f, 1f), (local.y / desk.height).coerceIn(0f, 1f))
+    }
+
+    /** Where [pointer] is on the view. */
+    fun onView(
+        camera: Camera,
+        pointer: Offset,
+    ) = camera.offset + at(pointer, camera.scale)
+
+    private fun at(
+        pointer: Offset,
+        scale: Float,
+    ) = Offset(pointer.x * desk.width * scale, pointer.y * desk.height * scale)
+
+    private fun clamp(camera: Camera): Camera {
+        fun axis(
+            o: Float,
+            shown: Float,
+            v: Float,
+        ) = if (shown <= v) (v - shown) / 2 else o.coerceIn(v - shown, 0f)
+        val s = camera.scale
+        return Camera(s, Offset(axis(camera.offset.x, desk.width * s, view.width), axis(camera.offset.y, desk.height * s, view.height)))
+    }
+}
+
 /**
- * A desktop's screen, full screen: direct touch clicks and drags where the finger is, or the picture works as a
- * touchpad. Two fingers scroll; a pinch zooms the picture. A round button, which can be dragged aside, opens the menu.
+ * A desktop's screen above the Remote's pad: the picture is for seeing and aiming (tap clicks there, a hold grabs,
+ * one finger pans, a pinch zooms), the pad moves the pointer the phone draws. Round keys open the keys, the sources and
+ * Mute and End. Landscape gives the picture the whole screen.
  */
 @Composable
 fun ViewerScreen(
@@ -94,6 +222,10 @@ fun ViewerScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val desk by input.desk.collectAsStateWithLifecycle()
+    val held by input.held.collectAsStateWithLifecycle()
+    val shortcuts by input.shortcuts.collectAsStateWithLifecycle()
+    val actions: RemoteActions = input
     val haptic = LocalHapticFeedback.current
     LaunchedEffect(input) { input.ticks.collect { haptic.performHapticFeedback(HapticFeedbackType.ContextClick) } }
     val leave = {
@@ -101,8 +233,20 @@ fun ViewerScreen(
         onBack()
     }
     LaunchedEffect(Unit) { viewModel.open() }
-    BackHandler(onBack = leave)
-    Immersive()
+    var mode by rememberSaveable { mutableStateOf(ViewerMode.Pad) }
+    val go = { next: ViewerMode -> mode = mode.to(next) }
+    BackHandler {
+        when (mode) {
+            ViewerMode.Pad -> leave()
+            ViewerMode.Typing -> go(ViewerMode.Keys)
+            else -> go(ViewerMode.Pad)
+        }
+    }
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
     var surface by remember { mutableStateOf<Surface?>(null) }
     val muted by rememberUpdatedState(state.muted)
     val stream = state.stream
@@ -112,69 +256,172 @@ fun ViewerScreen(
         val target = surface
         if (stream != null && target != null) decoding.withLock { play(stream, target) { muted } }
     }
-    var menu by remember { mutableStateOf(false) }
-    var typing by remember { mutableStateOf(false) }
-    var bar by remember { mutableStateOf(false) }
-    Box(modifier.fillMaxSize().background(Color.Black)) {
-        if (stream != null) {
-            Picture(stream.width, stream.height, state.direct, input) { surface = it }
-        }
-        val stopped = state.stopped
-        when {
-            stopped != null -> Ended(stopped, state.failure?.text(LocalContext.current.resources), leave)
-            stream == null -> Centered(stringResource(R.string.viewer_connecting))
-        }
-        if (typing) {
-            val focus = remember { FocusRequester() }
-            LaunchedEffect(Unit) { focus.requestFocus() }
-            val shortcuts by input.shortcuts.collectAsStateWithLifecycle()
-            Column(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .imePadding()
-                    .padding(Space.s12),
-                verticalArrangement = Arrangement.spacedBy(Space.s8),
-            ) {
-                if (shortcuts) ShortcutBar(input)
-                Typing(input, Modifier.focusRequester(focus))
+    val live = stream != null
+    val canInput = desk.input && live
+    LaunchedEffect(canInput) { if (!canInput && (mode == ViewerMode.Keys || mode == ViewerMode.Typing)) go(ViewerMode.Pad) }
+
+    var px by rememberSaveable { mutableFloatStateOf(CENTRE) }
+    var py by rememberSaveable { mutableFloatStateOf(CENTRE) }
+    val pointer = Offset(px, py)
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    BoxWithConstraints(modifier.fillMaxSize().background(LinkTheme.scheme.solidRegular)) {
+        val landscape = maxWidth > maxHeight
+        val lens =
+            remember(viewSize, stream?.width, stream?.height, landscape) {
+                if (stream == null || viewSize == IntSize.Zero) {
+                    null
+                } else {
+                    Lens(
+                        Size(viewSize.width.toFloat(), viewSize.height.toFloat()),
+                        Size(stream.width.toFloat(), stream.height.toFloat()),
+                        if (landscape) Tok.Phone.followZoomWide else Tok.Phone.followZoom,
+                    )
+                }
             }
-        } else if (bar) {
-            val shortcuts by input.shortcuts.collectAsStateWithLifecycle()
-            if (shortcuts) ShortcutBar(input, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Space.s12))
+        var camera by remember(lens) { mutableStateOf(lens?.let { if (state.window) it.whole() else it.follow(pointer) }) }
+        val aimTo = { at: Offset ->
+            px = at.x
+            py = at.y
+            input.point(RemoteInput.Point((at.x * MIRROR_UNIT).roundToInt(), (at.y * MIRROR_UNIT).roundToInt()))
+            lens?.let { l -> camera?.let { camera = l.keep(it, at) } }
         }
-        if (menu) {
-            val shortcuts by input.shortcuts.collectAsStateWithLifecycle()
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = SCRIM)).clickable { menu = false })
-            Menu(
-                state,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Space.s12),
-                onTouchpad = viewModel::setTouchpad,
-                onKeyboard = {
-                    typing = !typing
-                    menu = false
-                },
-                onShortcuts =
-                    if (shortcuts) {
-                        {
-                            bar = !bar
-                            menu = false
-                        }
-                    } else {
-                        null
-                    },
-                onSource = {
-                    viewModel.select(it)
-                    menu = false
-                },
-                onMute = viewModel::toggleMute,
-                onDisconnect = leave,
+        // The pad moves the phone's pointer on a monitor; on a window, whose place is unknown, the desktop's own.
+        val padMove: (Float, Float) -> Unit =
+            if (state.window || stream == null) {
+                input::move
+            } else {
+                { dx, dy ->
+                    aimTo(
+                        Offset(
+                            (px + dx * PAD_SPEED / stream.width).coerceIn(0f, 1f),
+                            (py + dy * PAD_SPEED / stream.height).coerceIn(0f, 1f),
+                        ),
+                    )
+                }
+            }
+        val picture: @Composable (Modifier) -> Unit = { modifier ->
+            Picture(
+                state = state,
+                deskName = desk.name,
+                lens = lens,
+                camera = camera,
+                pointer = if (state.window) null else pointer,
+                clicks = canInput && !state.window,
+                input = actions,
+                onCamera = { camera = it },
+                onAim = { aimTo(it) },
+                onSurface = { surface = it },
+                onSize = { viewSize = it },
+                modifier = modifier,
             )
         }
-        MenuButton { menu = !menu }
+        val chip: @Composable (Modifier) -> Unit = {
+            DeskChip(desk, if (desk.input) null else stringResource(R.string.viewer_view_only, desk.name), it)
+        }
+        val zoom: @Composable () -> Unit = {
+            val l = lens
+            val c = camera
+            if (live && l != null && c != null) ZoomCapsule(l, c) { camera = if (l.isWhole(c)) l.follow(pointer) else l.whole() }
+        }
+        val keys: @Composable () -> Unit = {
+            val d = if (landscape) Tok.Size.rowTwo.dp else Tok.Phone.roundKeyL.dp
+            RoundKey(Icons.Kbd, stringResource(R.string.remote_keys), { go(ViewerMode.Keys) }, size = d, enabled = canInput)
+            RoundKey(
+                Icons.Monitor,
+                stringResource(R.string.viewer_sources),
+                { go(ViewerMode.Sources) },
+                size = d,
+                enabled = state.sources.isNotEmpty(),
+            )
+            RoundKey(Icons.More, stringResource(R.string.viewer_more), { go(ViewerMode.More) }, size = d)
+        }
+        if (landscape) {
+            Immersive()
+            Box(Modifier.fillMaxSize()) {
+                picture(Modifier.fillMaxSize())
+                Row(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(
+                            start = Tok.Space.p8.dp,
+                            top = Tok.Space.p8.dp,
+                            end = (Tok.Space.p12 + Tok.Size.rowTwo + Tok.Space.p12).dp,
+                        ),
+                    horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val s = LinkTheme.scheme
+                    val h = Tok.Phone.hit.dp
+                    BackKey(s.label1, leave, Modifier.elevation(Tok.Elevation.e3, h / 2).clip(CircleShape).background(s.view))
+                    chip(Modifier.weight(1f, fill = false))
+                    zoom()
+                }
+                // Landscape keys stand in a column at the right edge, Keys on top, More at the bottom.
+                Column(
+                    Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(Tok.Space.p12.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) { keys() }
+                when (mode) {
+                    ViewerMode.Keys ->
+                        CompactKeys(
+                            actions,
+                            held,
+                            desk.name,
+                            { go(ViewerMode.Typing) },
+                            Modifier.align(Alignment.BottomCenter),
+                        )
+                    ViewerMode.Typing ->
+                        TypingBar(
+                            actions,
+                            held,
+                            shortcuts,
+                            desk.name,
+                            { go(ViewerMode.Keys) },
+                            Modifier.align(Alignment.BottomCenter).imePadding(),
+                        )
+                    else -> Unit
+                }
+                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute)
+            }
+        } else {
+            Box(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
+                    Row(
+                        Modifier.fillMaxWidth().height(Tok.Size.rowTwo.dp).padding(horizontal = Tok.Space.p8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BackKey(LinkTheme.scheme.label1, leave)
+                        chip(Modifier.weight(1f, fill = false))
+                        Spacer(Modifier.weight(1f))
+                        zoom()
+                    }
+                    picture(Modifier.fillMaxWidth().fillMaxHeight(Tok.Phone.picture))
+                    when (mode) {
+                        ViewerMode.Keys -> CompactKeys(actions, held, desk.name, { go(ViewerMode.Typing) }, Modifier.weight(1f))
+                        ViewerMode.Typing -> {
+                            Spacer(Modifier.weight(1f))
+                            TypingBar(actions, held, shortcuts, desk.name, { go(ViewerMode.Keys) })
+                        }
+                        else ->
+                            Pad(
+                                input = actions,
+                                deskName = desk.name,
+                                canInput = canInput,
+                                move = padMove,
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) { keys() }
+                            }
+                    }
+                }
+                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute)
+            }
+        }
     }
 }
 
-/** The system bars hide while the desktop shows, and come back with a swipe from an edge. */
+/** The system bars hide while the picture has the whole screen, and come back with a swipe from an edge. */
 @Composable
 private fun Immersive() {
     val view = LocalView.current
@@ -183,379 +430,626 @@ private fun Immersive() {
         val bars = window?.let { WindowCompat.getInsetsController(it, view) }
         bars?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         bars?.hide(WindowInsetsCompat.Type.systemBars())
-        view.keepScreenOn = true
-        onDispose {
-            bars?.show(WindowInsetsCompat.Type.systemBars())
-            view.keepScreenOn = false
-        }
+        onDispose { bars?.show(WindowInsetsCompat.Type.systemBars()) }
     }
 }
 
-/** The picture, fitted to the screen, then zoomed and moved by the user's pinch. */
+/** The zoom capsule: the zoom over the fit while zoomed (tap: the whole desktop), "Follow" on the whole (tap: zoom in). */
+@Composable
+private fun ZoomCapsule(
+    lens: Lens,
+    camera: Camera,
+    onClick: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val whole = lens.isWhole(camera)
+    val tenths = (camera.scale / lens.fit * TENTHS).roundToInt()
+    val label =
+        if (whole) {
+            stringResource(R.string.viewer_follow)
+        } else if (tenths % 10 ==
+            0
+        ) {
+            "${tenths / 10}×"
+        } else {
+            "${tenths / 10}.${tenths % 10}×"
+        }
+    val hint = stringResource(if (whole) R.string.viewer_follow_hint else R.string.viewer_whole_hint)
+    val h = Tok.Phone.hit.dp
+    Box(
+        Modifier
+            .height(h)
+            .widthIn(min = Tok.Size.rowTwo.dp)
+            .elevation(Tok.Elevation.e3, h / 2)
+            .clip(CircleShape)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = hint }
+            .padding(horizontal = Tok.Phone.pillPad.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.Bold), maxLines = 1) }
+}
+
+/** The picture, the phone's pointer, the hold ring and the minimap; or why there is no picture. */
 @Composable
 private fun Picture(
-    width: Int,
-    height: Int,
-    direct: Boolean,
-    input: RemoteViewModel,
+    state: ViewerState,
+    deskName: String,
+    lens: Lens?,
+    camera: Camera?,
+    pointer: Offset?,
+    clicks: Boolean,
+    input: RemoteActions,
+    onCamera: (Camera) -> Unit,
+    onAim: (Offset) -> Unit,
     onSurface: (Surface?) -> Unit,
+    onSize: (IntSize) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val density = LocalDensity.current
-        val (boxWidth, boxHeight) = with(density) { maxWidth.toPx() to maxHeight.toPx() }
-        val fit = minOf(boxWidth / width, boxHeight / height)
-        val (shownWidth, shownHeight) = width * fit to height * fit
-        val origin = Offset((boxWidth - shownWidth) / 2, (boxHeight - shownHeight) / 2)
-        // Kept across zoom steps: a new one would restart the gesture that zooms.
-        val view =
-            remember(origin, shownWidth, shownHeight) {
-                Viewport(origin, shownWidth, shownHeight, { scale }, { pan }) { newScale, newPan ->
-                    scale = newScale
-                    pan = newPan
+    val s = LinkTheme.scheme
+    val shape = RoundedCornerShape(bottomStart = Tok.Radius.r24.dp, bottomEnd = Tok.Radius.r24.dp)
+    val stream = state.stream
+    val description = stringResource(R.string.viewer_picture)
+    // The place a finger holds on the picture, and whether the hold became a grab.
+    var aim by remember { mutableStateOf<Offset?>(null) }
+    var grabbed by remember { mutableStateOf(false) }
+    val currentCamera by rememberUpdatedState(camera)
+    Box(
+        modifier
+            .elevation(Tok.Elevation.e2, Tok.Radius.r24.dp)
+            .clip(shape)
+            .background(s.fill2)
+            .onSizeChanged(onSize),
+    ) {
+        if (stream != null && lens != null && camera != null) {
+            val density = LocalDensity.current
+            val fitted = with(density) { Modifier.size((lens.desk.width * lens.fit).toDp(), (lens.desk.height * lens.fit).toDp()) }
+            AndroidView(
+                factory = { context ->
+                    TextureView(context).apply {
+                        surfaceTextureListener =
+                            object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(
+                                    texture: SurfaceTexture,
+                                    w: Int,
+                                    h: Int,
+                                ) = onSurface(Surface(texture))
+
+                                override fun onSurfaceTextureSizeChanged(
+                                    texture: SurfaceTexture,
+                                    w: Int,
+                                    h: Int,
+                                ) = Unit
+
+                                override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                                    onSurface(null)
+                                    return true
+                                }
+
+                                override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                            }
+                    }
+                },
+                // Laid out once at the fit; zoom and pan are the layer's transform, never a new layout.
+                modifier =
+                    fitted.graphicsLayer {
+                        val c = currentCamera ?: return@graphicsLayer
+                        transformOrigin = TransformOrigin(0f, 0f)
+                        scaleX = c.scale / lens.fit
+                        scaleY = c.scale / lens.fit
+                        translationX = c.offset.x
+                        translationY = c.offset.y
+                    },
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .semantics { contentDescription = description }
+                    .pointerInput(lens, clicks) {
+                        pictureGestures(
+                            lens = lens,
+                            clicks = clicks,
+                            camera = { currentCamera ?: lens.whole() },
+                            input = input,
+                            onCamera = onCamera,
+                            onAim = onAim,
+                            onHold = { at, grab ->
+                                aim = at
+                                grabbed = grab
+                            },
+                        )
+                    },
+            )
+            if (pointer != null && aim == null) PointerArrow(lens.onView(camera, pointer))
+            aim?.let {
+                HoldRing(it, grabbed)
+                if (grabbed) GrabTag(it)
+            }
+            if (!lens.isWhole(camera) && aim == null) Minimap(lens, camera, Modifier.align(Alignment.BottomEnd).padding(Tok.Space.p8.dp))
+        } else {
+            val stopped = state.stopped
+            Column(
+                Modifier.align(Alignment.Center).padding(horizontal = Tok.Space.p32.dp),
+                verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                val t = LinkTheme.phoneType
+                if (stopped == null) {
+                    Text(stringResource(R.string.viewer_waiting, deskName), t.body, color = s.label2, align = TextAlign.Center)
+                } else {
+                    Text(stringResource(R.string.viewer_stopped, deskName), t.body, color = s.label2, align = TextAlign.Center)
+                    val why = state.failure?.text(LocalContext.current.resources) ?: stopped.ifEmpty { null }
+                    if (why != null) Text(why, t.footnote, color = s.label3, align = TextAlign.Center)
                 }
             }
-        AndroidView(
-            factory = { context ->
-                TextureView(context).apply {
-                    surfaceTextureListener =
-                        object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(
-                                texture: SurfaceTexture,
-                                w: Int,
-                                h: Int,
-                            ) = onSurface(Surface(texture))
-
-                            override fun onSurfaceTextureSizeChanged(
-                                texture: SurfaceTexture,
-                                w: Int,
-                                h: Int,
-                            ) = Unit
-
-                            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
-                                onSurface(null)
-                                return true
-                            }
-
-                            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
-                        }
-                }
-            },
-            modifier =
-                Modifier
-                    .offset { IntOffset(origin.x.roundToInt(), origin.y.roundToInt()) }
-                    .size(with(density) { shownWidth.toDp() }, with(density) { shownHeight.toDp() })
-                    .graphicsLayer {
-                        transformOrigin = TransformOrigin(0f, 0f)
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = pan.x
-                        translationY = pan.y
-                    },
-        )
-        val description = stringResource(R.string.viewer_picture)
-        // A desktop with a real touchpad gets the raw fingers in touchpad mode; its own settings and gestures apply.
-        val raw by input.touchpad.collectAsStateWithLifecycle()
-        val context = LocalContext.current
-        DisposableEffect(raw, direct) {
-            val restore = if (raw && !direct) keepMultiFingerTouches(context) else null
-            onDispose { restore?.invoke() }
         }
-        val area = Modifier.fillMaxSize().semantics { contentDescription = description }
-        Box(
-            if (raw && !direct) {
-                area.rawTouchpad(LocalContext.current.resources.displayMetrics, view::pinch, input::tick) {
-                    input.send(RemoteInput.Touch(it))
-                }
-            } else {
-                area.pointerInput(direct, view) { if (direct) directTouch(view, input) else touchpad(view, input) }
-            },
-        )
-    }
-}
-
-/** Where the picture is on screen, to turn a finger's place into a fraction of the desktop. */
-private class Viewport(
-    val origin: Offset,
-    val width: Float,
-    val height: Float,
-    val scale: () -> Float,
-    val pan: () -> Offset,
-    val zoom: (Float, Offset) -> Unit,
-) {
-    /** The desktop point under [at], in 1/[MIRROR_UNIT], clamped onto the picture. */
-    fun point(at: Offset): RemoteInput.Point {
-        val local = (at - origin - pan()) / scale()
-        val x = (local.x / width).coerceIn(0f, 1f)
-        val y = (local.y / height).coerceIn(0f, 1f)
-        return RemoteInput.Point((x * MIRROR_UNIT).roundToInt(), (y * MIRROR_UNIT).roundToInt())
-    }
-
-    /** Zooms by [factor] around [centroid] and moves by [moved], keeping the picture on screen. */
-    fun pinch(
-        centroid: Offset,
-        factor: Float,
-        moved: Offset,
-    ) {
-        val old = scale()
-        val new = (old * factor).coerceIn(1f, MAX_ZOOM)
-        // The point under the fingers stays under them.
-        val anchored = centroid - origin - (centroid - origin - pan()) * (new / old) + moved
-        val limit = Offset(width * (new - 1), height * (new - 1))
-        zoom(new, Offset(anchored.x.coerceIn(-limit.x, 0f), anchored.y.coerceIn(-limit.y, 0f)))
     }
 }
 
 /**
- * One finger: a tap clicks where it is, a long press right-clicks, a drag holds the left button. Two fingers: a pinch
- * zooms the picture; when it does not zoom, they scroll the desktop.
+ * One finger pans the picture and never sends; a tap clicks where it lands; a still finger for [HOLD_MS] grabs there
+ * (lift: right click, move: drag). Two fingers lock to a pinch or a scroll within their first 12 px. Without [clicks]
+ * the picture only pans and zooms.
  */
-private suspend fun PointerInputScope.directTouch(
-    view: Viewport,
-    input: RemoteViewModel,
+private suspend fun PointerInputScope.pictureGestures(
+    lens: Lens,
+    clicks: Boolean,
+    camera: () -> Camera,
+    input: RemoteActions,
+    onCamera: (Camera) -> Unit,
+    onAim: (Offset) -> Unit,
+    onHold: (Offset?, Boolean) -> Unit,
 ) = awaitEachGesture {
     val down = awaitFirstDown()
-    val start = view.point(down.position)
-    input.point(start)
-    var dragging = false
-    var fingers = 1
+    val slop = viewConfiguration.touchSlop
     var travelled = 0f
-    val held =
-        withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-            while (true) {
-                val pressed = awaitPointerEvent().changes.filter { it.pressed }
-                fingers = maxOf(fingers, pressed.size)
-                if (pressed.isEmpty() || fingers > 1) break
-                travelled += pressed[0].positionChange().getDistance()
-                if (travelled > viewConfiguration.touchSlop) break
-            }
-        } == null
-    if (held) {
-        input.send(RemoteInput.Click(PointerButton.Right))
-        waitUp()
-        return@awaitEachGesture
-    }
-    if (fingers > 1) {
-        twoFingers(view, input)
-        return@awaitEachGesture
-    }
-    val first = currentEvent.changes.firstOrNull()
-    if (first == null || !first.pressed) {
-        input.send(RemoteInput.Click(PointerButton.Left))
-        return@awaitEachGesture
-    }
-    do {
-        val event = awaitPointerEvent()
-        val change = event.changes.firstOrNull() ?: break
-        if (!dragging) {
-            input.send(RemoteInput.Press(PointerButton.Left))
-            dragging = true
+    if (clicks) onHold(down.position, false)
+    val early =
+        withTimeoutOrNull(HOLD_MS) {
+            var result: Early? = null
+            do {
+                val event = awaitPointerEvent()
+                val pressed = event.changes.filter { it.pressed }
+                event.changes.forEach { it.consume() }
+                when {
+                    pressed.isEmpty() -> result = Early.Up
+                    pressed.size > 1 -> result = Early.Two
+                    else -> {
+                        travelled += pressed[0].positionChange().getDistance()
+                        if (travelled >= slop) result = Early.Pan
+                    }
+                }
+            } while (result == null)
+            result
         }
-        input.point(view.point(change.position))
-        change.consume()
-    } while (change.pressed)
-    input.send(RemoteInput.Release(PointerButton.Left))
+    val grab = early == null && clicks
+    if (!grab) onHold(null, false)
+    when {
+        early == Early.Up -> {
+            if (clicks) {
+                onAim(lens.fraction(camera(), down.position))
+                input.send(RemoteInput.Click(PointerButton.Left))
+            }
+        }
+        grab -> {
+            onHold(down.position, true)
+            input.tick()
+            onAim(lens.fraction(camera(), down.position))
+            var dragging = false
+            var moved = 0f
+            do {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
+                moved += change.positionChange().getDistance()
+                event.changes.forEach { it.consume() }
+                if (!dragging && moved >= slop) {
+                    dragging = true
+                    onHold(null, false)
+                    input.send(RemoteInput.Press(PointerButton.Left))
+                }
+                if (dragging && change.pressed) onAim(lens.fraction(camera(), change.position))
+            } while (event.changes.any { it.pressed })
+            onHold(null, false)
+            input.send(if (dragging) RemoteInput.Release(PointerButton.Left) else RemoteInput.Click(PointerButton.Right))
+        }
+        else -> twoOrPan(lens, clicks, camera, input, onCamera)
+    }
 }
 
-/** The picture as a touchpad: one finger moves the pointer and taps to click, two tap to right-click. */
-private suspend fun PointerInputScope.touchpad(
-    view: Viewport,
-    input: RemoteViewModel,
-) = awaitEachGesture {
-    val down = awaitFirstDown()
-    var fingers = 1
-    var travelled = 0f
+private enum class Early { Up, Two, Pan }
+
+/** After the first moves: one finger pans; two fingers lock to a pinch or a scroll and keep it until they lift. */
+private suspend fun AwaitPointerEventScope.twoOrPan(
+    lens: Lens,
+    clicks: Boolean,
+    camera: () -> Camera,
+    input: RemoteActions,
+    onCamera: (Camera) -> Unit,
+) {
+    val lock =
+        Tok.Space.p12.dp
+            .toPx()
+    var pinch: Boolean? = null
+    var spread0 = 0f
+    var travel = 0f
     do {
         val event = awaitPointerEvent()
         val pressed = event.changes.filter { it.pressed }
-        fingers = maxOf(fingers, pressed.size)
         if (pressed.size >= 2) {
-            val still = twoFingers(view, input) < viewConfiguration.touchSlop
-            if (still && currentEvent.changes.first().uptimeMillis - down.uptimeMillis < TAP_MS) {
-                input.send(RemoteInput.Click(PointerButton.Right))
+            val a = pressed[0]
+            val b = pressed[1]
+            val centroid = (a.position + b.position) / 2f
+            val previous = (a.previousPosition + b.previousPosition) / 2f
+            val spread = (a.position - b.position).getDistance()
+            val before = (a.previousPosition - b.previousPosition).getDistance()
+            if (spread0 == 0f) spread0 = before
+            travel += (centroid - previous).getDistance()
+            if (pinch == null) {
+                pinch =
+                    when {
+                        abs(spread - spread0) >= lock -> true
+                        travel >= lock -> false
+                        else -> null
+                    }
             }
-            return@awaitEachGesture
-        }
-        pressed.firstOrNull()?.let {
-            val delta = it.positionChange()
-            travelled += delta.getDistance()
-            input.move(delta.x, delta.y)
+            when (pinch) {
+                true -> if (before > 0f) onCamera(lens.pinch(camera(), centroid, spread / before, centroid - previous))
+                false ->
+                    if (clicks) {
+                        input.scroll(centroid.x - previous.x, centroid.y - previous.y)
+                    } else {
+                        onCamera(
+                            lens.pan(
+                                camera(),
+                                centroid - previous,
+                            ),
+                        )
+                    }
+                null -> Unit
+            }
+        } else if (pressed.size == 1 && pinch == null) {
+            onCamera(lens.pan(camera(), pressed[0].positionChange()))
         }
         event.changes.forEach { it.consume() }
     } while (pressed.isNotEmpty())
-    val quick = currentEvent.changes.first().uptimeMillis - down.uptimeMillis < TAP_MS
-    if (quick && travelled < viewConfiguration.touchSlop) {
-        input.send(RemoteInput.Click(if (fingers >= 2) PointerButton.Right else PointerButton.Left))
-    }
 }
 
-/**
- * A pinch zooms the picture; two fingers that keep their distance scroll the desktop. Returns how far they went, or
- * infinity once they zoomed, so the caller can tell a tap.
- */
-private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.twoFingers(
-    view: Viewport,
-    input: RemoteViewModel,
-): Float {
-    var spread: Float? = null
-    var zooming = false
-    var travelled = 0f
-    while (true) {
-        val event = awaitPointerEvent()
-        val pressed = event.changes.filter { it.pressed }
-        if (pressed.size < 2) break
-        val centroid = (pressed[0].position + pressed[1].position) / 2f
-        val distance = (pressed[0].position - pressed[1].position).getDistance()
-        val moved = (pressed[0].positionChange() + pressed[1].positionChange()) / 2f
-        travelled += moved.getDistance()
-        val previous = spread
-        spread = distance
-        if (previous != null && previous > 0f) {
-            val factor = distance / previous
-            zooming = zooming || abs(factor - 1f) > PINCH_START
-            if (zooming || view.scale() > 1f) {
-                view.pinch(centroid, if (zooming) factor else 1f, moved)
-            } else {
-                input.scroll(moved.x, moved.y)
-            }
-        }
-        event.changes.forEach { it.consume() }
-    }
-    waitUp()
-    return if (zooming) Float.POSITIVE_INFINITY else travelled
-}
-
-private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.waitUp() {
-    while (awaitPointerEvent().changes.any { it.pressed }) Unit
-}
-
-/** The round button that opens the menu; it can be dragged anywhere on the screen. */
+/** The accent arrow the phone draws at its own pointer; its tip is at [at]. */
 @Composable
-private fun MenuButton(onClick: () -> Unit) {
-    var moved by remember { mutableStateOf<Offset?>(null) }
-    val description = stringResource(R.string.viewer_menu)
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val density = LocalDensity.current
-        val size = with(density) { BUTTON.toPx() }
-        val margin = with(density) { Space.s16.toPx() }
-        val (right, bottom) = with(density) { maxWidth.toPx() - size - margin to maxHeight.toPx() - size - margin }
-        val at = moved ?: Offset(right, bottom * START_HEIGHT)
+private fun PointerArrow(at: Offset) {
+    val s = LinkTheme.scheme
+    val arrow =
+        remember(s.accent, s.view) {
+            ImageVector
+                .Builder("pointer", 24.dp, 24.dp, 24f, 24f)
+                .addPath(
+                    PathParser().parsePathString(ARROW).toNodes(),
+                    fill = SolidColor(s.accent),
+                    stroke = SolidColor(s.view),
+                    strokeLineWidth = ARROW_STROKE,
+                ).build()
+        }
+    val size = Tok.Phone.pointer.dp
+    Image(
+        rememberVectorPainter(arrow),
+        contentDescription = null,
+        modifier =
+            Modifier.size(size).layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                // The arrow's tip sits at (4, 2.5) of its 24 grid.
+                val tip = Offset(placeable.width * ARROW_TIP_X, placeable.height * ARROW_TIP_Y)
+                layout(placeable.width, placeable.height) { placeable.place((at.x - tip.x).roundToInt(), (at.y - tip.y).roundToInt()) }
+            },
+    )
+}
+
+/** Nothing for 150 ms, then a ring whose arc fills until the grab; a grab fills it and says what lift and move do. */
+@Composable
+private fun HoldRing(
+    at: Offset,
+    grabbed: Boolean,
+) {
+    val s = LinkTheme.scheme
+    val progress = remember(at) { Animatable(0f) }
+    LaunchedEffect(at) {
+        delay(RING_DELAY_MS)
+        progress.animateTo(1f, tween(RING_FILL_MS, easing = LinearEasing))
+    }
+    val d = Tok.Phone.holdRing.dp
+    Box(
+        Modifier
+            .size(d)
+            .centeredAt(at)
+            .alpha(if (grabbed || progress.value > 0f) 1f else 0f)
+            .drawBehind {
+                val w =
+                    Tok.Space.p2.dp
+                        .toPx()
+                val inset = Size(size.width - w, size.height - w)
+                val topLeft = Offset(w / 2, w / 2)
+                if (grabbed) drawCircle(s.accent.copy(alpha = Tok.Phone.glyphTint))
+                drawArc(s.accent.copy(alpha = Tok.Phone.offAlpha), 0f, FULL_TURN, false, topLeft, inset, style = Stroke(w))
+                drawArc(s.accent, -QUARTER_TURN, FULL_TURN * if (grabbed) 1f else progress.value, false, topLeft, inset, style = Stroke(w))
+            },
+    )
+}
+
+/** "Grabbed" over the finger while a hold drags. */
+@Composable
+private fun GrabTag(at: Offset) {
+    val s = LinkTheme.scheme
+    run {
+        val h = Tok.Size.controlL.dp
         Box(
             Modifier
-                .offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }
-                .size(BUTTON)
-                .shadow(6.dp, CircleShape)
-                .clip(CircleShape)
-                .background(LinkTheme.colors.surfacePrimary.copy(alpha = BUTTON_ALPHA))
-                .semantics { contentDescription = description }
-                .clickable(onClick = onClick)
-                .pointerInput(Unit) {
-                    detectDragGestures { change, drag ->
-                        change.consume()
-                        val from = moved ?: Offset(right, bottom * START_HEIGHT)
-                        moved = Offset((from.x + drag.x).coerceIn(margin, right), (from.y + drag.y).coerceIn(margin, bottom))
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                    val gap = (Tok.Size.controlL + Tok.Space.p4).dp.toPx()
+                    layout(placeable.width, placeable.height) {
+                        placeable.place((at.x - placeable.width / 2).roundToInt(), (at.y - gap - placeable.height).roundToInt())
                     }
-                },
+                }.height(h)
+                .clip(CircleShape)
+                .background(s.label1)
+                .padding(horizontal = Tok.Space.p16.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Glyph(Icons.Filled.Menu, LinkTheme.colors.textPrimary)
+            Text(
+                stringResource(R.string.viewer_grab),
+                LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.SemiBold),
+                color = s.view,
+                maxLines = 1,
+            )
         }
     }
 }
 
+private fun Modifier.centeredAt(at: Offset) =
+    layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        layout(placeable.width, placeable.height) {
+            placeable.place((at.x - placeable.width / 2).roundToInt(), (at.y - placeable.height / 2).roundToInt())
+        }
+    }
+
+/** The whole desktop small, with an accent box round the part on screen; it moves 1:1 with the camera. */
 @Composable
-private fun Menu(
-    state: ViewerState,
-    onTouchpad: (Boolean) -> Unit,
-    onKeyboard: () -> Unit,
-    onShortcuts: (() -> Unit)?,
-    onSource: (Int) -> Unit,
-    onMute: () -> Unit,
-    onDisconnect: () -> Unit,
+private fun Minimap(
+    lens: Lens,
+    camera: Camera,
     modifier: Modifier = Modifier,
 ) {
-    val window = state.sources.getOrNull(state.current)?.window == true
+    val s = LinkTheme.scheme
+    val outer = RoundedCornerShape(Tok.Radius.r12.dp)
+    Box(
+        modifier
+            .width(Tok.Phone.minimap.dp)
+            .elevation(Tok.Elevation.e3, Tok.Radius.r12.dp)
+            .clip(outer)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, outer)
+            .padding(Tok.Space.p4.dp),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(lens.desk.width / lens.desk.height)
+                .clip(RoundedCornerShape(Tok.Radius.r8.dp))
+                .background(s.fill2)
+                .drawBehind {
+                    val shown = lens.desk * camera.scale
+                    val l = (-camera.offset.x / shown.width).coerceIn(0f, 1f)
+                    val t = (-camera.offset.y / shown.height).coerceIn(0f, 1f)
+                    val r = ((lens.view.width - camera.offset.x) / shown.width).coerceIn(0f, 1f)
+                    val b = ((lens.view.height - camera.offset.y) / shown.height).coerceIn(0f, 1f)
+                    val w =
+                        Tok.Space.p2.dp
+                            .toPx()
+                    drawRoundRect(
+                        s.accent,
+                        Offset(l * size.width + w / 2, t * size.height + w / 2),
+                        Size((r - l) * size.width - w, (b - t) * size.height - w),
+                        CornerRadius(
+                            Tok.Radius.r4.dp
+                                .toPx() - w / 2,
+                        ),
+                        style = Stroke(w),
+                    )
+                },
+        )
+    }
+}
+
+/** The Remote's dotted pad under the picture, with three tips and the round keys; view only names itself. */
+@Composable
+private fun Pad(
+    input: RemoteActions,
+    deskName: String,
+    canInput: Boolean,
+    move: (Float, Float) -> Unit,
+    modifier: Modifier = Modifier,
+    keys: @Composable () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val touchpad = stringResource(R.string.remote_touchpad)
+    // The pointer moves on every touch event; the gesture keeps running across those recompositions.
+    val currentMove by rememberUpdatedState(move)
+    Box(modifier) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .dots(s.fill2)
+                .then(if (canInput) Modifier.pointerInput(input) { interpret(input) { dx, dy -> currentMove(dx, dy) } } else Modifier)
+                .semantics { contentDescription = touchpad },
+        )
+        if (canInput) {
+            Column(
+                Modifier.padding(start = Tok.Space.p24.dp, end = Tok.Space.p48.dp, top = Tok.Space.p24.dp),
+                verticalArrangement = Arrangement.spacedBy((Tok.Space.p4 + Tok.Space.p2).dp),
+            ) {
+                Tip("", stringResource(R.string.viewer_tip_picture), Icons.Screen)
+                Tip("1", stringResource(R.string.viewer_tip_pad))
+                Tip("2", stringResource(R.string.viewer_tip_two))
+            }
+        } else {
+            Text(
+                stringResource(R.string.viewer_off_pad, deskName),
+                LinkTheme.phoneType.body,
+                color = s.label2,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = Tok.Space.p40.dp),
+                align = TextAlign.Center,
+            )
+        }
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = Tok.Space.p24.dp),
+        ) { keys() }
+    }
+}
+
+/** The Viewer's keys in the pad's place: the composer, then Esc, Tab, the arrows, Enter and a held Ctrl. */
+@Composable
+private fun CompactKeys(
+    input: RemoteActions,
+    held: Set<String>,
+    deskName: String,
+    onType: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val r = Tok.Radius.r28.dp
+    val gap = Tok.Space.p4.dp
     Column(
         modifier
-            .widthIn(max = MENU_WIDTH)
             .fillMaxWidth()
-            .clip(Radius.hero)
-            .background(LinkTheme.colors.surfacePrimary)
-            .padding(Space.s16),
-        verticalArrangement = Arrangement.spacedBy(Space.s12),
+            .elevation(Tok.Elevation.e4, r)
+            .clip(RoundedCornerShape(topStart = r, topEnd = r))
+            .background(s.view)
+            .navigationBarsPadding()
+            .padding(start = Tok.Space.p12.dp, end = Tok.Space.p12.dp, top = Tok.Space.p8.dp, bottom = Tok.Phone.dockInset.dp),
+        verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
     ) {
-        SlidingPillControl(
-            listOf(stringResource(R.string.viewer_touchpad), stringResource(R.string.viewer_direct)),
-            if (state.direct) 1 else 0,
-            { onTouchpad(it == 0) },
+        Box(
+            Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = Tok.Space.p4.dp)
+                .size(Tok.Phone.grab.dp, Tok.Space.p4.dp)
+                .clip(CircleShape)
+                .background(s.fill3),
         )
-        if (window) Label(stringResource(R.string.viewer_window_touchpad), LinkTheme.type.bodyMedium, LinkTheme.colors.textSecondary)
-        if (state.sources.size > 1) {
-            Column {
-                state.sources.forEachIndexed { index, source ->
-                    Row(
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(Tok.Phone.composer.dp)
+                .clip(CircleShape)
+                .background(s.fill1)
+                .clickable(role = Role.Button, onClick = onType)
+                .padding(start = (Tok.Space.p16 + Tok.Space.p2).dp, end = Tok.Space.p16.dp),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.remote_type_on, deskName), t.body, color = s.label2, modifier = Modifier.weight(1f), maxLines = 1)
+            Symbol(Icons.Kbd, s.label2)
+        }
+        val rows =
+            listOf(
+                listOf(
+                    "Esc" to RemoteKey.Escape,
+                    "Tab" to RemoteKey.Tab,
+                    "↑" to RemoteKey.Up,
+                    stringResource(R.string.remote_enter) to RemoteKey.Enter,
+                ),
+                listOf(null, "←" to RemoteKey.Left, "↓" to RemoteKey.Down, "→" to RemoteKey.Right),
+            )
+        for (row in rows) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                for (key in row) {
+                    val ctrl = key == null
+                    val on = ctrl && "ctrl" in held
+                    Box(
                         Modifier
-                            .fillMaxWidth()
-                            .clip(Radius.button)
-                            .clickable { onSource(index) }
-                            .padding(horizontal = Space.s8, vertical = Space.s12),
-                        horizontalArrangement = Arrangement.spacedBy(Space.s12),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .weight(1f)
+                            .height(Tok.Phone.composer.dp)
+                            .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+                            .background(if (on) s.accent else s.fill1)
+                            .clickable(role = Role.Button) { if (key == null) input.hold("ctrl") else input.press(key.second) },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Label(source.name, LinkTheme.type.bodyLarge, LinkTheme.colors.textPrimary, Modifier.weight(1f))
-                        if (index == state.current) Glyph(Icons.Filled.Check, LinkTheme.colors.accent)
+                        Text(
+                            key?.first ?: "Ctrl",
+                            t.body.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (on) s.onAccent else s.label1,
+                            maxLines = 1,
+                        )
                     }
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-            PillButton(stringResource(R.string.viewer_keyboard), onKeyboard, Modifier.weight(1f), PillKind.Tonal)
-            if (onShortcuts != null) {
-                PillButton(stringResource(R.string.viewer_shortcuts), onShortcuts, Modifier.weight(1f), PillKind.Tonal)
-            }
-            PillButton(
-                stringResource(if (state.muted) R.string.viewer_unmute else R.string.viewer_mute),
-                onMute,
-                Modifier.weight(1f),
-                PillKind.Tonal,
-            )
-        }
-        PillButton(stringResource(R.string.viewer_disconnect), onDisconnect, Modifier.fillMaxWidth(), PillKind.Destructive)
     }
 }
 
+/** Typing under the picture: the composer, then the key strip right on the system keyboard. */
 @Composable
-private fun Ended(
-    reason: String,
-    failure: String?,
-    onBack: () -> Unit,
+private fun TypingBar(
+    input: RemoteActions,
+    held: Set<String>,
+    shortcuts: Boolean,
+    deskName: String,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(
-        Modifier.fillMaxSize().padding(Space.page),
-        verticalArrangement = Arrangement.spacedBy(Space.s16, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Label(stringResource(R.string.viewer_ended), LinkTheme.type.titleMedium, Color.White)
-        val why = failure ?: reason.takeIf { it.isNotEmpty() }
-        if (why != null) Label(why, LinkTheme.type.bodyMedium, Color.White.copy(alpha = SECONDARY))
-        PillButton(stringResource(R.string.viewer_back), onBack, kind = PillKind.Tonal)
+    Column(modifier.fillMaxWidth()) {
+        Composer(input, deskName, onClose, Modifier.padding(horizontal = Tok.Space.p12.dp, vertical = Tok.Space.p8.dp))
+        KeyStrip(input, held, shortcuts)
     }
 }
 
+/** The sources and the Mute / End sheets, over everything. */
 @Composable
-private fun Centered(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Label(text, LinkTheme.type.bodyMedium, Color.White.copy(alpha = SECONDARY))
+private fun BoxScope.Sheets(
+    state: ViewerState,
+    mode: ViewerMode,
+    go: (ViewerMode) -> Unit,
+    leave: () -> Unit,
+    onSelect: (Int) -> Unit,
+    onMute: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    Sheet(mode == ViewerMode.Sources, { go(ViewerMode.Pad) }, stringResource(R.string.viewer_sources)) {
+        GroupCard {
+            state.sources.forEachIndexed { index, source ->
+                ValueRow(
+                    source.name,
+                    icon = if (source.window) Icons.Maxi else Icons.Monitor,
+                    onClick = {
+                        onSelect(index)
+                        go(ViewerMode.Pad)
+                    },
+                ) { if (index == state.current) Symbol(Icons.Check, s.accentText, size = Tok.Size.symbolL.dp) }
+            }
+        }
+        if (state.window) Text(stringResource(R.string.viewer_window_touchpad), LinkTheme.phoneType.footnote, color = s.label2)
+    }
+    Sheet(mode == ViewerMode.More, { go(ViewerMode.Pad) }, stringResource(R.string.viewer_more)) {
+        GroupCard { SwitchRow(stringResource(R.string.viewer_sound), !state.muted, { onMute() }) }
+        Capsule(stringResource(R.string.viewer_end), leave, Modifier.fillMaxWidth(), kind = CapsuleKind.Danger, large = true)
     }
 }
 
-private val BUTTON = 52.dp
-private val MENU_WIDTH = 420.dp
-private const val BUTTON_ALPHA = 0.85f
-private const val START_HEIGHT = 0.6f
-private const val SCRIM = 0.4f
-private const val SECONDARY = 0.7f
-private const val MAX_ZOOM = 5f
-private const val PINCH_START = 0.08f
-private const val TAP_MS = 250L
+private const val CENTRE = 0.5f
+private const val PAD_SPEED = 1.5f
+private const val HOLD_MS = 400L
+private const val RING_DELAY_MS = 150L
+private const val RING_FILL_MS = 250
+private const val TENTHS = 10
+private const val WHOLE_SLACK = 1.01f
+private const val FULL_TURN = 360f
+private const val QUARTER_TURN = 90f
+private const val ARROW = "M4 2.5v17l4.6-4.4 3 6.6 3-1.4-3-6.4H18z"
+private const val ARROW_STROKE = 1.6f
+private const val ARROW_TIP_X = 4f / 24f
+private const val ARROW_TIP_Y = 2.5f / 24f

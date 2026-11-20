@@ -23,11 +23,10 @@ data class ViewerState(
     /** Why the desktop ended or refused it; the viewer then only offers to go back. */
     val stopped: String? = null,
     val failure: LinkFailure? = null,
-    val touchpad: Boolean = false,
     val muted: Boolean = false,
 ) {
-    /** A window's place on the desktop is unknown, so only the touchpad moves the pointer there. */
-    val direct get() = !touchpad && sources.getOrNull(current)?.window != true
+    /** A window's place on the desktop is unknown: the picture takes no clicks, and the pad moves the desktop's pointer. */
+    val window get() = sources.getOrNull(current)?.window == true
 }
 
 /**
@@ -86,8 +85,6 @@ class ViewerViewModel(
         if (source == _state.value.current) return
         viewModelScope.launch { repository.startRemote(desktopId, source) }
     }
-
-    fun setTouchpad(on: Boolean) = _state.update { it.copy(touchpad = on) }
 
     fun toggleMute() = _state.update { it.copy(muted = !it.muted) }
 

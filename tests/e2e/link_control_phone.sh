@@ -71,7 +71,7 @@ scroll_to() {
 shot() { adb exec-out screencap -p > "$OUT/screen-$1.png"; }
 
 adb shell am start -W --activity-clear-task -n "$PACKAGE/.MainActivity" > /dev/null
-tap_text home "Features and pairing"
+tap_text home "Connected, Wi-Fi" "Connected, Bluetooth"
 wait_for 30 "the phone got no commands" eval 'ui commands; [[ -n $(bounds commands "Touch the file") ]] || { adb shell input swipe 540 1700 540 900 400; false; }'
 shot device
 scroll_to remote "Touchpad and keyboard"
@@ -87,18 +87,19 @@ wait_for 10 "a tap did not click" has click left
 shot remote
 record "{\"step\":\"touchpad\",\"drag_px\":[300,200],\"moved\":[$DX,$DY],\"moves\":$(inputs move | wc -l),\"tap\":\"left click\"}"
 
-tap_text field "Type here"
+tap_text keys Keys
+tap_text field "Type on*"
 adb shell input text "hello"
 wait_for 10 "typing did not arrive as text: $(inputs text | tr '\n' '|')" eval '[[ $(inputs text | cut -d" " -f3- | tr -d "\n") == hello ]]'
 adb shell input keyevent KEYCODE_ENTER
 wait_for 10 "Send did not arrive as Enter" has key enter
 record "{\"step\":\"typing\",\"text\":\"$(inputs text | cut -d' ' -f3- | tr -d '\n')\",\"enter\":true}"
-# Back hides the keyboard first, if it shows; the screen's own back arrow then leaves.
+# Back hides the keyboard first, if it shows, which returns to the keys; the screen's own back arrow then leaves.
 adb shell dumpsys input_method | grep -q 'mInputShown=true' && adb shell input keyevent KEYCODE_BACK
 tap_text leave-remote Back
 
 scroll_to presenter "Presenter"
-tap_text next Next
+tap_text next "Tap anywhere for the next slide"
 wait_for 10 "Next did not send page-down" has key page-down
 before=$(inputs key | grep -c page-down)
 adb shell input keyevent KEYCODE_VOLUME_DOWN
@@ -107,6 +108,8 @@ adb shell input keyevent KEYCODE_VOLUME_UP
 wait_for 10 "volume up did not send page-up" has key page-up
 shot presenter
 record "{\"step\":\"presenter\",\"next\":\"page-down\",\"volume_down\":\"page-down\",\"volume_up\":\"page-up\"}"
+# Back leaves the presenter for the pad, then the Remote.
+adb shell input keyevent KEYCODE_BACK
 adb shell input keyevent KEYCODE_BACK
 
 scroll_to command "Touch the file"

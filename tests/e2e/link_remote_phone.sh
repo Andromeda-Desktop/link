@@ -103,7 +103,7 @@ pair_phone "$HOST:$RELAY_PORT"
 link SetGrant "'$ID'" "'input'" true > /dev/null
 adb logcat -c
 adb shell am start -W --activity-clear-task -n "$PACKAGE/.MainActivity" > /dev/null
-tap_text home "Features and pairing"
+tap_text home "Connected, Wi-Fi" "Connected, Bluetooth"
 for _ in $(seq 8); do
   ui device
   at=$(bounds device "Remote control")
@@ -120,30 +120,30 @@ at=$(bounds immersive "Got it")
 sleep 2 # real time: the first frames decode and paint
 shot viewer
 adb shell dumpsys window | grep mCurrentFocus | grep -q "$PACKAGE" || fail "Link is not in front: $(adb shell dumpsys window | grep mCurrentFocus)"
-# Portrait fits the landscape picture across the middle: the desktop there, the viewer's black above it.
+# Portrait shows the picture in the upper half, under the top bar; the page plane is above it.
 read -r W H <<< "$(magick identify -format '%w %h' "$OUT/viewer.png")"
 # mean Y: the brightness of a band a tenth of the screen high from Y down.
 mean() { magick "$OUT/viewer.png" -alpha off -crop "${W}x$(( H / 10 ))+0+$1" +repage -colorspace gray -format '%[fx:mean]' info:; }
-MIDDLE=$(mean $(( H * 45 / 100 ))) TOP=$(mean 0)
-awk -v m="$MIDDLE" -v t="$TOP" 'BEGIN {exit !(m > 0.05 && t < 0.02)}' || fail "the viewer shows no picture (middle $MIDDLE, top $TOP)"
+MIDDLE=$(mean $(( H * 25 / 100 ))) TOP=$(mean 0)
+awk -v m="$MIDDLE" -v t="$TOP" 'BEGIN {d = m - t; exit !(d > 0.05 || d < -0.05)}' || fail "the viewer shows no picture (picture $MIDDLE, page $TOP)"
 step "viewer: the desktop's picture shows ($(grep -o 'showing the screen at [0-9x]*' "$OUT/linkd.log" | head -1))"
 
-# The menu: every shared source; the input window opened on the second output, so that one is picked.
-ui menu-button
-adb shell input tap $(bounds menu-button "Remote control menu")
-wait_for 10 "the menu did not open" eval 'ui menu; [[ -n $(bounds menu Disconnect) ]]'
+# The sources sheet: every shared source; the input window opened on the second output, so that one is picked.
+tap_text sources-key "Monitor or window"
+wait_for 10 "the sources sheet did not open" eval 'ui menu; [[ -n $(bounds menu HEADLESS-1) ]]'
 shot menu
 for source in HEADLESS-1 HEADLESS-2 "Window 1"; do
-  [[ -n $(bounds menu "$source") ]] || fail "the menu does not list $source"
+  [[ -n $(bounds menu "$source") ]] || fail "the sources sheet does not list $source"
 done
 adb shell input tap $(bounds menu HEADLESS-2)
 wait_for 15 "picking the second output did not stream it" grep -q 'showing HEADLESS-2' "$OUT/session.log"
 sleep 2 # real time: the new stream's first frames paint
 shot viewer-2
-step "menu: lists HEADLESS-1, HEADLESS-2, and Window 1; picking HEADLESS-2 streams it"
+step "sources: lists HEADLESS-1, HEADLESS-2, and Window 1; picking HEADLESS-2 streams it"
 
-# Direct touch: a tap in the middle of the screen, which is the middle of the fitted picture.
-adb shell input tap $(( W / 2 )) $(( H / 2 ))
+# The picture: the camera starts on the pointer at the desktop's centre, so the picture's centre is the output's.
+ui picture
+adb shell input tap $(bounds picture "Desktop screen")
 wait_for 10 "the tap did not press the left button in the window" grep -q '"press", "button": 1' "$OUT/window.jsonl"
 wait_for 5 "the tap did not release the left button" grep -q '"release", "button": 1' "$OUT/window.jsonl"
 MOTION=$(grep '"motion"' "$OUT/window.jsonl" | tail -1)
@@ -152,13 +152,12 @@ import json, sys
 motion = json.loads(sys.argv[1])
 assert abs(motion["x"] - 640) < 40 and abs(motion["y"] - 360) < 40, motion
 PY
-step "direct touch: a tap at the picture's centre clicked at $MOTION"
+step "picture: a tap at the picture's centre clicked at $MOTION"
 
 sleep 2 # real time: sound crosses while the stream runs
-ui menu-button
-adb shell input tap $(bounds menu-button "Remote control menu")
-tap_text disconnect Disconnect
-wait_for 10 "Disconnect did not end the stream" grep -q 'remote control ended' "$OUT/session.log"
+tap_text more-key "Mute, end"
+tap_text end End
+wait_for 10 "End did not end the stream" grep -q 'remote control ended' "$OUT/session.log"
 SOUND=$(grep -o 'remote control ended: [0-9]* frames, [0-9]* sound packets' "$OUT/session.log" | tail -1)
 [[ $SOUND =~ ([0-9]+)\ sound ]] && (( BASH_REMATCH[1] > 20 )) || fail "too little sound crossed: $SOUND"
 adb logcat -d > "$OUT/phone.log"
