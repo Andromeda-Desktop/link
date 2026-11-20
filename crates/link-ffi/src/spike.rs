@@ -81,7 +81,8 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     } else {
         Dialer::on_path(&Identity::generate()?, socket.clone())?
     };
-    let phone = phone.tuned(|config| {
+    let cap_route = route.clone();
+    let phone = phone.tuned(move |config| {
         config.enable_segmentation_offload(!nogso);
         let inner: Arc<dyn quinn::congestion::ControllerFactory + Send + Sync> = if cubic {
             Arc::new(quinn::congestion::CubicConfig::default())
@@ -90,7 +91,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
         } else {
             Arc::new(quinn::congestion::BbrConfig::default())
         };
-        config.congestion_controller_factory(if cap { route.congestion(inner) } else { inner });
+        config.congestion_controller_factory(if cap { cap_route.congestion(inner) } else { inner });
         if win {
             config
                 .stream_receive_window((8u32 << 20).into())
@@ -114,14 +115,21 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
         !nogso
     )?;
 
+    let dial = || async {
+        if plain {
+            phone.dial(desktop, ServerPin::Any).await
+        } else {
+            phone.dial_route(route.clone(), ServerPin::Any).await
+        }
+    };
     let start = Instant::now();
-    let wifi = tokio::time::timeout(Duration::from_secs(3), phone.dial(desktop, ServerPin::Any)).await;
+    let wifi = tokio::time::timeout(Duration::from_secs(3), dial()).await;
     let (connection, mut on_link) = match (wifi, link) {
         (Ok(Ok(dialed)), _) => (dialed.connection, false),
         (_, Some(link)) => {
             route.set(Hop::Link(link));
             let start = Instant::now();
-            let dialed = phone.dial(desktop, ServerPin::Any).await?;
+            let dialed = dial().await?;
             writeln!(out, "wifi dial failed; l2cap dial {:?}", start.elapsed())?;
             (dialed.connection, true)
         }

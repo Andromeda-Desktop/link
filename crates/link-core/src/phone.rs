@@ -20,12 +20,12 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, Hop, PathSocket, link_address};
+use crate::path::{FdLink, Hop, PathSocket, Route, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::store::{Feature, Peer, Store};
 use crate::stream::{BluetoothOpener, FdStream, StreamDialer};
 use crate::tls::{self, ServerPin};
-use crate::transport::{Dialer, PHONE_KEEP_ALIVE};
+use crate::transport::{Dialed, Dialer, PHONE_KEEP_ALIVE};
 use crate::uri::PairingUri;
 use crate::wire::Connection;
 use crate::{Error, discovery};
@@ -48,6 +48,8 @@ pub struct Session {
     pub addr: Option<SocketAddr>,
     pub via: Via,
     pub resumed: bool,
+    /// The connection's path, for a QUIC session.
+    pub route: Option<Route>,
 }
 
 pub struct Phone {
@@ -167,10 +169,10 @@ impl Phone {
                 uri.bluetooth,
             ),
         };
-        let (connection, server, addr) = match reach::race(self.dialer(), &candidates, pin).await {
+        let (connection, server, addr, route) = match reach::race(self.dialer(), &candidates, pin).await {
             Ok((dialed, addr)) => {
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
-                (Connection::from(dialed.connection), server, Some(addr))
+                (Connection::from(dialed.connection), server, Some(addr), dialed.route)
             }
             Err(ip) => {
                 let (Some(address), Some(opener), ServerPin::Key(fingerprint)) =
@@ -191,7 +193,7 @@ impl Phone {
                     }
                 };
                 let (mux, server) = self.stream_dialer.connect(FdStream::new(fd)?, fingerprint, None).await?;
-                (Connection::Stream(mux), server, None)
+                (Connection::Stream(mux), server, None, None)
             }
         };
         let mut control = Control::open(&connection, self.tap.clone()).await?;
@@ -199,7 +201,7 @@ impl Phone {
         pair_as_client(&connection, &server, &mut control, &secret, method, self.identity.spki()).await?;
         let desktop = self.remember(&server, &hello, addr)?;
         let via = if addr.is_some() { Via::LastKnown } else { Via::Bluetooth };
-        Ok(Session { connection, control, desktop, addr, via, resumed: false })
+        Ok(Session { connection, control, desktop, addr, via, resumed: false, route })
     }
 
     /// Reaches a paired desktop. A desktop that answers `unpaired` is forgotten, as the protocol requires.
@@ -276,7 +278,7 @@ impl Phone {
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = self.remember(&desktop, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: false })
+        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: false, route: None })
     }
 
     /// The usual QUIC session, over `fd`, an LE L2CAP channel to the desktop.
@@ -284,10 +286,7 @@ impl Phone {
         self.links = self.links.wrapping_add(1);
         let to = link_address(self.links);
         let link = self.socket.add_link(FdLink::new(fd)?, to);
-        let route = self.socket.route_to(to);
-        route.set(Hop::Link(link));
-        let over_link = self.dialer.routed(&route, self.present.then_some(PHONE_KEEP_ALIVE));
-        let dialed = match over_link.dial(to, ServerPin::Key(peer.spki()?.fingerprint())).await {
+        let dialed = match self.dialer().dial_hop(Hop::Link(link), ServerPin::Key(peer.spki()?.fingerprint())).await {
             Ok(dialed) => dialed,
             Err(error) => {
                 self.socket.close_link(link);
@@ -295,16 +294,18 @@ impl Phone {
             }
         };
         self.socket.tie(link, dialed.connection.clone());
-        let connection = Connection::from(dialed.connection);
+        let Dialed { connection, resumed, route } = dialed;
+        let connection = Connection::from(connection);
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = self.remember(&peer.spki()?, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: dialed.resumed })
+        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed, route })
     }
 
     /// Finishes a session to a desktop reached over IP, by this phone or by a probe running beside it.
     pub async fn adopt_reached(&mut self, peer: &Peer, reached: Reached) -> Result<Session, Error> {
-        let connection = Connection::from(reached.dialed.connection);
+        let Dialed { connection, resumed, route } = reached.dialed;
+        let connection = Connection::from(connection);
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = if matches!(reached.via, Via::Hotspot | Via::WifiDirect) {
@@ -314,14 +315,7 @@ impl Phone {
         } else {
             self.remember(&peer.spki()?, &hello, Some(reached.addr))?
         };
-        Ok(Session {
-            connection,
-            control,
-            desktop,
-            addr: Some(reached.addr),
-            via: reached.via,
-            resumed: reached.dialed.resumed,
-        })
+        Ok(Session { connection, control, desktop, addr: Some(reached.addr), via: reached.via, resumed, route })
     }
 
     fn hello(&self) -> Hello {

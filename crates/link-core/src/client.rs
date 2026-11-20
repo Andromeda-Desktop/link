@@ -851,14 +851,14 @@ impl ClientActor {
     }
 
     async fn adopt(&mut self, session: phone::Session) -> SessionHandle {
-        let phone::Session { connection, control, desktop, addr, via, resumed } = session;
+        let phone::Session { connection, control, desktop, addr, via, resumed, route: path } = session;
         let id = desktop.id.clone();
         let route = Route {
             peer: id.clone(),
             events: self.session_events_tx.clone(),
             transfers: self.transfers.clone(),
             heartbeat: desktop.has(HEARTBEAT),
-            path: None,
+            path,
         };
         let (handle, actor) = session::session(connection, control, Role::Phone, route);
         let (task_id, stable_id) = (id.clone(), handle.stable_id());

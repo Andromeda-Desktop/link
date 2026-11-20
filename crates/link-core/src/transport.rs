@@ -10,7 +10,7 @@ use rustls::server::AlwaysResolvesServerRawPublicKeys;
 
 use crate::Error;
 use crate::identity::Identity;
-use crate::path::{PathSocket, Route};
+use crate::path::{Hop, PathSocket, Route};
 use crate::tls::{self, ServerPin};
 
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -29,13 +29,20 @@ const CONNECTION_WINDOW: u32 = 32 << 20;
 pub struct Dialed {
     pub connection: quinn::Connection,
     pub resumed: bool,
+    /// Where the connection's packets go, on a dialer with a [`PathSocket`].
+    pub route: Option<Route>,
 }
+
+type Tune = Arc<dyn Fn(&mut quinn::TransportConfig) + Send + Sync>;
 
 /// The phone side: one UDP socket and one TLS session cache for every desktop it talks to.
 #[derive(Clone)]
 pub struct Dialer {
     endpoint: quinn::Endpoint,
     config: quinn::ClientConfig,
+    path: Option<Arc<PathSocket>>,
+    keep_alive: Option<Duration>,
+    tune: Option<Tune>,
 }
 
 fn transport_config(keep_alive: Option<Duration>) -> Arc<quinn::TransportConfig> {
@@ -154,43 +161,27 @@ impl Dialer {
         let dual_stack = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0));
         let endpoint =
             quinn::Endpoint::client(dual_stack).or_else(|_| quinn::Endpoint::client(([0, 0, 0, 0], 0).into()))?;
-        Ok(Self { endpoint, config: client_config(identity)? })
+        Ok(Self { endpoint, config: client_config(identity)?, path: None, keep_alive: None, tune: None })
     }
 
     /// A dialer on a [`PathSocket`], so the phone moves one connection between UDP and message links.
     pub fn on_path(identity: &Identity, socket: Arc<PathSocket>) -> Result<Self, Error> {
         let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
         let endpoint =
-            quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, socket, runtime)?;
-        Ok(Self { endpoint, config: client_config(identity)? })
+            quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, socket.clone(), runtime)?;
+        Ok(Self { endpoint, config: client_config(identity)?, path: Some(socket), keep_alive: None, tune: None })
     }
 
-    /// The same socket and TLS session cache with Link's transport settings changed by `tune`.
+    /// The same socket and TLS session cache with Link's transport settings changed by `tune`, last.
     #[must_use]
-    pub fn tuned(&self, tune: impl FnOnce(&mut quinn::TransportConfig)) -> Self {
-        let mut transport = transport_config_value(None);
-        tune(&mut transport);
-        let mut config = self.config.clone();
-        config.transport_config(Arc::new(transport));
-        Self { endpoint: self.endpoint.clone(), config }
-    }
-
-    /// The same socket and TLS session cache, with a congestion controller that follows `route`.
-    #[must_use]
-    pub fn routed(&self, route: &Route, keep_alive: Option<Duration>) -> Self {
-        let mut transport = transport_config_value(keep_alive);
-        transport.congestion_controller_factory(route.congestion(bbr()));
-        let mut config = self.config.clone();
-        config.transport_config(Arc::new(transport));
-        Self { endpoint: self.endpoint.clone(), config }
+    pub fn tuned(&self, tune: impl Fn(&mut quinn::TransportConfig) + Send + Sync + 'static) -> Self {
+        Self { tune: Some(Arc::new(tune)), ..self.clone() }
     }
 
     /// The same socket and TLS session cache, dialling with keep-alive so the connection outlives idle periods.
     #[must_use]
     pub fn present(&self) -> Self {
-        let mut config = self.config.clone();
-        config.transport_config(transport_config(Some(PHONE_KEEP_ALIVE)));
-        Self { endpoint: self.endpoint.clone(), config }
+        Self { keep_alive: Some(PHONE_KEEP_ALIVE), ..self.clone() }
     }
 
     /// Waits until every connection has sent its close; call before the process exits.
@@ -203,19 +194,47 @@ impl Dialer {
         self.endpoint.local_addr().ok().map(|addr| addr.port())
     }
 
+    /// On a [`PathSocket`], dials `addr` at a fresh virtual address routed to it, so the connection can move.
     pub async fn dial(&self, addr: SocketAddr, pin: ServerPin) -> Result<Dialed, Error> {
-        let connecting = self.endpoint.connect_with(self.config.clone(), addr, &pin.server_name())?;
+        self.dial_hop(Hop::Udp(addr), pin).await
+    }
+
+    /// Dials over `hop`; a link hop needs a [`PathSocket`].
+    pub async fn dial_hop(&self, hop: Hop, pin: ServerPin) -> Result<Dialed, Error> {
+        match (&self.path, hop) {
+            (Some(socket), _) => self.dial_route(socket.route_new(hop), pin).await,
+            (None, Hop::Udp(addr)) => self.connect(addr, None, pin).await,
+            (None, Hop::Link(_)) => Err(std::io::Error::other("a link dial needs a path socket").into()),
+        }
+    }
+
+    /// Dials `route`'s peer, with a congestion controller that follows the route.
+    pub async fn dial_route(&self, route: Route, pin: ServerPin) -> Result<Dialed, Error> {
+        self.connect(route.peer(), Some(route), pin).await
+    }
+
+    async fn connect(&self, addr: SocketAddr, route: Option<Route>, pin: ServerPin) -> Result<Dialed, Error> {
+        let mut transport = transport_config_value(self.keep_alive);
+        if let Some(route) = &route {
+            transport.congestion_controller_factory(route.congestion(bbr()));
+        }
+        if let Some(tune) = &self.tune {
+            tune(&mut transport);
+        }
+        let mut config = self.config.clone();
+        config.transport_config(Arc::new(transport));
+        let connecting = self.endpoint.connect_with(config, addr, &pin.server_name())?;
         match connecting.into_0rtt() {
             Ok((connection, accepted)) => {
                 let resumed = tokio::time::timeout(CONNECT_TIMEOUT, accepted).await?;
                 if let Some(reason) = connection.close_reason() {
                     return Err(reason.into());
                 }
-                Ok(Dialed { connection, resumed })
+                Ok(Dialed { connection, resumed, route })
             }
             Err(connecting) => {
                 let connection = tokio::time::timeout(CONNECT_TIMEOUT, connecting).await??;
-                Ok(Dialed { connection, resumed: false })
+                Ok(Dialed { connection, resumed: false, route })
             }
         }
     }
@@ -233,7 +252,5 @@ fn client_config(identity: &Identity) -> Result<quinn::ClientConfig, Error> {
     crypto.enable_early_data = true;
     crypto.resumption = Resumption::store(Arc::new(ClientSessionMemoryCache::new(32)));
     let crypto = QuicClientConfig::try_from(crypto).map_err(|_| Error::BadKey)?;
-    let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    config.transport_config(transport_config(None));
-    Ok(config)
+    Ok(quinn::ClientConfig::new(Arc::new(crypto)))
 }

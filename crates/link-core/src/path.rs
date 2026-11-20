@@ -3,14 +3,14 @@
 //! that moves between UDP and a link migrates the same connection; the phone routes the desktop's address over the
 //! link it picks and reports the link's packets as coming from that address.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, IoSliceMut};
 use std::net::SocketAddr;
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker, ready};
 use std::time::Instant;
 
@@ -74,6 +74,8 @@ struct Slot {
     writable: Mutex<Option<Waker>>,
     /// Never sent; its receivers wake when the link ends and the slot drops.
     ended: watch::Sender<()>,
+    /// The address the link's packets arrive from.
+    addr: SocketAddr,
 }
 
 /// Where a route sends.
@@ -88,25 +90,28 @@ pub enum Hop {
 #[derive(Default)]
 struct Routes {
     to: HashMap<SocketAddr, Hop>,
-    /// The reverse of each `Hop::Udp`: UDP packets from the key reach quinn as from the value.
+    /// The reverse of each route: packets from the key (a UDP address or a link's own address) reach quinn as from
+    /// the value.
     from: HashMap<SocketAddr, SocketAddr>,
+    /// Virtual addresses handed out and not yet released, routed or not.
+    virtuals: HashSet<SocketAddr>,
 }
 
 impl Routes {
-    fn set(&mut self, peer: SocketAddr, via: Hop) {
-        if let Some(Hop::Udp(old)) = self.to.remove(&peer) {
-            self.from.remove(&old);
+    /// `source` is where the peer's packets arrive from over `via`.
+    fn set(&mut self, peer: SocketAddr, via: Hop, source: SocketAddr) {
+        self.remove(peer);
+        if source != peer {
+            self.from.insert(source, peer);
         }
-        match via {
-            Hop::Udp(addr) if canonical(addr) == peer => {}
-            Hop::Udp(addr) => {
-                self.from.insert(canonical(addr), peer);
-                self.to.insert(peer, via);
-            }
-            Hop::Link(_) => {
-                self.to.insert(peer, via);
-            }
+        if source != peer || matches!(via, Hop::Link(_)) {
+            self.to.insert(peer, via);
         }
+    }
+
+    fn remove(&mut self, peer: SocketAddr) {
+        self.to.remove(&peer);
+        self.from.retain(|_, to| *to != peer);
     }
 }
 
@@ -114,6 +119,7 @@ impl Routes {
 struct Shared {
     links: Mutex<Vec<Option<Arc<Slot>>>>,
     routes: Mutex<Routes>,
+    next_virtual: AtomicU16,
 }
 
 impl Shared {
@@ -127,7 +133,12 @@ impl Shared {
         if let Some(slot) = lock(&self.links).get_mut(id) {
             *slot = None;
         }
-        lock(&self.routes).to.retain(|_, via| *via != Hop::Link(id));
+        let mut routes = lock(&self.routes);
+        let peers: Vec<SocketAddr> =
+            routes.to.iter().filter(|&(_, via)| *via == Hop::Link(id)).map(|(&peer, _)| peer).collect();
+        for peer in peers {
+            routes.remove(peer);
+        }
     }
 }
 
@@ -208,7 +219,8 @@ impl PathSocket {
         let peer = self.native(peer);
         let link = Arc::new(link);
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE);
-        let slot = Arc::new(Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()) });
+        let slot =
+            Arc::new(Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()), addr: canonical(peer) });
         let ended = slot.ended.subscribe();
         let id = {
             let mut links = lock(&self.shared.links);
@@ -254,6 +266,25 @@ impl PathSocket {
     /// The path to `peer`, one connection's remote address, a real or a virtual one; UDP to `peer` until set.
     pub fn route_to(self: &Arc<Self>, peer: SocketAddr) -> Route {
         Route { socket: self.clone(), peer: canonical(peer), state: Arc::default() }
+    }
+
+    /// A route over `via` to a virtual address no other route uses. The address is freed when the last handle to
+    /// the route goes: its clones and the congestion controllers made from it, so it outlives its connection.
+    pub fn route_new(self: &Arc<Self>, via: Hop) -> Route {
+        let peer = loop {
+            let peer = virtual_address(self.shared.next_virtual.fetch_add(1, Ordering::Relaxed));
+            if lock(&self.shared.routes).virtuals.insert(peer) {
+                break peer;
+            }
+        };
+        let release = Release { shared: Arc::downgrade(&self.shared), peer };
+        let route = Route {
+            socket: self.clone(),
+            peer,
+            state: Arc::new(RouteState { _release: Some(release), ..Default::default() }),
+        };
+        route.set(via);
+        route
     }
 
     /// The link `peer` is reached over now.
@@ -332,12 +363,34 @@ struct RouteState {
     on_link: AtomicBool,
     /// Counts path changes; the controller starts afresh when it sees a new one.
     changes: AtomicU64,
+    /// Held for its drop.
+    _release: Option<Release>,
+}
+
+/// Frees a virtual address's route when its last user goes.
+struct Release {
+    shared: Weak<Shared>,
+    peer: SocketAddr,
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            let mut routes = lock(&shared.routes);
+            routes.remove(self.peer);
+            routes.virtuals.remove(&self.peer);
+        }
+    }
 }
 
 impl Route {
     /// Sends to the peer over `via`.
     pub fn set(&self, via: Hop) {
-        lock(&self.socket.shared.routes).set(self.peer, via);
+        let source = match via {
+            Hop::Udp(addr) => canonical(addr),
+            Hop::Link(id) => self.socket.shared.slot(id).map_or(self.peer, |slot| slot.addr),
+        };
+        lock(&self.socket.shared.routes).set(self.peer, via, source);
         self.state.on_link.store(matches!(via, Hop::Link(_)), Ordering::Relaxed);
         self.state.changes.fetch_add(1, Ordering::Relaxed);
     }
@@ -354,6 +407,12 @@ impl Route {
     /// Whether the connection runs over a link now.
     pub fn on_link(&self) -> bool {
         self.state.on_link.load(Ordering::Relaxed)
+    }
+
+    /// The address quinn reaches this route's peer at.
+    #[must_use]
+    pub fn peer(&self) -> SocketAddr {
+        self.peer
     }
 
     /// Where the peer is reached now; None once its link ended.
@@ -485,6 +544,7 @@ impl AsyncUdpSocket for PathSocket {
         {
             let len = packet.len().min(buf.len());
             buf[..len].copy_from_slice(&packet[..len]);
+            let addr = lock(&self.shared.routes).from.get(&canonical(addr)).copied().unwrap_or(addr);
             *first = RecvMeta { addr, len, stride: len, ..RecvMeta::default() };
             return Poll::Ready(Ok(1));
         }
@@ -547,7 +607,7 @@ mod tests {
     use super::*;
     use crate::identity::Identity;
     use crate::tls::ServerPin;
-    use crate::transport::{Dialer, PathServer, path_server_endpoint};
+    use crate::transport::{Dialed, Dialer, PathServer, path_server_endpoint};
     use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
     use std::time::Duration;
 
@@ -572,8 +632,7 @@ mod tests {
         let link_addr: SocketAddr = "10.255.255.1:1".parse()?;
         let desk_link = server_socket.add_link(FdLink::new(desk_end)?, link_addr);
         server_socket.route_to(link_addr).set(Hop::Link(desk_link));
-        let desktop_at = virtual_address(1);
-        let phone_link = phone_socket.add_link(FdLink::new(phone_end)?, desktop_at);
+        let phone_link = phone_socket.add_link(FdLink::new(phone_end)?, link_address(2));
 
         let desktop = Identity::generate()?;
         let server = path_server_endpoint(&desktop, server_socket.clone())?;
@@ -595,9 +654,8 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((got, seen_link, connection.remote_address()))
         });
 
-        let path = phone_socket.route_to(desktop_at);
-        path.set(Hop::Udp(server_addr));
-        let connection = dialer.dial(desktop_at, pin).await?.connection;
+        let Dialed { connection, route, .. } = dialer.dial(server_addr, pin).await?;
+        let path = route.ok_or("a path dialer gives a route")?;
         let mut send = connection.open_uni().await?;
         for at in (0..TOTAL).step_by(CHUNK) {
             if at == TOTAL / 8 {
@@ -628,8 +686,6 @@ mod tests {
         let (desk_addr, phone_addr) = (link_address(1), link_address(1));
         desktop.route_to(desk_addr).set(Hop::Link(desktop.add_link(FdLink::new(desk_end)?, desk_addr)));
         let phone_link = phone.add_link(FdLink::new(phone_end)?, phone_addr);
-        let route = phone.route_to(phone_addr);
-        route.set(Hop::Link(phone_link));
 
         let accepted = tokio::spawn(async move {
             let incoming = server.endpoint.accept().await.ok_or("no connection")?;
@@ -640,8 +696,7 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, connection))
         });
         let identity = Identity::generate()?;
-        let over_link = Dialer::on_path(&identity, phone.clone())?.routed(&route, None);
-        let dialed = over_link.dial(phone_addr, ServerPin::Any).await?;
+        let dialed = Dialer::on_path(&identity, phone.clone())?.dial_hop(Hop::Link(phone_link), ServerPin::Any).await?;
         phone.tie(phone_link, dialed.connection.clone());
         let (_server, on_desktop) = accepted.await??;
 
@@ -655,7 +710,7 @@ mod tests {
     async fn a_batch_that_does_not_fit_waits_whole() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
         let (tx, _rx) = mpsc::channel(QUEUE);
-        let slot = Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()) };
+        let slot = Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()), addr: link_address(1) };
         for _ in 0..QUEUE - 2 {
             slot.tx.try_send(vec![0])?;
         }
