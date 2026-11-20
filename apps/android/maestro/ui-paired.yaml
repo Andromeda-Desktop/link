@@ -10,9 +10,10 @@ appId: org.andromeda.link
     visible: "Connected, Wi-Fi"
     timeout: 20000
 - takeScreenshot: ${OUT}/${THEME}-home
-- tapOn: "Activity tab"
+- tapOn: "Activity"
 - takeScreenshot: ${OUT}/${THEME}-activity-empty
-- tapOn: "Settings tab"
+- pressKey: Back
+- tapOn: "Settings"
 - takeScreenshot: ${OUT}/${THEME}-settings
 - scrollUntilVisible:
     element: "Appearance"
@@ -43,13 +44,13 @@ appId: org.andromeda.link
 - tapOn: "Next"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-8-clipboard
 - tapOn: "Done"
-- tapOn: "Home tab"
+- runFlow: go-home.yaml
 - extendedWaitUntil:
-    visible: "Features and pairing"
+    visible: "Connected, .*"
     timeout: 10000
 # A capability report can arrive now and move Home's rows; tap once they stop.
 - waitForAnimationToEnd
-- tapOn: "Features and pairing"
+- tapOn: "Connected, .*"
 - extendedWaitUntil:
     visible: "What .* can do on this phone"
     timeout: 10000

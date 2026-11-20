@@ -78,7 +78,7 @@ import org.andromeda.link.ui.theme.Space
 /** The in-app picker: Photos, Videos, and Files over one selection, and a send bar once anything is picked. */
 @Composable
 fun BoxScope.PickerSheet(
-    viewModel: PickerViewModel,
+    viewModel: PickerActions,
     state: PickerState,
     desktopName: String,
     onSend: () -> Unit,
@@ -149,7 +149,7 @@ fun BoxScope.PickerSheet(
 
 @Composable
 private fun MediaGrid(
-    viewModel: PickerViewModel,
+    viewModel: PickerActions,
     state: PickerState,
     items: List<PhoneItem>,
 ) {
@@ -205,7 +205,7 @@ private fun MediaGrid(
 
 @Composable
 private fun FileList(
-    viewModel: PickerViewModel,
+    viewModel: PickerActions,
     state: PickerState,
 ) {
     val context = LocalContext.current

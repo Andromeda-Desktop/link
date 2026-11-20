@@ -14,136 +14,131 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.setProgress
-import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.DesktopPlayer
 import org.andromeda.link.core.domain.DesktopStatus
 import org.andromeda.link.core.domain.DesktopVolume
+import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.core.domain.MediaCommandKind
 import org.andromeda.link.core.domain.PlaybackState
-import org.andromeda.link.core.domain.RecentClip
 import org.andromeda.link.core.domain.TransferRecord
-import org.andromeda.link.files.MediaAccess
-import org.andromeda.link.files.MediaTile
-import org.andromeda.link.files.PhoneFiles
+import org.andromeda.link.files.PickerActions
 import org.andromeda.link.files.PickerSheet
 import org.andromeda.link.files.PickerTab
 import org.andromeda.link.files.PickerViewModel
-import org.andromeda.link.files.sendLabel
 import org.andromeda.link.onboarding.Grant
-import org.andromeda.link.ui.components.ConnectionOrb
-import org.andromeda.link.ui.components.DashboardCard
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.LinkIcons
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
 import org.andromeda.link.ui.components.PullRefresh
-import org.andromeda.link.ui.components.Readout
 import org.andromeda.link.ui.components.Screen
-import org.andromeda.link.ui.components.Section
+import org.andromeda.link.ui.kit.BottomFade
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.CapsuleSlider
+import org.andromeda.link.ui.kit.DragTrack
+import org.andromeda.link.ui.kit.GroupCard
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.OfferRow
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.PillKind
+import org.andromeda.link.ui.kit.RoundKey
+import org.andromeda.link.ui.kit.SectionTitle
+import org.andromeda.link.ui.kit.Separator
+import org.andromeda.link.ui.kit.Sheet
+import org.andromeda.link.ui.kit.SwitchRow
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Size
-import org.andromeda.link.ui.theme.Space
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import org.andromeda.link.ui.theme.Tok
+import org.andromeda.link.ui.theme.elevation
 
 /**
- * Home is the link itself: the desktop at the top of a line, and every action a stop on it. The line is the one bold
- * element (.agent/DESIGN.md, A3); recent transfers branch off it.
+ * Home is the one root (handoff `screens.home`, concept-c.html): the desktop's identity row, its state card or media
+ * card, the controls, and the floating dock with Lock, Touchpad, Presenter and Send.
  */
 @Composable
 fun HomeScreen(
-    viewModel: HomeViewModel,
-    picker: PickerViewModel,
+    container: AppContainer,
     /** Required grants not given yet, in setup order. */
     missing: List<Grant>,
-    /** How many grants setup requires, for the card's progress. */
-    required: Int,
-    /** Both grants automatic clipboard needs are given, so Home stops offering to set it up. */
+    /** Both grants automatic clipboard needs are given. */
     autoClipboard: Boolean,
     onPair: () -> Unit,
     onDesktop: (Desktop) -> Unit,
     onMedia: () -> Unit,
-    onSetup: () -> Unit,
+    /** Opens setup at one grant, from the fixes sheet. */
+    onFix: (Grant) -> Unit,
     onClipboardSetup: () -> Unit,
     onActivity: () -> Unit,
+    onSettings: () -> Unit,
     onRemote: (Desktop) -> Unit,
     onPresenter: (Desktop) -> Unit,
     onViewer: (Desktop) -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: HomeViewModel = viewModel { HomeViewModel(container.repository, container.presence, container.mirror, container.clipboard) },
+    picker: PickerViewModel = viewModel { PickerViewModel(container.files) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val pick = picker.state.collectAsStateWithLifecycle()
-    // Only open and close recompose Home; the sheet and the tray read the rest themselves.
+    val pickerActions: PickerActions = picker
+    val controls: DeskControls = viewModel
+    // Only open and close recompose Home; the sheet reads the rest itself.
     val pickOpen by remember { derivedStateOf { pick.value.open } }
     val context = LocalContext.current
     val resources = context.resources
@@ -181,359 +176,445 @@ fun HomeScreen(
         primary?.let { viewModel.sendFiles(it, selected.keys.toList()) }
         picker.clear()
     }
-    Screen(
-        title = null,
-        toast = toast,
-        onToastShown = viewModel::messageShown,
-        overlay = { if (primary != null) PickerSheet(picker, pick.value, primary.name, send) },
-    ) {
-        // Under the open picker, Home's photos and buttons would duplicate the sheet's for TalkBack.
-        val hidden = if (pickOpen) Modifier.clearAndSetSemantics {} else Modifier
-        PullRefresh(state.refreshing, viewModel::refresh, Modifier.fillMaxSize().then(hidden)) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = Space.s16)) {
-                if (primary == null) {
-                    EmptyLine(onPair)
-                    return@Column
-                }
-                val desk = state.desk
-                val player = desk.player(primary.id)?.takeIf { primary.connected }
-                val clipboardSetup = primary.sharing.clipboard && !autoClipboard
-                Section {
-                    HomeHeader(primary, desk.statuses[primary.id], state.refreshing, { viewModel.connect(primary) }) { onDesktop(primary) }
-                    if (state.desktops.size > 1) DesktopSwitcher(state.desktops, primary, viewModel::selectDesktop)
-                }
-                if (missing.isNotEmpty()) {
-                    Section { SetupCard(required - missing.size, required, onSetup) }
-                }
-                if (player != null) {
-                    Section {
-                        PlayerCard(player, onOpen = onMedia) { command, value -> viewModel.media(player, command, value) }
-                    }
-                }
-                Section {
-                    Controls(
+    val sendText = {
+        primary?.let { viewModel.sendClipboard(it, context.getSystemService(ClipboardManager::class.java).primaryClip) }
+        Unit
+    }
+    var fan by rememberSaveable { mutableStateOf(false) }
+    var sheet by rememberSaveable { mutableStateOf(HomeSheet.None) }
+    Box(modifier) {
+        Screen(
+            title = null,
+            toast = toast,
+            onToastShown = viewModel::messageShown,
+            overlay = {
+                if (primary != null) {
+                    // Under the open picker, Home's controls would duplicate the sheet's for TalkBack.
+                    val hidden = if (pickOpen) Modifier.clearAndSetSemantics {} else Modifier
+                    BottomFade(Tok.Phone.fadeDock.dp, Modifier.align(Alignment.BottomCenter))
+                    Dock(
                         primary,
-                        desk.can(primary.id),
-                        desk.statuses[primary.id],
-                        desk.volumes[primary.id],
-                        primary.id in state.ringing,
-                        viewModel,
-                        onDesktop,
-                        onRemote,
-                        onPresenter,
-                        onViewer,
+                        fan,
+                        { fan = it },
+                        onLock = { viewModel.lock(primary) },
+                        // Touchpad and Presenter need input on the desktop; without it they open the Device page to allow it.
+                        onRemote = { if (input(state, primary)) onRemote(primary) else onDesktop(primary) },
+                        onPresenter = { if (input(state, primary)) onPresenter(primary) else onDesktop(primary) },
+                        onPhotos = { picker.open(PickerTab.Photos) },
+                        onFiles = { picker.open(PickerTab.Files) },
+                        onText = sendText,
+                        modifier = Modifier.align(Alignment.BottomCenter).then(hidden),
+                    )
+                    PickerSheet(pickerActions, pick.value, primary.name, send)
+                    Sheet(
+                        sheet == HomeSheet.Fixes,
+                        { sheet = HomeSheet.None },
+                        pluralStringResource(R.plurals.home_fixes_title, missing.size, missing.size),
+                        subtitle = stringResource(R.string.home_fixes_body),
                     ) {
-                        viewModel.sendClipboard(primary, context.getSystemService(ClipboardManager::class.java).primaryClip)
+                        missing.forEachIndexed { index, grant ->
+                            if (index > 0) Separator()
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = Tok.Space.p4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(stringResource(grant.title()), LinkTheme.phoneType.headline, modifier = Modifier.weight(1f))
+                                Pill(stringResource(R.string.missing_turn_on), {
+                                    sheet = HomeSheet.None
+                                    onFix(grant)
+                                })
+                            }
+                        }
+                    }
+                    Sheet(sheet == HomeSheet.Desks, { sheet = HomeSheet.None }, stringResource(R.string.desktops_title)) {
+                        state.desktops.forEach { desktop ->
+                            DeskRow(desktop, desktop.id == primary.id) {
+                                sheet = HomeSheet.None
+                                viewModel.selectDesktop(desktop)
+                            }
+                        }
+                        DeskRow(null, false) {
+                            sheet = HomeSheet.None
+                            onPair()
+                        }
                     }
                 }
-                Section {
-                    if (primary.sharing.files) {
-                        SendTray(primary, picker, send)
-                    } else {
-                        Label(stringResource(R.string.home_files_disabled), LinkTheme.type.titleMedium)
+            },
+        ) {
+            if (primary == null) {
+                Empty(onPair)
+                return@Screen
+            }
+            val desk = state.desk
+            val status = desk.statuses[primary.id]
+            val live = primary.connected
+            val player = desk.player(primary.id)?.takeIf { live }
+            val hidden = if (pickOpen) Modifier.clearAndSetSemantics {} else Modifier
+            PullRefresh(state.refreshing, viewModel::refresh, Modifier.fillMaxSize().then(hidden)) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Phone.fadeDock.dp),
+                ) {
+                    item {
+                        IdentityRow(
+                            primary,
+                            state.refreshing,
+                            missing.size,
+                            onOpen = { if (state.desktops.size > 1) sheet = HomeSheet.Desks else onDesktop(primary) },
+                            onFixes = { sheet = HomeSheet.Fixes },
+                            onActivity = onActivity,
+                            onSettings = onSettings,
+                        )
                     }
-                }
-                Section {
-                    RecentList(primary, desk.transfers, desk.clips)
-                    Row(Modifier.padding(top = Space.s4)) {
-                        Spacer(Modifier.weight(1f))
-                        Label(
-                            stringResource(R.string.home_recent_all),
-                            LinkTheme.type.titleSmall,
-                            LinkTheme.colors.accentText,
-                            Modifier.clip(Radius.pill).clickable(role = Role.Button, onClick = onActivity).padding(Space.s8),
+                    if (!live) {
+                        item { StatusCard(primary, state.refreshing) { viewModel.connect(primary) } }
+                    } else if (player != null) {
+                        item {
+                            MediaCard(
+                                player,
+                                desk.volumes[primary.id],
+                                onOpen = onMedia,
+                                onVolume = { viewModel.setVolume(primary, it, unmute = true) },
+                            ) { command, value -> viewModel.media(player, command, value) }
+                        }
+                    }
+                    val offers = desk.transfers.filter { it.incoming == true && it.status in OFFER_STATUSES }
+                    if (live && offers.isNotEmpty()) {
+                        item {
+                            Offers(
+                                offers,
+                                onSave = viewModel::acceptTransfer,
+                                onDecline = viewModel::declineTransfer,
+                                onCancel = viewModel::cancelTransfer,
+                            )
+                        }
+                    }
+                    item {
+                        Controls(
+                            primary,
+                            desk.can(primary.id),
+                            status,
+                            desk.volumes[primary.id].takeIf { player == null },
+                            primary.id in state.ringing,
+                            autoClipboard,
+                            controls,
+                            onViewer = { onViewer(primary) },
+                            onClipboardSetup = onClipboardSetup,
                         )
                     }
                 }
-                if (missing.isEmpty() && clipboardSetup) {
-                    Section { MissingLine(stringResource(R.string.home_clipboard_setup), null, onClipboardSetup) }
-                }
-                Spacer(Modifier.height(Space.s32))
             }
         }
     }
 }
 
-/** Nothing paired: an empty desktop, the scan action, and this phone. */
-@Composable
-private fun EmptyLine(onPair: () -> Unit) {
-    Section {
-        DesktopTile(false, Modifier.padding(bottom = Space.s16))
-        Readout(stringResource(R.string.empty_desktop), LinkTheme.colors.textTertiary)
-        Label(stringResource(R.string.empty_scan_title), LinkTheme.type.hero, modifier = Modifier.padding(top = Space.s8))
-        Label(
-            stringResource(R.string.empty_scan_body),
-            LinkTheme.type.bodyLarge,
-            LinkTheme.colors.textSecondary,
-            Modifier.padding(top = Space.s12),
-        )
-        PillButton(stringResource(R.string.scan_action), onPair, Modifier.padding(top = Space.s24).fillMaxWidth())
-        Spacer(Modifier.height(Space.s48))
-    }
-    Section {
-        Label(stringResource(R.string.home_this_phone), LinkTheme.type.headlineLarge, modifier = Modifier.padding(top = Space.s4))
-        Label(stringResource(R.string.home_private_hint), LinkTheme.type.bodyMedium, LinkTheme.colors.textSecondary)
-    }
-}
+/** Which sheet covers Home; one at a time. */
+private enum class HomeSheet { None, Fixes, Desks }
 
-/** The 7% ink wash behind keys and buttons that sit on paper. */
+/** One desktop in the Desktops sheet (current = accent tint + check), or the Pair row when [desktop] is null. */
 @Composable
-private fun wash() = LinkTheme.colors.textPrimary.copy(alpha = 0.07f)
-
-/** The desktop as the line's top end: how it is reached, its name set large, its battery and lock, or when it was seen. */
-@Composable
-private fun HomeHeader(
-    desktop: Desktop,
-    status: DesktopStatus?,
-    refreshing: Boolean,
-    onConnect: () -> Unit,
-    onOpen: () -> Unit,
+private fun DeskRow(
+    desktop: Desktop?,
+    current: Boolean,
+    onClick: () -> Unit,
 ) {
-    val colors = LinkTheme.colors
-    val via =
-        when {
-            desktop.connected && desktop.bluetooth ->
-                stringResource(
-                    R.string.home_connected_via,
-                    stringResource(R.string.home_via_bluetooth),
-                )
-            desktop.connected -> stringResource(R.string.home_connected_via, stringResource(R.string.home_via_wifi))
-            refreshing -> stringResource(R.string.home_via_searching)
-            else -> disconnectedLine(desktop)
-        }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Spacer(Modifier.weight(1f))
-        val label = stringResource(R.string.desktop_open)
-        Box(
-            Modifier
-                .size(Size.touch)
-                .clip(Radius.pill)
-                .clickable(role = Role.Button, onClick = onOpen)
-                .semantics { contentDescription = label },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(Modifier.size(Size.iconContainer).clip(Radius.pill).background(wash()), contentAlignment = Alignment.Center) {
-                Glyph(Icons.Filled.Settings, colors.textSecondary, Size.icon - 4.dp)
-            }
-        }
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s16)) {
-        DesktopTile(desktop.connected)
-        Column(Modifier.weight(1f)) {
-            Label(desktop.name, LinkTheme.type.hero, maxLines = 2)
-            Row(
-                Modifier.padding(top = Space.s4),
-                horizontalArrangement = Arrangement.spacedBy(Space.s6),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ConnectionOrb(desktop.connected, size = Space.s16, working = refreshing)
-                Label(via, LinkTheme.type.titleSmall, if (desktop.connected) colors.accentText else colors.textTertiary)
-            }
-        }
-    }
-    val battery = status?.battery
-    val locked = status?.locked
-    if (battery != null || locked != null) {
-        val ink = if (desktop.connected) colors.textPrimary else colors.textTertiary
-        Row(Modifier.padding(top = Space.s16).height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.s12)) {
-            if (battery != null) {
-                StatTile(
-                    stringResource(R.string.home_battery, battery),
-                    stringResource(if (status.charging == true) R.string.home_battery_charging else R.string.home_battery_discharging),
-                    ink,
-                    Modifier.weight(1f),
-                ) { BatteryGlyph(battery) }
-            }
-            if (locked != null) {
-                StatTile(
-                    stringResource(if (locked) R.string.home_locked else R.string.home_unlocked),
-                    null,
-                    ink,
-                    Modifier.weight(1f),
-                ) { Glyph(if (locked) LinkIcons.Lock else LinkIcons.LockOpen, ink, Size.iconSmall) }
-            }
-        }
-    }
-    if (!desktop.connected && !desktop.paused) {
-        PillButton(stringResource(R.string.connect), onConnect, Modifier.padding(top = Space.s16), enabled = !refreshing)
-    }
-}
-
-/** The desktop's tile: its glyph on an accent wash while connected, on the plain wash otherwise. */
-@Composable
-private fun DesktopTile(
-    connected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LinkTheme.colors
-    Box(
-        modifier
-            .size(
-                DESKTOP_TILE,
-            ).clip(RoundedCornerShape(18.dp))
-            .background(if (connected) colors.accent.copy(alpha = 0.14f) else wash()),
-        contentAlignment = Alignment.Center,
-    ) {
-        Glyph(LinkIcons.Computer, if (connected) colors.accent else colors.textTertiary, Size.icon + 8.dp)
-    }
-}
-
-/** One of the header's stats: a glyph, a value, and an optional caption under them. */
-@Composable
-private fun StatTile(
-    value: String,
-    caption: String?,
-    ink: Color,
-    modifier: Modifier = Modifier,
-    glyph: @Composable () -> Unit,
-) {
-    Column(
-        modifier
-            .fillMaxHeight()
-            .clip(Radius.button)
-            .background(wash())
-            .padding(Space.s12),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Space.s8), verticalAlignment = Alignment.CenterVertically) {
-            glyph()
-            Label(value, LinkTheme.type.titleLarge, ink)
-        }
-        if (caption != null) Label(caption, LinkTheme.type.bodySmall, LinkTheme.colors.textSecondary, Modifier.padding(top = Space.s4))
-    }
-}
-
-@Composable
-private fun BatteryGlyph(percent: Int) {
-    val colors = LinkTheme.colors
-    Box(
-        Modifier
-            .size(22.dp, 11.dp)
-            .border(1.5.dp, colors.textSecondary, RoundedCornerShape(3.dp))
-            .padding(2.dp),
-    ) {
-        Box(
-            Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(percent / 100f)
-                .clip(Radius.micro)
-                .background(if (percent <= LOW_BATTERY) colors.warning else colors.success),
-        )
-    }
-}
-
-@Composable
-private fun DesktopSwitcher(
-    desktops: List<Desktop>,
-    primary: Desktop,
-    onSelect: (Desktop) -> Unit,
-) {
-    LazyRow(Modifier.padding(top = Space.s16), horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-        items(desktops, key = { it.id }) { desktop ->
-            val active = desktop.id == primary.id
-            Box(
-                Modifier
-                    .clip(Radius.pill)
-                    .border(1.dp, if (active) LinkTheme.colors.accent else LinkTheme.colors.borderPrimary, Radius.pill)
-                    .selectable(active, role = Role.Tab) { onSelect(desktop) }
-                    .padding(horizontal = Space.s16, vertical = Space.s10),
-            ) { Label(desktop.name, LinkTheme.type.titleSmall, maxLines = 1) }
-        }
-    }
-}
-
-/** The only card on Home: the desktop's player, with the position moving locally while it plays. */
-@Composable
-private fun PlayerCard(
-    shown: DesktopPlayer,
-    onOpen: () -> Unit,
-    onCommand: (MediaCommandKind, Long?) -> Unit,
-) {
-    val colors = LinkTheme.colors
-    val player = shown.player
-    val playing = player.state == PlaybackState.Playing
-    Column(
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    Row(
         Modifier
             .fillMaxWidth()
-            .clip(Radius.hero)
-            .background(colors.surfaceElevated)
-            .border(1.dp, colors.borderSecondary, Radius.hero)
-            .padding(Space.s14),
+            .heightIn(min = Tok.Phone.identity.dp)
+            .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+            .then(if (current) Modifier.background(s.accent.copy(alpha = Tok.Phone.chipTint)) else Modifier)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = if (current) Tok.Space.p12.dp else Tok.Space.p4.dp, vertical = Tok.Space.p8.dp),
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(Tok.Phone.deskGlyph.dp)
+                .clip(RoundedCornerShape(Tok.Radius.r12.dp))
+                .background(if (current) s.accent.copy(alpha = Tok.Phone.glyphTint) else s.fill1),
+            contentAlignment = Alignment.Center,
+        ) {
+            Symbol(if (desktop == null) Icons.Plus else Icons.Laptop, if (current || desktop == null) s.accentText else s.label2)
+        }
+        if (desktop == null) {
+            Text(stringResource(R.string.home_pair_desktop), t.headline, color = s.accentText, modifier = Modifier.weight(1f), maxLines = 1)
+            return@Row
+        }
+        Column(Modifier.weight(1f)) {
+            Text(desktop.name, t.headline, maxLines = 2)
+            Presence(desktop, refreshing = false, Modifier)
+        }
+        if (current) Symbol(Icons.Check, s.accentText)
+    }
+}
+
+/** The desktop: glyph, name (2 lines at most), presence and the fix chip; Activity and Settings keys at the end. */
+@Composable
+private fun IdentityRow(
+    desktop: Desktop,
+    refreshing: Boolean,
+    fixes: Int,
+    onOpen: () -> Unit,
+    onFixes: () -> Unit,
+    onActivity: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val live = desktop.connected
+    Row(Modifier.fillMaxWidth().padding(top = Tok.Space.p8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .weight(1f)
+                .heightIn(min = Tok.Phone.identity.dp)
+                .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+                .clickable(role = Role.Button, onClickLabel = stringResource(R.string.desktop_open), onClick = onOpen),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(Tok.Phone.glyph.dp)
+                    .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+                    .background(if (live) s.accent.copy(alpha = Tok.Phone.glyphTint) else s.fill1),
+                contentAlignment = Alignment.Center,
+            ) { Symbol(Icons.Laptop, if (live) s.accentText else s.label2, size = Tok.Size.controlS.dp + Tok.Space.p2.dp) }
+            Column(Modifier.weight(1f)) {
+                Text(desktop.name, t.title1, maxLines = 2)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp + Tok.Space.p2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Presence(desktop, refreshing, Modifier.weight(1f, fill = false))
+                    if (fixes > 0) FixChip(fixes, onFixes)
+                }
+            }
+        }
+        IconKey(Icons.Clock, stringResource(R.string.activity_title), onActivity)
+        IconKey(Icons.Gear, stringResource(R.string.settings_title), onSettings)
+    }
+}
+
+@Composable
+private fun Presence(
+    desktop: Desktop,
+    refreshing: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val s = LinkTheme.scheme
+    val dot = Tok.Space.p8.dp
+    val (mark, text) =
+        when {
+            desktop.connected ->
+                Modifier.background(s.success, CircleShape) to
+                    stringResource(
+                        R.string.home_connected_via,
+                        stringResource(if (desktop.bluetooth) R.string.home_via_bluetooth else R.string.home_via_wifi),
+                    )
+            refreshing -> Modifier.border(Tok.Space.p2.dp, s.warning, CircleShape) to stringResource(R.string.home_connecting)
+            desktop.paused -> null to stringResource(R.string.home_paused_short, desktop.name)
+            else -> Modifier.background(s.label3, CircleShape) to stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))
+        }
+    Row(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp + Tok.Space.p2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (mark != null) Box(Modifier.size(dot).then(mark)) else Symbol(Icons.Pause, s.label2, size = Tok.Size.symbol.dp - Tok.Space.p2.dp)
+        Text(text, LinkTheme.phoneType.footnote, color = s.label2, maxLines = 1)
+    }
+}
+
+@Composable
+private fun FixChip(
+    count: Int,
+    onClick: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val label = pluralStringResource(R.plurals.home_fixes, count, count)
+    Row(
+        Modifier
+            .height(Tok.Phone.fixChip.dp)
+            .clip(CircleShape)
+            .background(s.warning.copy(alpha = Tok.Phone.glyphTint))
+            .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
+            .padding(horizontal = Tok.Space.p8.dp),
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Symbol(Icons.Shield, s.warning, size = Tok.Size.symbol.dp - Tok.Space.p2.dp)
+        Text("$count", LinkTheme.phoneType.caption.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+    }
+}
+
+@Composable
+private fun IconKey(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(Tok.Phone.hit.dp)
+            .clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { Symbol(icon, LinkTheme.scheme.label1) }
+}
+
+/** Away or paused: what happened and, when away, Connect now. */
+@Composable
+private fun StatusCard(
+    desktop: Desktop,
+    refreshing: Boolean,
+    onConnect: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val shape = RoundedCornerShape(Tok.Radius.r16.dp)
+    Column(
+        Modifier
+            .padding(top = Tok.Space.p12.dp)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, shape)
+            .padding(Tok.Space.p16.dp),
+        verticalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
+    ) {
+        if (desktop.paused) {
+            Text(stringResource(R.string.home_paused_title, desktop.name), t.headline)
+            Text(stringResource(R.string.home_paused_body), t.footnote, color = s.label2)
+        } else {
+            Text(stringResource(R.string.home_away_title, desktop.name), t.headline)
+            Text(stringResource(R.string.home_away_body), t.footnote, color = s.label2)
+            Capsule(
+                stringResource(R.string.home_connect_now),
+                onConnect,
+                Modifier.padding(top = Tok.Space.p12.dp).alpha(if (refreshing) Tok.Phone.offAlpha else 1f),
+                kind = CapsuleKind.Primary,
+            )
+        }
+    }
+}
+
+/** Only while a player plays: art, title, artist, progress, previous / play / next, and the volume inside. */
+@Composable
+private fun MediaCard(
+    shown: DesktopPlayer,
+    volume: DesktopVolume?,
+    onOpen: () -> Unit,
+    onVolume: (Int) -> Unit,
+    onCommand: (MediaCommandKind, Long?) -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val player = shown.player
+    val playing = player.state == PlaybackState.Playing
+    val shape = RoundedCornerShape(Tok.Radius.r16.dp)
+    Column(
+        Modifier
+            .padding(top = Tok.Space.p12.dp)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, shape)
+            .padding(Tok.Space.p12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(
-                Modifier.weight(1f).clip(Radius.button).clickable(role = Role.Button, onClick = onOpen),
-                horizontalArrangement = Arrangement.spacedBy(Space.s12),
+                Modifier.weight(1f).clickable(role = Role.Button, onClick = onOpen),
+                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Artwork(player.artwork)
                 Column(Modifier.weight(1f)) {
-                    Label(player.title.ifEmpty { player.name }, LinkTheme.type.titleLarge, maxLines = 1)
-                    val by =
-                        if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
-                    Label(by, LinkTheme.type.bodyMedium, colors.textSecondary, maxLines = 1)
+                    Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
+                    val by = if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
+                    Text(by, t.footnote, color = s.label2, maxLines = 1)
+                    Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
+                        onCommand(MediaCommandKind.Seek, it)
+                    }
                 }
             }
-            MediaButton(LinkIcons.Previous, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can) {
+            MediaKey(Icons.Prev, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can) {
                 onCommand(MediaCommandKind.Previous, null)
             }
             val playLabel = stringResource(if (playing) R.string.home_pause else R.string.home_play)
             Box(
                 Modifier
-                    .size(Size.touch)
-                    .clip(Radius.pill)
-                    .background(colors.textPrimary)
+                    .size(Tok.Phone.hit.dp)
+                    .clip(CircleShape)
+                    .background(s.label1)
                     .clickable(enabled = MediaCommandKind.PlayPause in player.can, role = Role.Button) {
                         onCommand(MediaCommandKind.PlayPause, null)
                     }.semantics { contentDescription = playLabel },
                 contentAlignment = Alignment.Center,
-            ) { Glyph(if (playing) LinkIcons.Pause else Icons.Filled.PlayArrow, colors.surfacePrimary, Size.icon - 2.dp) }
-            MediaButton(LinkIcons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can) {
+            ) { Symbol(if (playing) Icons.Pause else Icons.Play, s.view, size = Tok.Size.symbolL.dp) }
+            MediaKey(Icons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can) {
                 onCommand(MediaCommandKind.Next, null)
             }
         }
-        Seek(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
-            onCommand(MediaCommandKind.Seek, it)
+        if (volume != null) {
+            CapsuleSlider(
+                volume.percent,
+                Icons.Vol,
+                stringResource(R.string.home_volume),
+                enabled = true,
+                modifier = Modifier.padding(top = Tok.Space.p8.dp),
+                large = false,
+                onChange = onVolume,
+            )
         }
     }
 }
 
 @Composable
-private fun Artwork(bytes: ByteArray?) {
-    val colors = LinkTheme.colors
-    // The last image stays up while the next one decodes.
-    val image =
-        produceState<ImageBitmap?>(null, bytes) {
-            value = withContext(Dispatchers.Default) { bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap() }
-        }.value
-    Box(Modifier.size(52.dp).clip(Radius.button).background(colors.accent.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
-        if (image != null) {
-            Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        } else {
-            Glyph(Icons.Filled.PlayArrow, colors.accentText)
-        }
-    }
-}
-
-@Composable
-private fun MediaButton(
+private fun MediaKey(
     icon: ImageVector,
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    val s = LinkTheme.scheme
     Box(
         Modifier
-            .size(40.dp)
-            .clip(Radius.pill)
+            .size(Tok.Phone.hit.dp)
+            .clip(CircleShape)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
-    ) { Glyph(icon, if (enabled) LinkTheme.colors.textSecondary else LinkTheme.colors.textDisabled, Size.icon - 2.dp) }
+    ) { Symbol(icon, if (enabled) s.label1 else s.label3, size = Tok.Size.symbolL.dp) }
 }
 
-/** Times either side of a thin bar; a tap or drag seeks, once the finger lifts. */
 @Composable
-private fun Seek(
+private fun Artwork(bytes: ByteArray?) {
+    val s = LinkTheme.scheme
+    // The last image stays up while the next one decodes.
+    val image =
+        produceState<ImageBitmap?>(null, bytes) {
+            value = withContext(Dispatchers.Default) { bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap() }
+        }.value
+    Box(
+        Modifier.size(Tok.Size.rowTwo.dp).clip(RoundedCornerShape(Tok.Radius.r12.dp)).background(s.fill2),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (image != null) {
+            Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        } else {
+            Symbol(Icons.Play, s.label2)
+        }
+    }
+}
+
+/** A hairline that shows how far the track is; a tap or drag seeks, once the finger lifts. */
+@Composable
+private fun Progress(
     positionMs: Long,
     lengthMs: Long?,
     receivedAt: Long,
@@ -541,624 +622,391 @@ private fun Seek(
     seekable: Boolean,
     onSeek: (Long) -> Unit,
 ) {
-    val colors = LinkTheme.colors
+    val s = LinkTheme.scheme
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(playing, receivedAt) {
-        // Playback has no change event on this side; the bar moves once a second while it plays.
+        // Playback has no change event on this side; the line moves once a second while it plays.
         while (playing) {
             now = SystemClock.elapsedRealtime()
             delay(1_000)
         }
     }
+    // A player without a length (a live stream, or media still loading) shows no line.
+    if (lengthMs == null) return
     val position = if (playing) positionMs + (now - receivedAt) else positionMs
-    // A player without a length (a live stream, or media still loading) cannot seek: only the elapsed time shows.
-    if (lengthMs == null) {
-        Label(clock(position), LinkTheme.type.labelMedium, colors.textTertiary, Modifier.padding(top = Space.s10))
-        return
-    }
     val fraction = (position.toFloat() / lengthMs.coerceAtLeast(1)).coerceIn(0f, 1f)
-    Row(
-        Modifier.padding(top = Space.s10),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.s10),
-    ) {
-        Label(clock((fraction * lengthMs).toLong()), LinkTheme.type.labelMedium, colors.textTertiary)
-        DragTrack(
-            fraction,
-            stringResource(R.string.media_position),
-            seekable,
-            Modifier.weight(1f).height(Size.touch),
-            onDone = { onSeek((it * lengthMs).toLong()) },
-        ) { value, dragging ->
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(Radius.pill)
-                    .background(colors.surfaceInput),
-            )
-            Box(
-                Modifier
-                    .fillMaxWidth(value)
-                    .height(3.dp)
-                    .clip(Radius.pill)
-                    .background(colors.accent),
-            )
-            if (seekable) {
-                Box(Modifier.fillMaxWidth(value), contentAlignment = Alignment.CenterEnd) {
-                    Box(Modifier.size(if (dragging) 16.dp else 12.dp).clip(Radius.pill).background(colors.accent))
-                }
-            }
-        }
-        Label(clock(lengthMs), LinkTheme.type.labelMedium, colors.textTertiary)
-    }
-}
-
-private fun clock(ms: Long): String {
-    val seconds = ms / 1000
-    return if (seconds >= 3600) {
-        "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
-    } else {
-        "%d:%02d".format(seconds / 60, seconds % 60)
-    }
-}
-
-/**
- * A horizontal track a finger taps or drags to a value from 0 to 1, reported once when the finger lifts; [draw] shows
- * the moving value. Accessibility services set it through its progress range.
- */
-@Composable
-private fun DragTrack(
-    value: Float,
-    label: String,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onDone: (Float) -> Unit = {},
-    onChange: ((Float) -> Unit)? = null,
-    draw: @Composable (value: Float, dragging: Boolean) -> Unit,
-) {
-    var pending by remember { mutableStateOf<Float?>(null) }
-    val done by rememberUpdatedState<(Float) -> Unit> {
-        pending = it
-        onDone(it)
-    }
-    val change by rememberUpdatedState(onChange)
-    var dragging by remember { mutableStateOf<Float?>(null) }
-    var sentAt by remember { mutableLongStateOf(0L) }
-    var width by remember { mutableIntStateOf(1) }
-    // The set value stays shown until a report comes close to it, so an older report does not pull the track back.
-    LaunchedEffect(pending, value) {
-        val target = pending ?: return@LaunchedEffect
-        if (abs(value - target) > SETTLED) delay(SETTLE_MS)
-        pending = null
-    }
-    val shown = (dragging ?: pending ?: value).coerceIn(0f, 1f)
-    val at = { x: Float -> (x / width).coerceIn(0f, 1f) }
-    val input =
-        if (enabled) {
-            Modifier
-                .pointerInput(Unit) { detectTapGestures { done(at(it.x)) } }
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { dragging = at(it.x) },
-                        onDragEnd = {
-                            dragging?.let(done)
-                            dragging = null
-                        },
-                        onDragCancel = { dragging = null },
-                    ) { event, _ ->
-                        val now = at(event.position.x)
-                        dragging = now
-                        val send = change
-                        if (send != null && event.uptimeMillis - sentAt >= LIVE_MS) {
-                            sentAt = event.uptimeMillis
-                            pending = now
-                            send(now)
-                        }
-                    }
-                }
-        } else {
-            Modifier
-        }
-    Box(
-        modifier
-            .onSizeChanged { width = it.width.coerceAtLeast(1) }
-            .semantics {
-                contentDescription = label
-                progressBarRangeInfo = ProgressBarRangeInfo(shown, 0f..1f)
-                if (enabled) {
-                    setProgress { target ->
-                        done(target.coerceIn(0f, 1f))
-                        true
-                    }
-                }
-            }.then(input),
-        contentAlignment = Alignment.CenterStart,
-    ) { draw(shown, dragging != null) }
-}
-
-/** Volume, brightness, and the keys: what this phone can do to the desktop now. */
-@Composable
-private fun Controls(
-    desktop: Desktop,
-    /** Null when the desktop does not list its capabilities. */
-    capabilities: Set<String>?,
-    status: DesktopStatus?,
-    volume: DesktopVolume?,
-    ringing: Boolean,
-    viewModel: HomeViewModel,
-    onDesktop: (Desktop) -> Unit,
-    onRemote: (Desktop) -> Unit,
-    onPresenter: (Desktop) -> Unit,
-    onViewer: (Desktop) -> Unit,
-    onClipboard: () -> Unit,
-) {
-    val can = capabilities.orEmpty()
-    val granted = CAN_CONTROL in can
-    // As on the Device page: a desktop that does not list its capabilities hides nothing.
-    val input = capabilities?.contains(CAN_INPUT) ?: true
-    val live = desktop.connected
-    var confirmLock by remember { mutableStateOf(false) }
-    Column {
-        val dim = Modifier.alpha(if (live) 1f else DISABLED)
-        volume?.let { volume ->
-            LevelSlider(
-                if (volume.muted) LinkIcons.Muted else LinkIcons.Ring,
-                stringResource(R.string.home_volume),
-                volume.percent,
-                live && granted,
-                dim,
-                onIcon = { viewModel.setMuted(desktop, !volume.muted) },
-            ) { viewModel.setVolume(desktop, it, unmute = volume.muted) }
-        }
-        val brightness = status?.brightness
-        if (brightness != null && "brightness" in can) {
-            LevelSlider(LinkIcons.Brightness, stringResource(R.string.home_brightness), brightness, live && granted, dim) {
-                viewModel.setBrightness(desktop, it)
-            }
-        }
-        val system = { capability: String -> if (capability in can) (if (granted) KeyState.Off else KeyState.NotAllowed) else null }
-        val shared = { on: Boolean -> if (on) KeyState.Off else KeyState.NotAllowed }
-        val keys =
-            listOfNotNull(
-                system("lock")?.let { Key(LinkIcons.Lock, R.string.key_lock, it) { confirmLock = true } },
-                system("suspend")?.let { Key(LinkIcons.Sleep, R.string.key_sleep, it) { viewModel.sleep(desktop) } },
-                system("screen-off")?.let { Key(LinkIcons.ScreenOff, R.string.key_screen_off, it) { viewModel.screenOff(desktop) } },
-                Key(
-                    LinkIcons.Ring,
-                    if (ringing) R.string.key_ringing else R.string.key_ring,
-                    if (ringing) KeyState.On else shared(desktop.sharing.ring),
-                ) { viewModel.ring(desktop, !ringing) },
-                Key(LinkIcons.Touchpad, R.string.key_touchpad, shared(desktop.control && input)) { onRemote(desktop) },
-                if (CAN_SCREEN in can) {
-                    Key(LinkIcons.Computer, R.string.key_screen, shared(desktop.control && input)) { onViewer(desktop) }
-                } else {
-                    null
-                },
-                Key(LinkIcons.Presenter, R.string.key_presenter, shared(desktop.control && input)) { onPresenter(desktop) },
-                // A clip sent while the desktop is away waits for it, so Clipboard works offline too.
-                Key(LinkIcons.Clipboard, R.string.key_clipboard, shared(desktop.sharing.clipboard), offline = true, onClick = onClipboard),
-                system("dnd")?.let { allowed ->
-                    val on = status?.dnd == true
-                    Key(LinkIcons.Dnd, R.string.key_dnd, if (on && allowed == KeyState.Off) KeyState.On else allowed) {
-                        viewModel.setDnd(desktop, !on)
-                    }
-                },
-            )
-        Column(Modifier.padding(top = Space.s20), verticalArrangement = Arrangement.spacedBy(Space.s16)) {
-            keys.chunked(KEYS_PER_ROW).forEach { row ->
-                Row {
-                    row.forEach { key ->
-                        KeyButton(key, live || key.offline, Modifier.weight(1f)) {
-                            if (key.state ==
-                                KeyState.NotAllowed
-                            ) {
-                                onDesktop(desktop)
-                            } else {
-                                key.onClick()
-                            }
-                        }
-                    }
-                    repeat(KEYS_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
-        val controlOff = !granted && can.any { it in SYSTEM_CAPABILITIES }
-        val inputOff = desktop.control && !input
-        if (controlOff) {
-            Label(
-                stringResource(R.string.home_control_off, desktop.name),
-                LinkTheme.type.bodyMedium,
-                LinkTheme.colors.textSecondary,
-                Modifier.padding(top = Space.s14),
-            )
-        }
-        if (inputOff) {
-            Label(
-                stringResource(R.string.home_input_off, desktop.name),
-                LinkTheme.type.bodyMedium,
-                LinkTheme.colors.textSecondary,
-                Modifier.padding(top = Space.s14),
-            )
-        }
-        if (controlOff || inputOff) {
-            Label(
-                stringResource(R.string.home_allow_on, desktop.name),
-                LinkTheme.type.titleSmall,
-                LinkTheme.colors.accentText,
-                Modifier
-                    .padding(top = Space.s4)
-                    .clip(Radius.button)
-                    .clickable(role = Role.Button) { onDesktop(desktop) }
-                    .padding(vertical = Space.s8),
-            )
-        }
-        if (confirmLock) {
-            Dialog(onDismissRequest = { confirmLock = false }) {
-                DashboardCard(Modifier.fillMaxWidth()) {
-                    Label(stringResource(R.string.home_lock_title, desktop.name), LinkTheme.type.headlineLarge)
-                    PillButton(
-                        stringResource(R.string.key_lock),
-                        {
-                            confirmLock = false
-                            viewModel.lock(desktop)
-                        },
-                        Modifier.fillMaxWidth(),
-                        PillKind.Filled,
-                    )
-                    PillButton(stringResource(R.string.cancel), { confirmLock = false }, Modifier.fillMaxWidth(), PillKind.Quiet)
-                }
-            }
-        }
-    }
-}
-
-private enum class KeyState { Off, On, NotAllowed }
-
-private class Key(
-    val icon: ImageVector,
-    val label: Int,
-    val state: KeyState,
-    val offline: Boolean = false,
-    val onClick: () -> Unit,
-)
-
-@Composable
-private fun KeyButton(
-    key: Key,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val colors = LinkTheme.colors
-    val label = stringResource(key.label)
-    val off = key.state == KeyState.NotAllowed
-    val on = key.state == KeyState.On
-    val notAllowed = stringResource(R.string.home_key_not_allowed)
-    Column(
-        modifier
-            .alpha(if (enabled) 1f else DISABLED)
-            .clip(Radius.list)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics(mergeDescendants = true) { if (off) stateDescription = notAllowed }
-            .padding(vertical = Space.s4),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Space.s6),
-    ) {
-        val shape = RoundedCornerShape(18.dp)
-        Box(
-            Modifier
-                .size(54.dp)
-                .clip(shape)
-                .then(
-                    when {
-                        on -> Modifier.background(colors.accent)
-                        off -> Modifier.border(1.5.dp, colors.borderPrimary, shape)
-                        else -> Modifier.background(wash())
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Glyph(
-                key.icon,
-                if (on) {
-                    colors.onAccent
-                } else if (off) {
-                    colors.textDisabled
-                } else {
-                    colors.textPrimary
-                },
-                Size.icon - 2.dp,
-            )
-        }
-        Label(
-            label,
-            if (on) LinkTheme.type.labelLarge else LinkTheme.type.bodySmall,
-            if (off) {
-                colors.textDisabled
-            } else if (on) {
-                colors.textPrimary
-            } else {
-                colors.textSecondary
-            },
-            maxLines = 1,
-        )
-    }
-}
-
-/** A 52 dp track the finger drags: solid accent up to the value, the icon riding in the fill, the number at the end. */
-@Composable
-private fun LevelSlider(
-    icon: ImageVector,
-    label: String,
-    percent: Int,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    /** Tapping the icon, as mute; null when the icon is only a label. */
-    onIcon: (() -> Unit)? = null,
-    onSet: (Int) -> Unit,
-) {
-    val colors = LinkTheme.colors
-    val shape = RoundedCornerShape(16.dp)
+    val line = Tok.Space.p2.dp + 1.dp
     DragTrack(
-        percent / 100f,
-        label,
-        enabled,
-        modifier
-            .padding(top = Space.s8)
-            .fillMaxWidth()
-            .height(52.dp)
-            .clip(shape)
-            .background(colors.surfaceInput),
-        onDone = { onSet((it * 100).roundToInt()) },
-        onChange = { onSet((it * 100).roundToInt()) },
+        fraction,
+        stringResource(R.string.media_position),
+        seekable,
+        Modifier.fillMaxWidth().height(Tok.Size.controlS.dp),
+        onDone = { onSeek((it * lengthMs).toLong()) },
     ) { value, _ ->
         Box(
             Modifier
-                .fillMaxHeight()
-                .widthIn(min = 52.dp)
-                .fillMaxWidth(value)
-                .clip(shape)
-                .background(if (enabled) colors.accent else colors.textDisabled),
+                .fillMaxWidth()
+                .height(line)
+                .clip(CircleShape)
+                .background(s.fill2),
         )
-        Row(Modifier.fillMaxWidth().padding(horizontal = Space.s16), verticalAlignment = Alignment.CenterVertically) {
-            val tap =
-                if (onIcon != null && enabled) {
-                    Modifier
-                        .clip(
-                            Radius.pill,
-                        ).clickable(role = Role.Button, onClickLabel = stringResource(R.string.home_mute), onClick = onIcon)
-                } else {
-                    Modifier
-                }
-            Box(tap.size(36.dp), contentAlignment = Alignment.Center) { Glyph(icon, colors.onAccent, Size.icon - 4.dp) }
-            Spacer(Modifier.weight(1f))
-            Label("${(value * 100).roundToInt()}", LinkTheme.type.titleMedium, colors.textSecondary)
-        }
-    }
-}
-
-/** Where things leave the phone: recent photos to tap, the picker's tabs, and Send once anything is picked. */
-@Composable
-private fun SendTray(
-    desktop: Desktop,
-    picker: PickerViewModel,
-    onSend: () -> Unit,
-) {
-    val pick by picker.state.collectAsStateWithLifecycle()
-    val colors = LinkTheme.colors
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { picker.refresh() }
-    Label(stringResource(R.string.home_send_to, desktop.name), LinkTheme.type.titleMedium)
-    if (pick.access == MediaAccess.None) {
-        Row(
-            Modifier
-                .padding(top = Space.s12)
-                .fillMaxWidth()
-                .clip(Radius.list)
-                .background(wash())
-                .clickable { ask.launch(PhoneFiles.mediaPermissions) }
-                .padding(Space.s16),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Label(stringResource(R.string.recent_allow), LinkTheme.type.bodyMedium, colors.textSecondary, Modifier.weight(1f))
-            Label(stringResource(R.string.picker_media_allow), LinkTheme.type.titleSmall, colors.accentText)
-        }
-    } else if (pick.photos.isNotEmpty()) {
-        LazyRow(Modifier.padding(top = Space.s12), horizontalArrangement = Arrangement.spacedBy(Space.s6)) {
-            items(pick.photos.take(RECENT), key = { it.key }) { item ->
-                MediaTile(item, pick.selected.keys.indexOf(item.key), picker::thumbnail, Modifier.size(76.dp)) { picker.toggle(item) }
-            }
-        }
-    }
-    Row(Modifier.padding(top = Space.s12), horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-        listOf(
-            Triple(PickerTab.Photos, R.string.picker_photos, LinkIcons.Photo),
-            Triple(PickerTab.Videos, R.string.picker_videos, LinkIcons.Video),
-            Triple(PickerTab.Files, R.string.picker_files, LinkIcons.Folder),
-        ).forEach { (tab, label, icon) ->
-            Row(
-                Modifier
-                    .weight(1f)
-                    .height(Size.touch)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(wash())
-                    .clickable(role = Role.Button) { picker.open(tab) },
-                horizontalArrangement = Arrangement.spacedBy(Space.s8, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Glyph(icon, colors.textPrimary, Size.iconSmall + 2.dp)
-                Label(stringResource(label), LinkTheme.type.titleMedium, maxLines = 1)
-            }
-        }
-    }
-    if (pick.selected.isNotEmpty()) {
-        PillButton(sendLabel(pick.selected), onSend, Modifier.padding(top = Space.s12).fillMaxWidth(), icon = LinkIcons.Upload)
-    }
-}
-
-/** One recent thing that crossed the link, newest first; [time] is Unix milliseconds. */
-private data class Crossed(
-    val name: String,
-    val detail: String,
-    val time: Long,
-)
-
-/** The last three transfers and clips with this desktop, each branching off the line. */
-@Composable
-private fun RecentList(
-    desktop: Desktop,
-    transfers: List<TransferRecord>,
-    clips: List<RecentClip>,
-) {
-    val context = LocalContext.current
-    val resources = context.resources
-    val colors = LinkTheme.colors
-    Label(stringResource(R.string.home_recent), LinkTheme.type.titleMedium)
-    val recent =
-        remember(desktop.id, desktop.name, transfers, clips, resources) {
-            val sent =
-                transfers
-                    .filter { it.desktopName == desktop.name && it.files.isNotEmpty() }
-                    .map { record ->
-                        val first = record.files.first().name
-                        val more = record.files.size - 1
-                        val name = if (more > 0) resources.getQuantityString(R.plurals.recent_more_files, more, first, more) else first
-                        val size = Formatter.formatShortFileSize(context, record.files.sumOf { it.size })
-                        val failed = record.status !in LIVE_STATUSES
-                        val detail =
-                            when {
-                                failed && record.incoming == true -> resources.getString(R.string.recent_not_received)
-                                failed -> resources.getString(R.string.recent_failed)
-                                record.incoming == true -> resources.getString(R.string.recent_received, size)
-                                else -> resources.getString(R.string.recent_sent, size)
-                            }
-                        Crossed(name, detail, record.time)
-                    }
-            val copied =
-                clips
-                    .filter { it.desktopId == null || it.desktopId == desktop.id }
-                    .map { clip ->
-                        Crossed(
-                            clip.text
-                                ?.lines()
-                                ?.firstOrNull { it.isNotBlank() }
-                                ?.trim() ?: resources.getString(R.string.recent_image),
-                            resources.getString(
-                                if (clip.incoming) R.string.recent_copied_from else R.string.recent_copied_to,
-                                desktop.name,
-                            ),
-                            clip.time,
-                        )
-                    }
-            (sent + copied).sortedByDescending { it.time }.take(RECENT_ITEMS)
-        }
-    if (recent.isEmpty()) {
-        Label(stringResource(R.string.home_recent_empty), LinkTheme.type.bodyMedium, colors.textSecondary, Modifier.padding(top = Space.s8))
-        return
-    }
-    val now = System.currentTimeMillis()
-    recent.forEach { item ->
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = Space.s12),
-            horizontalArrangement = Arrangement.spacedBy(Space.s12),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Label(item.name, LinkTheme.type.bodyLarge, maxLines = 1)
-                Label(item.detail, LinkTheme.type.bodySmall, colors.textTertiary)
-            }
-            Label(
-                DateUtils
-                    .getRelativeTimeSpanString(
-                        item.time,
-                        now,
-                        DateUtils.MINUTE_IN_MILLIS,
-                        DateUtils.FORMAT_ABBREV_RELATIVE,
-                    ).toString(),
-                LinkTheme.type.bodySmall,
-                colors.textTertiary,
-            )
-        }
-    }
-}
-
-/** The setup card on Home while required grants are missing; it has no close, so it stays until setup is done. */
-@Composable
-private fun SetupCard(
-    done: Int,
-    total: Int,
-    onContinue: () -> Unit,
-) {
-    val colors = LinkTheme.colors
-    DashboardCard(Modifier.fillMaxWidth(), onClick = onContinue) {
-        Label(stringResource(R.string.setup_card_title), LinkTheme.type.titleMedium, modifier = Modifier.padding(top = Space.s8))
-        Label(pluralStringResource(R.plurals.setup_card_progress, total, done, total), LinkTheme.type.bodyMedium, colors.textSecondary)
         Box(
             Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(Radius.pill)
-                .background(colors.surfacePrimary),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth(done.toFloat() / total)
-                    .height(6.dp)
-                    .clip(Radius.pill)
-                    .background(colors.accent),
+                .fillMaxWidth(value)
+                .height(line)
+                .clip(CircleShape)
+                .background(s.label1),
+        )
+    }
+}
+
+/** Offered and moving files in one view card: Save + decline while offered, progress + cancel while moving. */
+@Composable
+private fun Offers(
+    offers: List<TransferRecord>,
+    onSave: (String) -> Unit,
+    onDecline: (String) -> Unit,
+    onCancel: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    GroupCard(Modifier.padding(top = Tok.Space.p12.dp)) {
+        offers.forEachIndexed { index, offer ->
+            if (index > 0) Separator()
+            val first =
+                offer.files
+                    .firstOrNull()
+                    ?.name
+                    .orEmpty()
+            val name = pluralStringResource(R.plurals.offer_files, offer.files.size, first, offer.files.size - 1)
+            val size = Formatter.formatShortFileSize(context, offer.total.takeIf { it > 0 } ?: offer.files.sumOf { it.size })
+            val moving = offer.status == STATUS_MOVING
+            if (moving) {
+                val fraction = if (offer.total > 0) offer.bytes.toFloat() / offer.total else 0f
+                OfferRow(
+                    Icons.File,
+                    name,
+                    stringResource(R.string.offer_progress, (fraction * 100).toInt(), size),
+                    nameLines = if (offer.files.size > 1) 2 else 1,
+                    progress = fraction,
+                    dismissLabel = stringResource(R.string.cancel),
+                    onDismiss = { onCancel(offer.transferId) },
+                )
+            } else {
+                OfferRow(
+                    Icons.File,
+                    name,
+                    stringResource(R.string.offer_from, offer.desktopName, size),
+                    nameLines = if (offer.files.size > 1) 2 else 1,
+                    pill = { Pill(stringResource(R.string.offer_save), { onSave(offer.transferId) }, kind = PillKind.Primary) },
+                    dismissLabel = stringResource(R.string.offer_decline),
+                    onDismiss = { onDecline(offer.transferId) },
+                )
+            }
+        }
+    }
+}
+
+/** Do not disturb and Clipboard sync, Sleep | Screen off, the Screen mode tile, then the volume and brightness. */
+@Composable
+private fun Controls(
+    desktop: Desktop,
+    /** Null when the desktop does not list its capabilities: it then hides nothing. */
+    capabilities: Set<String>?,
+    status: DesktopStatus?,
+    /** Null while the media card holds the volume. */
+    volume: DesktopVolume?,
+    ringing: Boolean,
+    autoClipboard: Boolean,
+    controls: DeskControls,
+    onViewer: () -> Unit,
+    onClipboardSetup: () -> Unit,
+) {
+    val live = desktop.connected
+    val has = { capability: String -> capabilities?.contains(capability) ?: true }
+    val granted = CAN_CONTROL in capabilities.orEmpty()
+    val control = live && granted
+    Column(Modifier.alpha(if (live) 1f else Tok.Phone.offAlpha)) {
+        SectionTitle(stringResource(R.string.home_controls))
+        GroupCard {
+            if (has("dnd")) {
+                SwitchRow(
+                    stringResource(R.string.key_dnd),
+                    status?.dnd == true,
+                    { controls.setDnd(desktop, it) },
+                    icon = Icons.Dnd,
+                    enabled = control,
+                )
+                Separator()
+            }
+            val clipboard = desktop.sharing.clipboard && autoClipboard
+            SwitchRow(stringResource(R.string.home_clipboard_sync), clipboard, { on ->
+                when {
+                    on && !autoClipboard -> onClipboardSetup()
+                    else -> controls.setSharing(desktop, Feature.Clipboard, on)
+                }
+            }, icon = Icons.Clip)
+            Separator()
+            // Not in the mockup (deviations.md): ringing is a state the desktop reports, so it is a switch row.
+            SwitchRow(
+                stringResource(R.string.key_ring),
+                ringing,
+                { controls.ring(desktop, it) },
+                icon = Icons.Ring,
+                enabled =
+                    live && desktop.sharing.ring,
             )
         }
-        Row(Modifier.fillMaxWidth().padding(bottom = Space.s8)) {
-            Spacer(Modifier.weight(1f))
-            PillButton(stringResource(R.string.setup_card_continue), onContinue)
+        if (has("suspend") || has("screen-off")) {
+            SplitCapsule(
+                listOfNotNull(
+                    if (has("suspend")) Triple(Icons.Moon, stringResource(R.string.key_sleep)) { controls.sleep(desktop) } else null,
+                    if (has(
+                            "screen-off",
+                        )
+                    ) {
+                        Triple(Icons.Monoff, stringResource(R.string.key_screen_off)) { controls.screenOff(desktop) }
+                    } else {
+                        null
+                    },
+                ),
+                enabled = control,
+            )
+        }
+        if (has(
+                CAN_SCREEN,
+            )
+        ) {
+            ModeTile(Icons.Screen, stringResource(R.string.key_screen), stringResource(R.string.home_screen_hint), live, onViewer)
+        }
+        if (volume != null) {
+            CapsuleSlider(
+                volume.percent,
+                Icons.Vol,
+                stringResource(R.string.home_volume),
+                control,
+                { controls.setVolume(desktop, it, unmute = volume.muted) },
+                Modifier.padding(top = Tok.Space.p8.dp),
+            )
+        }
+        val brightness = status?.brightness
+        if (brightness != null && has("brightness")) {
+            CapsuleSlider(
+                brightness,
+                Icons.Sun,
+                stringResource(R.string.home_brightness),
+                control,
+                { controls.setBrightness(desktop, it) },
+                Modifier.padding(top = Tok.Space.p8.dp),
+            )
+        }
+    }
+}
+
+/** One-shot actions that belong together in one fill_1 capsule, split by a separator. */
+@Composable
+private fun SplitCapsule(
+    actions: List<Triple<ImageVector, String, () -> Unit>>,
+    enabled: Boolean,
+) {
+    val s = LinkTheme.scheme
+    Row(
+        Modifier
+            .padding(top = Tok.Space.p8.dp)
+            .fillMaxWidth()
+            .height(Tok.Phone.hit.dp)
+            .clip(CircleShape)
+            .background(s.fill1),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        actions.forEachIndexed { index, (icon, label, onClick) ->
+            if (index > 0) Box(Modifier.width(Dp.Hairline).height(Tok.Size.controlS.dp).background(s.separator))
+            Row(
+                Modifier.weight(1f).fillMaxHeight().clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Symbol(icon, s.label1, size = Tok.Size.symbolL.dp)
+                Text(label, LinkTheme.phoneType.body.copy(fontWeight = FontWeight.Medium), maxLines = 1)
+            }
+        }
+    }
+}
+
+/** A tile that opens a full screen: symbol without a circle, name, hint, chevron. */
+@Composable
+private fun ModeTile(
+    icon: ImageVector,
+    name: String,
+    hint: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    Row(
+        Modifier
+            .padding(top = Tok.Space.p8.dp)
+            .fillMaxWidth()
+            .heightIn(min = Tok.Phone.identity.dp)
+            .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+            .background(s.fill1)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(Tok.Space.p12.dp),
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Symbol(icon, s.label1, modifier = Modifier.padding(horizontal = Tok.Space.p4.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, t.headline, maxLines = 1)
+            Text(hint, t.footnote, color = s.label2, maxLines = 1)
+        }
+        Symbol(Icons.Chev, s.label3, size = Tok.Size.symbolL.dp)
+    }
+}
+
+/** Floating over the page: Lock, Touchpad, Presenter, and Send, which opens Photos | Files | Text above it. */
+@Composable
+private fun Dock(
+    desktop: Desktop,
+    fan: Boolean,
+    onFan: (Boolean) -> Unit,
+    onLock: () -> Unit,
+    onRemote: () -> Unit,
+    onPresenter: () -> Unit,
+    onPhotos: () -> Unit,
+    onFiles: () -> Unit,
+    onText: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val live = desktop.connected
+    var confirmLock by remember { mutableStateOf(false) }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Phone.dockInset.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+    ) {
+        if (fan) {
+            val pick = { action: () -> Unit ->
+                onFan(false)
+                action()
+            }
+            FanCapsule(Icons.Photo, stringResource(R.string.picker_photos)) { pick(onPhotos) }
+            FanCapsule(Icons.File, stringResource(R.string.picker_files)) { pick(onFiles) }
+            FanCapsule(Icons.Msg, stringResource(R.string.home_send_text)) { pick(onText) }
+            Spacer(Modifier.height(Tok.Space.p4.dp))
+        }
+        Row(
+            Modifier.fillMaxWidth().alpha(if (live) 1f else Tok.Phone.offAlpha),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp + Tok.Space.p2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RoundKey(Icons.Lock, stringResource(R.string.key_lock), { confirmLock = true })
+            RoundKey(Icons.Pad, stringResource(R.string.key_touchpad), onRemote)
+            RoundKey(Icons.Pres, stringResource(R.string.key_presenter), onPresenter)
+            Capsule(
+                stringResource(if (fan) R.string.home_send_close else R.string.home_send),
+                { onFan(!fan) },
+                Modifier.weight(1f).elevation(Tok.Elevation.e3, Tok.Size.rowTwo.dp / 2),
+                icon = if (fan) Icons.X else Icons.Send,
+                kind = if (fan) CapsuleKind.Dark else CapsuleKind.Primary,
+                large = true,
+            )
+        }
+    }
+    if (confirmLock) {
+        LockDialog(desktop.name, { confirmLock = false }) {
+            confirmLock = false
+            onLock()
         }
     }
 }
 
 @Composable
-private fun MissingLine(
-    title: String,
-    detail: String?,
+private fun FanCapsule(
+    icon: ImageVector,
+    label: String,
     onClick: () -> Unit,
 ) {
-    // The press shape reaches 8 dp past the text on each side, so its corners do not cut the text's first letter.
-    Column(
+    val s = LinkTheme.scheme
+    Row(
         Modifier
-            .offset(x = -Space.s8)
-            .fillMaxWidth()
-            .clip(Radius.list)
+            .height(Tok.Phone.hit.dp)
+            .elevation(Tok.Elevation.e3, Tok.Phone.hit.dp / 2)
+            .clip(CircleShape)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, CircleShape)
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = Space.s8, vertical = Space.s4),
+            .padding(horizontal = Tok.Space.p16.dp + Tok.Space.p2.dp),
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Label(title, LinkTheme.type.titleMedium)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-            if (detail != null) Label(detail, LinkTheme.type.bodyMedium, LinkTheme.colors.textSecondary)
-            Label(stringResource(R.string.missing_turn_on), LinkTheme.type.titleSmall, LinkTheme.colors.accentText)
+        Symbol(icon, s.label1, size = Tok.Size.symbolL.dp)
+        Text(label, LinkTheme.phoneType.headline, maxLines = 1)
+    }
+}
+
+@Composable
+private fun LockDialog(
+    name: String,
+    onDismiss: () -> Unit,
+    onLock: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .elevation(Tok.Elevation.e4, Tok.Radius.r28.dp)
+                .clip(RoundedCornerShape(Tok.Radius.r28.dp))
+                .background(s.view)
+                .padding(Tok.Space.p20.dp),
+            verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+        ) {
+            Text(
+                stringResource(R.string.home_lock_title, name),
+                LinkTheme.phoneType.title3,
+                modifier = Modifier.padding(bottom = Tok.Space.p8.dp),
+            )
+            Capsule(stringResource(R.string.key_lock), onLock, Modifier.fillMaxWidth(), kind = CapsuleKind.Primary)
+            Capsule(stringResource(R.string.cancel), onDismiss, Modifier.fillMaxWidth())
         }
     }
 }
+
+/** Nothing paired: the empty glyph, what Link does, and Scan. */
+@Composable
+private fun Empty(onPair: () -> Unit) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    Column(Modifier.fillMaxSize().padding(horizontal = Tok.Space.p16.dp), verticalArrangement = Arrangement.Center) {
+        Box(
+            Modifier.size(Tok.Phone.glyph.dp).clip(RoundedCornerShape(Tok.Radius.r16.dp)).background(s.fill1),
+            contentAlignment = Alignment.Center,
+        ) { Symbol(Icons.Laptop, s.label2, size = Tok.Size.controlS.dp + Tok.Space.p2.dp) }
+        Text(stringResource(R.string.empty_scan_title), t.large, modifier = Modifier.padding(top = Tok.Space.p16.dp))
+        Text(stringResource(R.string.empty_scan_body), t.paragraph, color = s.label2, modifier = Modifier.padding(top = Tok.Space.p8.dp))
+        Capsule(
+            stringResource(R.string.scan_action),
+            onPair,
+            Modifier.padding(top = Tok.Space.p24.dp).fillMaxWidth(),
+            kind = CapsuleKind.Primary,
+            large = true,
+        )
+        Text(stringResource(R.string.home_private_hint), t.footnote, color = s.label2, modifier = Modifier.padding(top = Tok.Space.p16.dp))
+    }
+}
+
+private const val STATUS_MOVING = "transferring"
+private val OFFER_STATUSES = setOf("offered", STATUS_MOVING)
+
+private fun input(
+    state: HomeState,
+    desktop: Desktop,
+) = desktop.control && (state.desk.can(desktop.id)?.contains(CAN_INPUT) ?: true)
 
 @Composable
 internal fun lastSeen(unixSeconds: Long): String =
     if (unixSeconds <= 0) stringResource(R.string.last_seen_never) else DateUtils.getRelativeTimeSpanString(unixSeconds * 1000).toString()
-
-private val SYSTEM_CAPABILITIES = setOf("lock", "suspend", "screen-off", "brightness", "dnd", "volume")
-private const val KEYS_PER_ROW = 4
-private const val RECENT_ITEMS = 3
-
-/** Transfer statuses that are not a failure; the rest (failed, declined, no-space, ...) are. */
-private val DESKTOP_TILE = 64.dp
-
-/** A level slider sends at most this often while dragged, ms. */
-private const val LIVE_MS = 100L
-
-/** How close a report must come to the set value to count as caught up, as a fraction of the track. */
-private const val SETTLED = 0.02f
-
-/** How long the set value is shown when no report comes close to it, ms. */
-private const val SETTLE_MS = 1500L
-private val LIVE_STATUSES = setOf("offered", "transferring", "done")
-private const val LOW_BATTERY = 15
-private const val DISABLED = 0.45f
-private const val RECENT = 12

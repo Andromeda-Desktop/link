@@ -1,5 +1,6 @@
 package org.andromeda.link.files
 
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,10 +28,32 @@ data class PickerState(
     val selected: Map<String, PhoneItem> = emptyMap(),
 )
 
+/** What the picker sheet does; the screen collects [PickerViewModel.state] and passes only these down. */
+interface PickerActions {
+    fun refresh()
+
+    fun close()
+
+    fun select(tab: PickerTab)
+
+    fun toggle(item: PhoneItem)
+
+    fun openFolder(folder: File)
+
+    fun up(): Boolean
+
+    suspend fun thumbnail(
+        item: PhoneItem,
+        px: Int,
+    ): ImageBitmap?
+}
+
 /** Home's recent-photos row and the picker sheet share one selection, so a pick in either sends with the other. */
+
 class PickerViewModel(
     private val files: PhoneFiles,
-) : ViewModel() {
+) : ViewModel(),
+    PickerActions {
     private val _state = MutableStateFlow(PickerState())
     val state: StateFlow<PickerState> = _state.asStateFlow()
 
@@ -39,7 +62,7 @@ class PickerViewModel(
     }
 
     /** Rereads what Android grants and the lists behind it; called on resume, since grants change in Settings. */
-    fun refresh() {
+    override fun refresh() {
         viewModelScope.launch {
             val access = files.mediaAccess()
             val allFiles = files.allFiles()
@@ -52,11 +75,11 @@ class PickerViewModel(
 
     fun open(tab: PickerTab) = _state.update { it.copy(open = true, tab = tab) }
 
-    fun close() = _state.update { it.copy(open = false) }
+    override fun close() = _state.update { it.copy(open = false) }
 
-    fun select(tab: PickerTab) = _state.update { it.copy(tab = tab) }
+    override fun select(tab: PickerTab) = _state.update { it.copy(tab = tab) }
 
-    fun toggle(item: PhoneItem) =
+    override fun toggle(item: PhoneItem) =
         _state.update { state ->
             val next = if (item.key in state.selected) state.selected - item.key else state.selected + (item.key to item)
             state.copy(selected = next)
@@ -64,7 +87,7 @@ class PickerViewModel(
 
     fun clear() = _state.update { it.copy(selected = emptyMap(), open = false) }
 
-    fun openFolder(folder: File) {
+    override fun openFolder(folder: File) {
         viewModelScope.launch {
             val entries = files.list(folder)
             val path =
@@ -79,15 +102,15 @@ class PickerViewModel(
     }
 
     /** Up one folder; false at the storage root, so Back closes the sheet instead. */
-    fun up(): Boolean {
+    override fun up(): Boolean {
         val current = _state.value.folder ?: return false
         if (current == files.root) return false
         openFolder(current.parentFile ?: return false)
         return true
     }
 
-    suspend fun thumbnail(
+    override suspend fun thumbnail(
         item: PhoneItem,
         px: Int,
-    ) = files.thumbnail(item, px)
+    ): ImageBitmap? = files.thumbnail(item, px)
 }

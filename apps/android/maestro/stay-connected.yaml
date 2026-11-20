@@ -5,13 +5,11 @@ appId: org.andromeda.link
     # An explicit list: by default Maestro grants every permission, READ_LOGS too, which kills the app.
     permissions: { notifications: allow }
     stopApp: false
-- tapOn: "Settings tab"
+- tapOn: "Settings"
 # The switch row under the "Stay connected" heading.
 - scrollUntilVisible:
     element: "Keep the link open"
 - tapOn:
     text: "Keep the link open"
 - takeScreenshot: ${OUT}/stay-connected-${STAY}
-- tapOn:
-    text: "Home tab"
-    optional: true
+- runFlow: go-home.yaml

@@ -8,7 +8,7 @@
 # and playerctl's pause, next, and seek reach that session; a desktop MPRIS test player shows on the app's Media
 # screen, and its Pause button reaches it as PlayPause. D-Bus Ring rings the phone on the alarm stream at full volume
 # while Do Not Disturb (priority, which lets alarms through) stays as the user set it, and a stop puts the volume back; the app's Ring desktop reaches D-Bus as
-# RingRequested, and once the desktop reports ringing, Stop ringing stops it. `adb emu gsm call` from a contact reaches
+# RingRequested, and once the desktop reports ringing, the Ring switch on Home stops it. `adb emu gsm call` from a contact reaches
 # D-Bus Call with the contact's name and number, pauses the desktop's playing player, D-Bus CallAction mutes the ringer
 # and declines the call, and the player resumes; a call from an unknown number carries only the number and goes idle
 # when the caller hangs up (`adb emu gsm cancel`).

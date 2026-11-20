@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,8 +55,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.ui.components.DashboardCard
@@ -98,10 +101,12 @@ private val PAGES =
 /** A short paged flow through the grants, each explained before Android's own screen asks. */
 @Composable
 fun OnboardingScreen(
-    viewModel: OnboardingViewModel,
+    container: AppContainer,
     mirrorSettings: Intent,
     start: Grant?,
     onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: OnboardingViewModel = viewModel { OnboardingViewModel(container.application, container.mirror, container.ringer) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pager = rememberPagerState(PAGES.indexOfFirst { it.grant == start }.coerceAtLeast(0)) { PAGES.size }
@@ -126,45 +131,49 @@ fun OnboardingScreen(
             pager.animateScrollToPage(pager.currentPage + 1)
         }
     }
-    Screen(title = stringResource(R.string.setup_title), onBack = onDone) {
-        StopTrack(
-            PAGES.size,
-            pager.currentPage,
-            { PAGES[it].grant in state.granted },
-            { scope.launch { pager.animateScrollToPage(it) } },
-            Modifier.padding(horizontal = Space.s8),
-        )
-        HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()) { index ->
-            val page = PAGES[index]
-            PageContent(page, index, granted = page.grant in state.granted, extra = {
-                if (page.grant == Grant.AutoClipboard && page.grant !in state.granted) {
-                    ClipboardSteps(viewModel) { viewModel.settings(Grant.AutoClipboard, mirrorSettings)?.let(context::startActivity) }
-                }
-            }) {
-                val permissions = viewModel.permissions(page.grant)
-                if (permissions.isNotEmpty()) {
-                    request.launch(
-                        permissions,
-                    )
-                } else {
-                    viewModel.settings(page.grant, mirrorSettings)?.let(context::startActivity)
+    Box(modifier) {
+        Screen(title = stringResource(R.string.setup_title), onBack = onDone) {
+            StopTrack(
+                PAGES.size,
+                pager.currentPage,
+                { PAGES[it].grant in state.granted },
+                { scope.launch { pager.animateScrollToPage(it) } },
+                Modifier.padding(horizontal = Space.s8),
+            )
+            HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()) { index ->
+                val page = PAGES[index]
+                PageContent(page, index, granted = page.grant in state.granted, extra = {
+                    if (page.grant == Grant.AutoClipboard && page.grant !in state.granted) {
+                        ClipboardSteps(viewModel.adbCommand(), viewModel::overlayAllowed, viewModel::logsAllowed) {
+                            viewModel.settings(Grant.AutoClipboard, mirrorSettings)?.let(context::startActivity)
+                        }
+                    }
+                }) {
+                    val permissions = viewModel.permissions(page.grant)
+                    if (permissions.isNotEmpty()) {
+                        request.launch(
+                            permissions,
+                        )
+                    } else {
+                        viewModel.settings(page.grant, mirrorSettings)?.let(context::startActivity)
+                    }
                 }
             }
-        }
-        Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(Space.page),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Readout(
-                stringResource(R.string.onboarding_count, state.granted.count { grant -> PAGES.any { it.grant == grant } }, PAGES.size),
-                modifier = Modifier.weight(1f),
-            )
-            if (!last) PillButton(stringResource(R.string.onboarding_not_now), onDone, kind = PillKind.Quiet)
-            PillButton(
-                stringResource(if (last) R.string.onboarding_done else R.string.onboarding_next),
-                onClick = { if (last) onDone() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
-                kind = PillKind.Tonal,
-            )
+            Row(
+                Modifier.fillMaxWidth().navigationBarsPadding().padding(Space.page),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Readout(
+                    stringResource(R.string.onboarding_count, state.granted.count { grant -> PAGES.any { it.grant == grant } }, PAGES.size),
+                    modifier = Modifier.weight(1f),
+                )
+                if (!last) PillButton(stringResource(R.string.onboarding_not_now), onDone, kind = PillKind.Quiet)
+                PillButton(
+                    stringResource(if (last) R.string.onboarding_done else R.string.onboarding_next),
+                    onClick = { if (last) onDone() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
+                    kind = PillKind.Tonal,
+                )
+            }
         }
     }
 }
@@ -221,17 +230,20 @@ private const val ADVANCE_MS = 700L
  */
 @Composable
 private fun ClipboardSteps(
-    viewModel: OnboardingViewModel,
+    command: String,
+    overlayAllowed: () -> Boolean,
+    logsAllowed: () -> Boolean,
     onOverlay: () -> Unit,
 ) {
     val colors = LinkTheme.colors
     val context = LocalContext.current
-    val command = viewModel.adbCommand()
-    var overlay by remember { mutableStateOf(viewModel.overlayAllowed()) }
-    var logs by remember { mutableStateOf(viewModel.logsAllowed()) }
+    var overlay by remember { mutableStateOf(overlayAllowed()) }
+    var logs by remember { mutableStateOf(logsAllowed()) }
+    val overlayNow by rememberUpdatedState(overlayAllowed)
+    val logsNow by rememberUpdatedState(logsAllowed)
     LifecycleResumeEffect(Unit) {
-        overlay = viewModel.overlayAllowed()
-        logs = viewModel.logsAllowed()
+        overlay = overlayNow()
+        logs = logsNow()
         onPauseOrDispose {}
     }
     DashboardCard(Modifier.fillMaxWidth()) {

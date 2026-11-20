@@ -5,11 +5,11 @@ appId: org.andromeda.link
     # An explicit list: by default Maestro grants every permission, READ_LOGS too, which kills the app.
     permissions: { notifications: allow }
     stopApp: false
-- tapOn: "Home tab"
+- runFlow: go-home.yaml
 - scrollUntilVisible:
-    element: "Features and pairing"
+    element: "Connected, .*"
     direction: UP
-- tapOn: "Features and pairing"
+- tapOn: "Connected, .*"
 - scrollUntilVisible:
     element: "Unpair .*"
 - tapOn: "Unpair .*"

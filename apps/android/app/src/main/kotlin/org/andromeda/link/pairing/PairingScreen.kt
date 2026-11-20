@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -42,6 +43,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.ui.components.CenteredText
@@ -63,47 +66,52 @@ import org.andromeda.link.ui.theme.Space
  */
 @Composable
 fun PairingScreen(
-    viewModel: PairingViewModel,
+    container: AppContainer,
     onBack: () -> Unit,
-    onPaired: (Desktop) -> Unit,
+    onPair: (Desktop) -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: PairingViewModel = viewModel { PairingViewModel(container.repository) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var typing by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(viewModel) { viewModel.paired.collect(onPaired) }
-    Screen(title = stringResource(R.string.pair_title), onBack = onBack) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.page),
-            verticalArrangement = Arrangement.spacedBy(Space.s20),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            when {
-                state.busy -> {
-                    ConnectionOrb(active = true, working = true, size = 140.dp, modifier = Modifier.padding(top = Space.s32))
-                    Label(stringResource(R.string.pairing_progress), LinkTheme.type.headlineLarge, LinkTheme.colors.accentText)
-                }
-                state.link != null -> LinkConfirmation(state, viewModel)
-                typing -> {
-                    CodeEntry(state, viewModel)
-                    PillButton(stringResource(R.string.scan_action), { typing = false }, kind = PillKind.Quiet)
-                }
-                else -> {
-                    // After a failure the scanner waits for a tap, so a code still in view does not pair again at once.
-                    if (state.failure == null) {
-                        Scan(viewModel::pairScanned)
-                    } else {
-                        PillButton(stringResource(R.string.scan_again), viewModel::scanAgain, modifier = Modifier.fillMaxWidth())
+    val pair by rememberUpdatedState(onPair)
+    LaunchedEffect(viewModel) { viewModel.paired.collect { pair(it) } }
+    Box(modifier) {
+        Screen(title = stringResource(R.string.pair_title), onBack = onBack) {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.page),
+                verticalArrangement = Arrangement.spacedBy(Space.s20),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                when {
+                    state.busy -> {
+                        ConnectionOrb(active = true, working = true, size = 140.dp, modifier = Modifier.padding(top = Space.s32))
+                        Label(stringResource(R.string.pairing_progress), LinkTheme.type.headlineLarge, LinkTheme.colors.accentText)
                     }
-                    PillButton(stringResource(R.string.scan_code_instead), { typing = true }, kind = PillKind.Quiet)
+                    state.link != null -> LinkConfirmation(state, viewModel::pairWithLink)
+                    typing -> {
+                        CodeEntry(state, viewModel::updateCode, viewModel::pairWithCode)
+                        PillButton(stringResource(R.string.scan_action), { typing = false }, kind = PillKind.Quiet)
+                    }
+                    else -> {
+                        // After a failure the scanner waits for a tap, so a code still in view does not pair again at once.
+                        if (state.failure == null) {
+                            Scan(viewModel::pairScanned)
+                        } else {
+                            PillButton(stringResource(R.string.scan_again), viewModel::scanAgain, modifier = Modifier.fillMaxWidth())
+                        }
+                        PillButton(stringResource(R.string.scan_code_instead), { typing = true }, kind = PillKind.Quiet)
+                    }
                 }
-            }
-            state.failure?.let {
-                Label(
-                    it.text(LocalContext.current.resources),
-                    LinkTheme.type.bodyLarge,
-                    LinkTheme.colors.error,
-                    Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
+                state.failure?.let {
+                    Label(
+                        it.text(LocalContext.current.resources),
+                        LinkTheme.type.bodyLarge,
+                        LinkTheme.colors.error,
+                        Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }
@@ -131,46 +139,48 @@ private fun Scan(onPairingUri: (String) -> Unit) {
         val missing = wanted.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) ask.launch(missing.toTypedArray())
     }
-    Box(
-        Modifier
-            .padding(top = Space.s8)
-            .fillMaxWidth()
-            .aspectRatio(1f)
-            .clip(Radius.hero)
-            .border(1.dp, colors.borderPrimary, Radius.hero),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (granted) {
-            QrScanner(onPairingUri, Modifier.fillMaxSize())
-        } else {
-            Column(
-                Modifier.padding(Space.s24),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(Space.s16),
-            ) {
-                Label(
-                    stringResource(R.string.scan_camera_needed),
-                    LinkTheme.type.bodyLarge,
-                    colors.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                PillButton(stringResource(R.string.scan_camera_allow), { ask.launch(wanted) })
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Space.s20)) {
+        Box(
+            Modifier
+                .padding(top = Space.s8)
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(Radius.hero)
+                .border(1.dp, colors.borderPrimary, Radius.hero),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (granted) {
+                QrScanner(onPairingUri, Modifier.fillMaxSize())
+            } else {
+                Column(
+                    Modifier.padding(Space.s24),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(Space.s16),
+                ) {
+                    Label(
+                        stringResource(R.string.scan_camera_needed),
+                        LinkTheme.type.bodyLarge,
+                        colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                    PillButton(stringResource(R.string.scan_camera_allow), { ask.launch(wanted) })
+                }
             }
         }
+        Label(
+            stringResource(R.string.scan_hint),
+            LinkTheme.type.bodyLarge,
+            colors.textSecondary,
+            Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
+        )
     }
-    Label(
-        stringResource(R.string.scan_hint),
-        LinkTheme.type.bodyLarge,
-        colors.textSecondary,
-        Modifier.fillMaxWidth(),
-        textAlign = TextAlign.Center,
-    )
 }
 
 @Composable
 private fun LinkConfirmation(
     state: PairingState,
-    viewModel: PairingViewModel,
+    onPair: () -> Unit,
 ) {
     HeroSurface(Modifier.fillMaxWidth()) {
         Label(stringResource(R.string.pair_link_title), LinkTheme.type.displaySmall)
@@ -182,7 +192,7 @@ private fun LinkConfirmation(
         )
         PillButton(
             stringResource(R.string.pair_button),
-            viewModel::pairWithLink,
+            onPair,
             enabled = !state.busy,
             modifier = Modifier.fillMaxWidth().padding(top = Space.s20),
         )
@@ -192,16 +202,19 @@ private fun LinkConfirmation(
 @Composable
 private fun CodeEntry(
     state: PairingState,
-    viewModel: PairingViewModel,
+    onCode: (String) -> Unit,
+    onPair: () -> Unit,
 ) {
-    CenteredText(stringResource(R.string.pair_code_title), stringResource(R.string.pair_instructions))
-    CodeCells(state.code, viewModel::updateCode, onDone = viewModel::pairWithCode)
-    PillButton(
-        stringResource(R.string.pair_button),
-        viewModel::pairWithCode,
-        enabled = state.canPairCode,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Space.s20)) {
+        CenteredText(stringResource(R.string.pair_code_title), stringResource(R.string.pair_instructions))
+        CodeCells(state.code, onCode, onDone = onPair)
+        PillButton(
+            stringResource(R.string.pair_button),
+            onPair,
+            enabled = state.canPairCode,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 /**

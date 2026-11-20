@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
         val container = (application as LinkApplication).container
         setContent {
             LinkTheme {
-                LinkApp(container, pairingLink, onLinkHandled = { pairingLink.value = null })
+                LinkApp(container, pairingLink, onLinkHandle = { pairingLink.value = null })
             }
         }
     }

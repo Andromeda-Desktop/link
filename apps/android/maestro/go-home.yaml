@@ -1,0 +1,9 @@
+# Back to Home from any screen of a paired phone: Home is the one root, and "Clipboard sync" shows only there.
+appId: org.andromeda.link
+---
+- repeat:
+    while:
+      notVisible: "Clipboard sync"
+    times: 4
+    commands:
+      - pressKey: Back

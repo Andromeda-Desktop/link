@@ -43,9 +43,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.core.domain.Desktop
@@ -67,7 +69,7 @@ import org.andromeda.link.ui.theme.setAppTheme
 /** The app's own settings (DESIGN.md, Settings): desktops, staying connected, notifications, clipboard, permissions. */
 @Composable
 fun SettingsScreen(
-    viewModel: HomeViewModel,
+    container: AppContainer,
     autoClipboard: Boolean,
     /** Required grants not given yet. */
     missing: List<Grant>,
@@ -80,6 +82,8 @@ fun SettingsScreen(
     /** The log access method sheet; open, the app hides its tab bar as for Home's picker. */
     methodSheet: Boolean,
     onMethodSheet: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: HomeViewModel = viewModel { HomeViewModel(container.repository, container.presence, container.mirror, container.clipboard) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val clearsSynced by viewModel.clearsSynced.collectAsStateWithLifecycle()
@@ -109,195 +113,206 @@ fun SettingsScreen(
     val stateWord = @Composable { on: Boolean, onText: Int, offText: Int ->
         Label(stringResource(if (on) onText else offText), LinkTheme.type.titleSmall, if (on) colors.success else colors.warning)
     }
-    Screen(
-        null,
-        overlay = {
-            LogAccessSheet(
-                methodSheet,
-                logMethod,
-                methods,
-                { LogAccess.choose(context, it) },
-                onClipboardSetup,
-                { onMethodSheet(false) },
-            )
-        },
-    ) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.page)) {
-            Label(stringResource(R.string.settings_title), LinkTheme.type.displayLarge, modifier = Modifier.padding(top = Space.s16))
+    Box(modifier) {
+        Screen(
+            null,
+            overlay = {
+                LogAccessSheet(
+                    methodSheet,
+                    logMethod,
+                    methods,
+                    { LogAccess.choose(context, it) },
+                    onClipboardSetup,
+                    { onMethodSheet(false) },
+                )
+            },
+        ) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.page)) {
+                Label(stringResource(R.string.settings_title), LinkTheme.type.displayLarge, modifier = Modifier.padding(top = Space.s16))
 
-            PaperHeading(stringResource(R.string.settings_desktops))
-            state.desktops.forEachIndexed { index, desktop ->
+                PaperHeading(stringResource(R.string.settings_desktops))
+                state.desktops.forEachIndexed { index, desktop ->
+                    PaperRow(
+                        desktop.name,
+                        subtitle =
+                            if (desktop.connected) {
+                                stringResource(
+                                    if (desktop.bluetooth) R.string.settings_connected_bluetooth else R.string.settings_connected_wifi,
+                                )
+                            } else {
+                                disconnectedLine(desktop)
+                            },
+                        divided = index > 0,
+                        onClick = { onDesktop(desktop) },
+                        trailing = chevron,
+                        leading = { StatusDot(desktop.connected) },
+                    )
+                }
                 PaperRow(
-                    desktop.name,
+                    stringResource(R.string.pair_action),
+                    icon = Icons.Filled.Add,
+                    divided = state.desktops.isNotEmpty(),
+                    onClick = onPair,
+                )
+
+                PaperHeading(stringResource(R.string.stay_connected))
+                PaperRow(
+                    stringResource(R.string.settings_keep_open),
+                    subtitle = stringResource(R.string.settings_keep_open_hint),
+                    icon = LinkIcons.Transfers,
+                    divided = false,
+                    checked = state.stayConnected,
+                    onToggle = viewModel::setStayConnected,
+                )
+                if (state.stayConnected) LiveNotificationPreview(state.primary?.name)
+
+                PaperHeading(stringResource(R.string.settings_notifications))
+                PaperRow(
+                    stringResource(R.string.settings_notification_access),
+                    subtitle = stringResource(R.string.settings_notification_access_hint),
+                    icon = Icons.Filled.Notifications,
+                    divided = false,
+                    onClick = onNotifications,
+                ) { stateWord(state.mirrorGranted, R.string.settings_on, R.string.settings_turn_on) }
+                PaperRow(
+                    stringResource(R.string.settings_apps),
                     subtitle =
-                        if (desktop.connected) {
-                            stringResource(
-                                if (desktop.bluetooth) R.string.settings_connected_bluetooth else R.string.settings_connected_wifi,
-                            )
+                        if (prefs.excluded == 0) {
+                            stringResource(R.string.settings_apps_all)
                         } else {
-                            disconnectedLine(desktop)
+                            pluralStringResource(R.plurals.settings_apps_except, prefs.excluded, prefs.excluded)
                         },
-                    divided = index > 0,
-                    onClick = { onDesktop(desktop) },
+                    icon = LinkIcons.Brightness,
+                    onClick = onMirrorApps,
                     trailing = chevron,
-                    leading = { StatusDot(desktop.connected) },
                 )
-            }
-            PaperRow(stringResource(R.string.pair_action), icon = Icons.Filled.Add, divided = state.desktops.isNotEmpty(), onClick = onPair)
-
-            PaperHeading(stringResource(R.string.stay_connected))
-            PaperRow(
-                stringResource(R.string.settings_keep_open),
-                subtitle = stringResource(R.string.settings_keep_open_hint),
-                icon = LinkIcons.Transfers,
-                divided = false,
-                checked = state.stayConnected,
-                onToggle = viewModel::setStayConnected,
-            )
-            if (state.stayConnected) LiveNotificationPreview(state.primary?.name)
-
-            PaperHeading(stringResource(R.string.settings_notifications))
-            PaperRow(
-                stringResource(R.string.settings_notification_access),
-                subtitle = stringResource(R.string.settings_notification_access_hint),
-                icon = Icons.Filled.Notifications,
-                divided = false,
-                onClick = onNotifications,
-            ) { stateWord(state.mirrorGranted, R.string.settings_on, R.string.settings_turn_on) }
-            PaperRow(
-                stringResource(R.string.settings_apps),
-                subtitle =
-                    if (prefs.excluded == 0) {
-                        stringResource(R.string.settings_apps_all)
-                    } else {
-                        pluralStringResource(R.plurals.settings_apps_except, prefs.excluded, prefs.excluded)
-                    },
-                icon = LinkIcons.Brightness,
-                onClick = onMirrorApps,
-                trailing = chevron,
-            )
-            PaperRow(
-                stringResource(R.string.settings_quiet_apps),
-                subtitle =
-                    if (prefs.lowImportance == 0) {
-                        stringResource(R.string.settings_quiet_apps_none)
-                    } else {
-                        pluralStringResource(R.plurals.settings_quiet_apps_count, prefs.lowImportance, prefs.lowImportance)
-                    },
-                icon = Icons.Filled.Notifications,
-                onClick = onMirrorApps,
-                trailing = chevron,
-            )
-            PaperRow(
-                stringResource(R.string.settings_full_locked),
-                subtitle =
-                    stringResource(
-                        if (prefs.fullWhileLocked) R.string.settings_full_locked_on else R.string.settings_full_locked_off,
-                    ),
-                icon = Icons.Filled.Lock,
-                checked = prefs.fullWhileLocked,
-                onToggle = viewModel::setFullContentWhileLocked,
-            )
-
-            PaperHeading(stringResource(R.string.settings_clipboard))
-            PaperRow(
-                stringResource(R.string.clipboard_auto_row),
-                subtitle = stringResource(R.string.settings_auto_clipboard_hint),
-                icon = LinkIcons.Clipboard,
-                divided = false,
-                onClick = onClipboardSetup,
-            ) { stateWord(autoClipboard, R.string.settings_on, R.string.settings_set_up) }
-            PaperRow(
-                stringResource(R.string.settings_log_access),
-                subtitle = stringResource(R.string.settings_log_access_hint),
-                icon = Icons.Filled.Lock,
-            ) {
-                Label(
-                    stringResource(if (logs) R.string.settings_on else R.string.settings_off),
-                    LinkTheme.type.titleSmall,
-                    if (logs) colors.success else colors.textTertiary,
-                )
-            }
-            PaperRow(
-                stringResource(R.string.settings_screenshots),
-                subtitle = stringResource(R.string.settings_screenshots_hint),
-                icon = LinkIcons.Photo,
-                checked = sendsScreenshots,
-                onToggle = viewModel::setSendsScreenshots,
-            )
-            PaperRow(
-                stringResource(R.string.settings_clear_clips),
-                subtitle = stringResource(R.string.settings_clear_clips_hint),
-                icon = Icons.Filled.Delete,
-                checked = clearsSynced,
-                onToggle = viewModel::setClearsSynced,
-            )
-
-            val required = Grant.entries.filter { it != Grant.Texts && it != Grant.AutoClipboard }
-            PaperHeading(
-                stringResource(R.string.setup_title),
-                Modifier.clip(Radius.button).clickable(role = Role.Button, onClick = onSetup),
-                trailing = stringResource(R.string.settings_grants_on, required.size - missing.size, required.size),
-            )
-            required.forEachIndexed { index, grant ->
-                val on = grant !in missing
                 PaperRow(
-                    stringResource(grant.title()),
-                    icon = grant.icon(),
-                    divided = index > 0,
-                    onClick = onSetup,
+                    stringResource(R.string.settings_quiet_apps),
+                    subtitle =
+                        if (prefs.lowImportance == 0) {
+                            stringResource(R.string.settings_quiet_apps_none)
+                        } else {
+                            pluralStringResource(R.plurals.settings_quiet_apps_count, prefs.lowImportance, prefs.lowImportance)
+                        },
+                    icon = Icons.Filled.Notifications,
+                    onClick = onMirrorApps,
+                    trailing = chevron,
+                )
+                PaperRow(
+                    stringResource(R.string.settings_full_locked),
+                    subtitle =
+                        stringResource(
+                            if (prefs.fullWhileLocked) R.string.settings_full_locked_on else R.string.settings_full_locked_off,
+                        ),
+                    icon = Icons.Filled.Lock,
+                    checked = prefs.fullWhileLocked,
+                    onToggle = viewModel::setFullContentWhileLocked,
+                )
+
+                PaperHeading(stringResource(R.string.settings_clipboard))
+                PaperRow(
+                    stringResource(R.string.clipboard_auto_row),
+                    subtitle = stringResource(R.string.settings_auto_clipboard_hint),
+                    icon = LinkIcons.Clipboard,
+                    divided = false,
+                    onClick = onClipboardSetup,
+                ) { stateWord(autoClipboard, R.string.settings_on, R.string.settings_set_up) }
+                PaperRow(
+                    stringResource(R.string.settings_log_access),
+                    subtitle = stringResource(R.string.settings_log_access_hint),
+                    icon = Icons.Filled.Lock,
                 ) {
-                    if (on) {
-                        Label(stringResource(R.string.settings_on), LinkTheme.type.titleSmall, colors.success)
-                    } else {
-                        Label(stringResource(R.string.settings_turn_on), LinkTheme.type.titleSmall, colors.accentText)
+                    Label(
+                        stringResource(if (logs) R.string.settings_on else R.string.settings_off),
+                        LinkTheme.type.titleSmall,
+                        if (logs) colors.success else colors.textTertiary,
+                    )
+                }
+                PaperRow(
+                    stringResource(R.string.settings_screenshots),
+                    subtitle = stringResource(R.string.settings_screenshots_hint),
+                    icon = LinkIcons.Photo,
+                    checked = sendsScreenshots,
+                    onToggle = viewModel::setSendsScreenshots,
+                )
+                PaperRow(
+                    stringResource(R.string.settings_clear_clips),
+                    subtitle = stringResource(R.string.settings_clear_clips_hint),
+                    icon = Icons.Filled.Delete,
+                    checked = clearsSynced,
+                    onToggle = viewModel::setClearsSynced,
+                )
+
+                val required = Grant.entries.filter { it != Grant.Texts && it != Grant.AutoClipboard }
+                PaperHeading(
+                    stringResource(R.string.setup_title),
+                    Modifier.clip(Radius.button).clickable(role = Role.Button, onClick = onSetup),
+                    trailing = stringResource(R.string.settings_grants_on, required.size - missing.size, required.size),
+                )
+                required.forEachIndexed { index, grant ->
+                    val on = grant !in missing
+                    PaperRow(
+                        stringResource(grant.title()),
+                        icon = grant.icon(),
+                        divided = index > 0,
+                        onClick = onSetup,
+                    ) {
+                        if (on) {
+                            Label(stringResource(R.string.settings_on), LinkTheme.type.titleSmall, colors.success)
+                        } else {
+                            Label(stringResource(R.string.settings_turn_on), LinkTheme.type.titleSmall, colors.accentText)
+                        }
                     }
                 }
-            }
 
-            PaperHeading(stringResource(R.string.settings_appearance))
-            SlidingPillControl(
-                listOf(stringResource(R.string.theme_system), stringResource(R.string.theme_light), stringResource(R.string.theme_dark)),
-                theme.ordinal,
-                { setAppTheme(context, AppTheme.entries[it]) },
-                Modifier.padding(top = Space.s8),
-            )
+                PaperHeading(stringResource(R.string.settings_appearance))
+                SlidingPillControl(
+                    listOf(
+                        stringResource(R.string.theme_system),
+                        stringResource(R.string.theme_light),
+                        stringResource(R.string.theme_dark),
+                    ),
+                    theme.ordinal,
+                    { setAppTheme(context, AppTheme.entries[it]) },
+                    Modifier.padding(top = Space.s8),
+                )
 
-            PaperHeading(stringResource(R.string.settings_advanced))
-            PaperRow(
-                stringResource(R.string.log_method),
-                subtitle = stringResource(R.string.log_method_hint),
-                icon = Icons.Filled.Lock,
-                divided = false,
-                onClick = { onMethodSheet(true) },
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val inUse = methods.inUse
-                    if (inUse == null) {
-                        Label(stringResource(R.string.settings_set_up), LinkTheme.type.titleSmall, colors.warning)
-                    } else {
-                        Label(stringResource(inUse.title()), LinkTheme.type.titleSmall, colors.textSecondary)
+                PaperHeading(stringResource(R.string.settings_advanced))
+                PaperRow(
+                    stringResource(R.string.log_method),
+                    subtitle = stringResource(R.string.log_method_hint),
+                    icon = Icons.Filled.Lock,
+                    divided = false,
+                    onClick = { onMethodSheet(true) },
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val inUse = methods.inUse
+                        if (inUse == null) {
+                            Label(stringResource(R.string.settings_set_up), LinkTheme.type.titleSmall, colors.warning)
+                        } else {
+                            Label(stringResource(inUse.title()), LinkTheme.type.titleSmall, colors.textSecondary)
+                        }
+                        chevron()
                     }
-                    chevron()
                 }
-            }
-            SoftwareUpdate()
-            PaperHeading(stringResource(R.string.settings_diagnostics))
-            PaperRow(
-                stringResource(R.string.settings_log),
-                subtitle = stringResource(R.string.settings_log_hint),
-                icon = LinkIcons.Transfers,
-                divided = false,
-                onClick = { scope.launch { shareLog(context) } },
-            ) { Label(stringResource(R.string.settings_export), LinkTheme.type.titleSmall, colors.accentText) }
+                SoftwareUpdate()
+                PaperHeading(stringResource(R.string.settings_diagnostics))
+                PaperRow(
+                    stringResource(R.string.settings_log),
+                    subtitle = stringResource(R.string.settings_log_hint),
+                    icon = LinkIcons.Transfers,
+                    divided = false,
+                    onClick = { scope.launch { shareLog(context) } },
+                ) { Label(stringResource(R.string.settings_export), LinkTheme.type.titleSmall, colors.accentText) }
 
-            Label(
-                stringResource(R.string.settings_footer, stringResource(R.string.app_name), version, Build.MODEL),
-                LinkTheme.type.bodySmall,
-                colors.textTertiary,
-                Modifier.padding(top = Space.s28),
-            )
-            Spacer(Modifier.height(Space.s32))
+                Label(
+                    stringResource(R.string.settings_footer, stringResource(R.string.app_name), version, Build.MODEL),
+                    LinkTheme.type.bodySmall,
+                    colors.textTertiary,
+                    Modifier.padding(top = Space.s28),
+                )
+                Spacer(Modifier.height(Space.s32))
+            }
         }
     }
 }
@@ -347,7 +362,7 @@ private fun LiveNotificationPreview(desktop: String?) {
     }
 }
 
-private fun Grant.title(): Int =
+internal fun Grant.title(): Int =
     when (this) {
         Grant.NotificationAccess -> R.string.settings_grant_notifications
         Grant.DoNotDisturb -> R.string.settings_grant_dnd

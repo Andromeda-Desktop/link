@@ -4,15 +4,15 @@ appId: org.andromeda.link
     # An explicit list: by default Maestro grants every permission, READ_LOGS too, which kills the app.
     permissions: { notifications: allow }
     stopApp: false
-- tapOn: "Activity tab"
+- tapOn: "Activity"
 - extendedWaitUntil:
-    visible: "(?i)waiting"
+    visible: "Save"
     timeout: 15000
 - takeScreenshot: ${OUT}/7-offer-in-activity
-- tapOn: "Accept"
-# The sent card already reads "Completed", so wait for the offer's chip to go instead.
+- tapOn: "Save"
+# Only an offer shows Save; it goes when the transfer starts.
 - extendedWaitUntil:
-    notVisible: "(?i)waiting"
+    notVisible: "Save"
     timeout: 30000
 - takeScreenshot: ${OUT}/7-received-in-activity
-- tapOn: "Home tab"
+- runFlow: go-home.yaml

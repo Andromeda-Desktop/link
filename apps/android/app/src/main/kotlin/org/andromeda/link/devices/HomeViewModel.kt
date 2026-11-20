@@ -17,6 +17,7 @@ import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.DesktopPlayer
 import org.andromeda.link.core.domain.DesktopStatus
 import org.andromeda.link.core.domain.DesktopVolume
+import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.core.domain.LinkFailure
 import org.andromeda.link.core.domain.MediaCommandKind
 import org.andromeda.link.core.domain.PlaybackState
@@ -96,12 +97,47 @@ sealed interface HomeMessage {
     ) : HomeMessage
 }
 
+/** The quick controls a desktop card sends. */
+interface DeskControls {
+    fun setVolume(
+        desktop: Desktop,
+        percent: Int,
+        unmute: Boolean,
+    )
+
+    fun setBrightness(
+        desktop: Desktop,
+        percent: Int,
+    )
+
+    fun setDnd(
+        desktop: Desktop,
+        on: Boolean,
+    )
+
+    fun setSharing(
+        desktop: Desktop,
+        feature: Feature,
+        on: Boolean,
+    )
+
+    fun sleep(desktop: Desktop)
+
+    fun screenOff(desktop: Desktop)
+
+    fun ring(
+        desktop: Desktop,
+        on: Boolean,
+    )
+}
+
 class HomeViewModel(
     private val repository: LinkRepository,
     private val presence: Presence,
     private val mirror: NotificationMirror,
     private val clipboard: ClipboardSync,
-) : ViewModel() {
+) : ViewModel(),
+    DeskControls {
     private val refreshing = MutableStateFlow(false)
     private val selectedDesktopId = MutableStateFlow<String?>(null)
     private val _message = MutableStateFlow<HomeMessage?>(null)
@@ -196,7 +232,7 @@ class HomeViewModel(
     fun notificationsAllowed() = presence.notificationsAllowed()
 
     /** Sets the level; a muted desktop is unmuted first, since a level alone would stay silent. */
-    fun setVolume(
+    override fun setVolume(
         desktop: Desktop,
         percent: Int,
         unmute: Boolean,
@@ -210,21 +246,33 @@ class HomeViewModel(
         muted: Boolean,
     ) = act { repository.setDesktopMuted(desktop.id, muted) }
 
-    fun setBrightness(
+    override fun setBrightness(
         desktop: Desktop,
         percent: Int,
     ) = act { repository.setDesktopBrightness(desktop.id, percent) }
 
-    fun setDnd(
+    override fun setDnd(
         desktop: Desktop,
         on: Boolean,
     ) = act { repository.setDesktopDnd(desktop.id, on) }
 
+    override fun setSharing(
+        desktop: Desktop,
+        feature: Feature,
+        on: Boolean,
+    ) = act { repository.setSharing(desktop.id, feature, on) }
+
     fun lock(desktop: Desktop) = act { repository.lockDesktop(desktop.id) }
 
-    fun sleep(desktop: Desktop) = act { repository.suspendDesktop(desktop.id) }
+    fun acceptTransfer(id: String) = act { repository.acceptTransfer(id) }
 
-    fun screenOff(desktop: Desktop) = act { repository.turnDesktopScreenOff(desktop.id) }
+    fun declineTransfer(id: String) = act { repository.declineTransfer(id) }
+
+    fun cancelTransfer(id: String) = act { repository.cancelTransfer(id) }
+
+    override fun sleep(desktop: Desktop) = act { repository.suspendDesktop(desktop.id) }
+
+    override fun screenOff(desktop: Desktop) = act { repository.turnDesktopScreenOff(desktop.id) }
 
     fun media(
         shown: DesktopPlayer,
@@ -232,7 +280,7 @@ class HomeViewModel(
         value: Long? = null,
     ) = act { repository.mediaCommand(shown.desktopId, shown.player.player, command, value) }
 
-    fun ring(
+    override fun ring(
         desktop: Desktop,
         on: Boolean,
     ) = act { repository.ringDesktop(desktop.id, on) }
