@@ -297,7 +297,7 @@
     <string name="viewer_follow">Follow</string>
     <string name="viewer_follow_hint">Follow the pointer</string>
     <string name="viewer_whole_hint">Show the whole desktop</string>
-    <string name="viewer_tip_picture">Picture: tap to click, hold to grab</string>
+    <string name="viewer_tip_picture">Picture: tap clicks, tap-hold drags</string>
     <string name="viewer_tip_pad">Pad: move to point, tap to click</string>
     <string name="viewer_tip_two">Two fingers: right click, scroll</string>
     <string name="viewer_sources">Monitor or window</string>

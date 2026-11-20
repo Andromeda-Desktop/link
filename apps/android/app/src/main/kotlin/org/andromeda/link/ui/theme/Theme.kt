@@ -28,7 +28,9 @@ fun LinkTheme(
     dark: Boolean = preferredDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val scheme = if (dark) Tok.Scheme.dark else Tok.Scheme.light
+    val base = if (dark) Tok.Scheme.dark else Tok.Scheme.light
+    // Link on the phone is monochrome: the accent is the primary label (black on light, white on dark).
+    val scheme = base.copy(accent = base.label1, accentText = base.label1, onAccent = base.view)
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {

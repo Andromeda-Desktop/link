@@ -11,7 +11,7 @@ object Tok {
     }
 
     @Immutable
-    class TypeToken(
+    data class TypeToken(
         val size: Float,
         val line: Float,
         val weight: Int,
@@ -113,7 +113,7 @@ object Tok {
     }
 
     @Immutable
-    class SchemeToken(
+    data class SchemeToken(
         val label1: Color,
         val label2: Color,
         val label3: Color,
@@ -276,7 +276,7 @@ object Tok {
     }
 
     @Immutable
-    class ElevationToken(
+    data class ElevationToken(
         val keyY: Float,
         val keyBlur: Float,
         val keyLight: Float,
@@ -335,7 +335,7 @@ object Tok {
     }
 
     @Immutable
-    class SpringToken(
+    data class SpringToken(
         val stiffness: Float,
         val damping: Float,
     )
@@ -417,8 +417,6 @@ object Tok {
         val contentGate = 0.35f
         val faceGate = 0.5f
         val returnFaceGate = 0.7f
-        val overviewZoomEnd = 0.55f
-        val overviewSpreadStart = 0.45f
         val overviewPieceScale = 0.86f
         val staggerMs = 8
         val staggerMax = 6

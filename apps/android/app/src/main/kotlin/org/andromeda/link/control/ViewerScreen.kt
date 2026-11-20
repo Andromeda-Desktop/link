@@ -2,6 +2,7 @@ package org.andromeda.link.control
 
 import android.app.Activity
 import android.graphics.SurfaceTexture
+import android.os.SystemClock
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.BackHandler
@@ -41,6 +42,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -54,8 +56,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -63,6 +68,8 @@ import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -247,14 +254,24 @@ fun ViewerScreen(
         view.keepScreenOn = true
         onDispose { view.keepScreenOn = false }
     }
-    var surface by remember { mutableStateOf<Surface?>(null) }
+    var surface by remember { mutableStateOf<StreamSurface?>(null) }
     val muted by rememberUpdatedState(state.muted)
     val stream = state.stream
     // One decoder at a time: a surface takes a new one only after the old one let it go.
     val decoding = remember { Mutex() }
     LaunchedEffect(stream, surface) {
         val target = surface
-        if (stream != null && target != null) decoding.withLock { play(stream, target) { muted } }
+        if (stream != null && target != null) {
+            decoding.withLock {
+                if (target.take()) {
+                    try {
+                        play(stream, target.surface) { muted }
+                    } finally {
+                        target.drop()
+                    }
+                }
+            }
+        }
     }
     val live = stream != null
     val canInput = desk.input && live
@@ -312,6 +329,7 @@ fun ViewerScreen(
                 onAim = { aimTo(it) },
                 onSurface = { surface = it },
                 onSize = { viewSize = it },
+                immersive = landscape,
                 modifier = modifier,
             )
         }
@@ -325,7 +343,13 @@ fun ViewerScreen(
         }
         val keys: @Composable () -> Unit = {
             val d = if (landscape) Tok.Size.rowTwo.dp else Tok.Phone.roundKeyL.dp
-            RoundKey(Icons.Kbd, stringResource(R.string.remote_keys), { go(ViewerMode.Keys) }, size = d, enabled = canInput)
+            RoundKey(
+                Icons.Kbd,
+                stringResource(R.string.remote_keys),
+                { go(if (mode == ViewerMode.Keys || mode == ViewerMode.Typing) ViewerMode.Pad else ViewerMode.Keys) },
+                size = d,
+                enabled = canInput,
+            )
             RoundKey(
                 Icons.Monitor,
                 stringResource(R.string.viewer_sources),
@@ -483,21 +507,40 @@ private fun Picture(
     input: RemoteActions,
     onCamera: (Camera) -> Unit,
     onAim: (Offset) -> Unit,
-    onSurface: (Surface?) -> Unit,
+    onSurface: (StreamSurface?) -> Unit,
     onSize: (IntSize) -> Unit,
+    immersive: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val s = LinkTheme.scheme
-    val shape = RoundedCornerShape(bottomStart = Tok.Radius.r24.dp, bottomEnd = Tok.Radius.r24.dp)
+    // Landscape: the picture fills the screen edge to edge, square and flat.
+    val shape = if (immersive) RectangleShape else RoundedCornerShape(bottomStart = Tok.Radius.r24.dp, bottomEnd = Tok.Radius.r24.dp)
     val stream = state.stream
     val description = stringResource(R.string.viewer_picture)
     // The place a finger holds on the picture, and whether the hold became a grab.
     var aim by remember { mutableStateOf<Offset?>(null) }
     var grabbed by remember { mutableStateOf(false) }
     val currentCamera by rememberUpdatedState(camera)
+    val minimap = lens != null && camera != null && !lens.isWhole(camera) && aim == null
+    val minimapShown by rememberUpdatedState(minimap)
+    // The minimap's picture: the whole stream, copied small from the TextureView at most every THUMB_MS, only while shown.
+    var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
+    var texture by remember { mutableStateOf<TextureView?>(null) }
+    var thumbAt by remember { mutableLongStateOf(0L) }
+    val thumbWidth = with(LocalDensity.current) { (Tok.Phone.minimap - 2 * Tok.Space.p4).dp.roundToPx() }
+    val snap = {
+        val view = texture
+        if (view != null && lens != null && thumbWidth > 0) {
+            thumbAt = SystemClock.uptimeMillis()
+            val height = (thumbWidth * lens.desk.height / lens.desk.width).toInt().coerceAtLeast(1)
+            view.getBitmap(thumbWidth, height)?.let { thumb = it.asImageBitmap() }
+        }
+    }
+    val currentSnap by rememberUpdatedState(snap)
+    LaunchedEffect(minimap) { if (minimap) currentSnap() }
     Box(
         modifier
-            .elevation(Tok.Elevation.e2, Tok.Radius.r24.dp)
+            .then(if (immersive) Modifier else Modifier.elevation(Tok.Elevation.e2, Tok.Radius.r24.dp))
             .clip(shape)
             .background(s.fill2)
             .onSizeChanged(onSize),
@@ -507,14 +550,16 @@ private fun Picture(
             val fitted = with(density) { Modifier.size((lens.desk.width * lens.fit).toDp(), (lens.desk.height * lens.fit).toDp()) }
             AndroidView(
                 factory = { context ->
-                    TextureView(context).apply {
+                    TextureView(context).also { texture = it }.apply {
                         surfaceTextureListener =
                             object : TextureView.SurfaceTextureListener {
+                                private var current: StreamSurface? = null
+
                                 override fun onSurfaceTextureAvailable(
                                     texture: SurfaceTexture,
                                     w: Int,
                                     h: Int,
-                                ) = onSurface(Surface(texture))
+                                ) = onSurface(StreamSurface(texture).also { current = it })
 
                                 override fun onSurfaceTextureSizeChanged(
                                     texture: SurfaceTexture,
@@ -522,12 +567,17 @@ private fun Picture(
                                     h: Int,
                                 ) = Unit
 
+                                // False: the texture stays alive until the decoder that draws into it has stopped.
                                 override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
                                     onSurface(null)
-                                    return true
+                                    current?.viewGone()
+                                    current = null
+                                    return false
                                 }
 
-                                override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                                override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {
+                                    if (minimapShown && SystemClock.uptimeMillis() - thumbAt >= THUMB_MS) currentSnap()
+                                }
                             }
                     }
                 },
@@ -566,7 +616,11 @@ private fun Picture(
                 HoldRing(it, grabbed)
                 if (grabbed) GrabTag(it)
             }
-            if (!lens.isWhole(camera) && aim == null) Minimap(lens, camera, Modifier.align(Alignment.BottomEnd).padding(Tok.Space.p8.dp))
+            if (minimap) {
+                // Landscape: left of the key column (12 + key + 12), as the mockup's .ov right: 80.
+                val end = if (immersive) Tok.Space.p12 + Tok.Size.rowTwo + Tok.Space.p12 else Tok.Space.p8
+                Minimap(lens, camera, thumb, Modifier.align(Alignment.BottomEnd).padding(end = end.dp, bottom = Tok.Space.p8.dp))
+            }
         } else {
             val stopped = state.stopped
             Column(
@@ -600,9 +654,43 @@ private suspend fun PointerInputScope.pictureGestures(
     onCamera: (Camera) -> Unit,
     onAim: (Offset) -> Unit,
     onHold: (Offset?, Boolean) -> Unit,
-) = awaitEachGesture {
+) {
+    // The last tap: a second press soon after it at the same place drags (tap, then hold and move).
+    var tapAt = 0L
+    var tapPosition = Offset.Zero
+    awaitEachGesture {
+        pictureGesture(lens, clicks, camera, input, onCamera, onAim, onHold, tapAt, tapPosition) { at, time ->
+            tapAt = time
+            tapPosition = at
+        }
+    }
+}
+
+/**
+ * One gesture on the picture: tap = click; one finger moving, at once or after a pause, pans and never sends;
+ * hold still then lift = right click; tap then hold = drag from there (lift without moving = double click).
+ */
+private suspend fun AwaitPointerEventScope.pictureGesture(
+    lens: Lens,
+    clicks: Boolean,
+    camera: () -> Camera,
+    input: RemoteActions,
+    onCamera: (Camera) -> Unit,
+    onAim: (Offset) -> Unit,
+    onHold: (Offset?, Boolean) -> Unit,
+    tapAt: Long,
+    tapPosition: Offset,
+    onTap: (Offset, Long) -> Unit,
+) {
     val down = awaitFirstDown()
     val slop = viewConfiguration.touchSlop
+    if (clicks &&
+        down.uptimeMillis - tapAt <= viewConfiguration.doubleTapTimeoutMillis &&
+        (down.position - tapPosition).getDistance() <= DRAG_NEAR * slop
+    ) {
+        drag(lens, camera, input, onAim, onHold, down)
+        return
+    }
     var travelled = 0f
     if (clicks) onHold(down.position, false)
     val early =
@@ -623,41 +711,105 @@ private suspend fun PointerInputScope.pictureGestures(
             } while (result == null)
             result
         }
-    val grab = early == null && clicks
-    if (!grab) onHold(null, false)
+    val held = early == null && clicks
+    if (!held) onHold(null, false)
     when {
         early == Early.Up -> {
             if (clicks) {
                 onAim(lens.fraction(camera(), down.position))
                 input.send(RemoteInput.Click(PointerButton.Left))
+                onTap(down.position, down.uptimeMillis)
             }
         }
-        grab -> {
-            onHold(down.position, true)
+        held -> {
+            // The ring is full: lifting here right-clicks; moving instead pans like any one-finger move.
             input.tick()
-            onAim(lens.fraction(camera(), down.position))
-            var dragging = false
             var moved = 0f
+            var event: PointerEvent
             do {
-                val event = awaitPointerEvent()
+                event = awaitPointerEvent()
                 val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
                 moved += change.positionChange().getDistance()
                 event.changes.forEach { it.consume() }
-                if (!dragging && moved >= slop) {
-                    dragging = true
-                    onHold(null, false)
-                    input.send(RemoteInput.Press(PointerButton.Left))
-                }
-                if (dragging && change.pressed) onAim(lens.fraction(camera(), change.position))
-            } while (event.changes.any { it.pressed })
+            } while (event.changes.any { it.pressed } && moved < slop && event.changes.count { it.pressed } < 2)
             onHold(null, false)
-            input.send(if (dragging) RemoteInput.Release(PointerButton.Left) else RemoteInput.Click(PointerButton.Right))
+            if (event.changes.none { it.pressed }) {
+                onAim(lens.fraction(camera(), down.position))
+                input.send(RemoteInput.Click(PointerButton.Right))
+            } else {
+                twoOrPan(lens, clicks, camera, input, onCamera)
+            }
         }
         else -> twoOrPan(lens, clicks, camera, input, onCamera)
     }
 }
 
+/** Tap, then hold: presses where the finger is and drags until it lifts; no move = the second click of a double click. */
+private suspend fun AwaitPointerEventScope.drag(
+    lens: Lens,
+    camera: () -> Camera,
+    input: RemoteActions,
+    onAim: (Offset) -> Unit,
+    onHold: (Offset?, Boolean) -> Unit,
+    down: PointerInputChange,
+) {
+    onHold(down.position, true)
+    input.tick()
+    onAim(lens.fraction(camera(), down.position))
+    input.send(RemoteInput.Press(PointerButton.Left))
+    do {
+        val event = awaitPointerEvent()
+        val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.first()
+        event.changes.forEach { it.consume() }
+        if (change.pressed) onAim(lens.fraction(camera(), change.position))
+    } while (event.changes.any { it.pressed })
+    onHold(null, false)
+    input.send(RemoteInput.Release(PointerButton.Left))
+}
+
 private enum class Early { Up, Two, Pan }
+
+/**
+ * A TextureView's surface shared with the decoder. It is released only when both have let go: a decoder still
+ * rendering into a released surface makes MediaCodec throw. Main thread only.
+ */
+class StreamSurface(
+    private val texture: SurfaceTexture,
+) {
+    val surface = Surface(texture)
+    private var phase = Phase.Idle
+
+    private enum class Phase { Idle, Decoding, Orphaned, Released }
+
+    /** A decoder starts on it; false once the view let go. */
+    fun take(): Boolean = (phase == Phase.Idle).also { if (it) phase = Phase.Decoding }
+
+    /** The decoder stopped. */
+    fun drop() {
+        phase =
+            when (phase) {
+                Phase.Decoding -> Phase.Idle
+                Phase.Orphaned -> release()
+                else -> error("drop in $phase")
+            }
+    }
+
+    /** The view let go. */
+    fun viewGone() {
+        phase =
+            when (phase) {
+                Phase.Idle -> release()
+                Phase.Decoding -> Phase.Orphaned
+                else -> error("viewGone in $phase")
+            }
+    }
+
+    private fun release(): Phase {
+        surface.release()
+        texture.release()
+        return Phase.Released
+    }
+}
 
 /** After the first moves: one finger pans; two fingers lock to a pinch or a scroll and keep it until they lift. */
 private suspend fun AwaitPointerEventScope.twoOrPan(
@@ -818,6 +970,7 @@ private fun Modifier.centeredAt(at: Offset) =
 private fun Minimap(
     lens: Lens,
     camera: Camera,
+    thumb: ImageBitmap?,
     modifier: Modifier = Modifier,
 ) {
     val s = LinkTheme.scheme
@@ -838,6 +991,7 @@ private fun Minimap(
                 .clip(RoundedCornerShape(Tok.Radius.r8.dp))
                 .background(s.fill2)
                 .drawBehind {
+                    thumb?.let { drawImage(it, dstSize = IntSize(size.width.toInt(), size.height.toInt())) }
                     val shown = lens.desk * camera.scale
                     val l = (-camera.offset.x / shown.width).coerceIn(0f, 1f)
                     val t = (-camera.offset.y / shown.height).coerceIn(0f, 1f)
@@ -1043,6 +1197,8 @@ private fun BoxScope.Sheets(
 private const val CENTRE = 0.5f
 private const val PAD_SPEED = 1.5f
 private const val HOLD_MS = 400L
+private const val THUMB_MS = 500L
+private const val DRAG_NEAR = 4f
 private const val RING_DELAY_MS = 150L
 private const val RING_FILL_MS = 250
 private const val TENTHS = 10

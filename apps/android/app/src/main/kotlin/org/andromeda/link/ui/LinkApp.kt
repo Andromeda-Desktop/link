@@ -75,6 +75,7 @@ fun LinkApp(
 
     /** Where Remote's back goes: the screen that opened it. */
     var remoteFrom by rememberSaveable { mutableStateOf(Screen.Home) }
+    var viewerFrom by rememberSaveable { mutableStateOf(Screen.Home) }
     var desktopId by rememberSaveable { mutableStateOf<String?>(null) }
     var setupStart by rememberSaveable { mutableStateOf<Grant?>(null) }
     val link by pairingLink.collectAsStateWithLifecycle()
@@ -183,7 +184,7 @@ fun LinkApp(
                             },
                             onViewer = {
                                 desktopId = it.id
-                                remoteFrom = Screen.Home
+                                viewerFrom = Screen.Home
                                 screen = Screen.Viewer
                             },
                         )
@@ -229,7 +230,7 @@ fun LinkApp(
                                     screen = Screen.Presenter
                                 },
                                 onViewer = {
-                                    remoteFrom = Screen.Device
+                                    viewerFrom = Screen.Device
                                     screen = Screen.Viewer
                                 },
                             )
@@ -240,7 +241,10 @@ fun LinkApp(
                                 viewModel(key = "remote-$id") { RemoteViewModel(container.repository, id) },
                                 start = if (current == Screen.Remote) RemoteMode.Pad else RemoteMode.Present,
                                 onBack = { screen = remoteFrom },
-                                onScreen = { screen = Screen.Viewer },
+                                onScreen = {
+                                    viewerFrom = Screen.Remote
+                                    screen = Screen.Viewer
+                                },
                             )
                         }
                     Screen.Viewer ->
@@ -248,7 +252,7 @@ fun LinkApp(
                             ViewerScreen(
                                 viewModel(key = "viewer-$id") { ViewerViewModel(container.repository, id) },
                                 viewModel(key = "remote-$id") { RemoteViewModel(container.repository, id) },
-                                onBack = { screen = Screen.Remote },
+                                onBack = { screen = viewerFrom },
                             )
                         }
                     Screen.Pairing ->

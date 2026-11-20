@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.nativeKeyCode
@@ -786,7 +787,13 @@ internal fun Composer(
                 actions.typed(text, it)
                 text = it
             },
-            modifier = Modifier.weight(1f).focusRequester(focus),
+            // An empty field has nothing to diff: Backspace there deletes on the desktop (pasted or sent text).
+            modifier =
+                Modifier.weight(1f).focusRequester(focus).onPreviewKeyEvent {
+                    val delete = text.isEmpty() && it.key == Key.Backspace
+                    if (delete && it.type == KeyEventType.KeyDown) actions.press(RemoteKey.Backspace)
+                    delete
+                },
             textStyle = t.body.copy(color = s.label1),
             cursorBrush = SolidColor(s.accent),
             singleLine = true,
