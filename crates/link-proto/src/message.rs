@@ -1197,6 +1197,7 @@ pub struct FileMeta {
     pub name: String,
     pub size: u64,
     pub mime: String,
+    /// Empty only toward a peer whose hello carries [`LATE_HASH`]: the digest follows in [`FileHash`].
     #[serde(with = "serde_bytes")]
     pub sha256: Vec<u8>,
 }
@@ -1253,6 +1254,16 @@ pub struct FileDone {
     pub transfer: TransferId,
     pub file: u64,
     pub ok: bool,
+}
+
+/// Sender to receiver, after the last byte of a file offered with an empty digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileHash {
+    pub transfer: TransferId,
+    pub file: u64,
+    #[serde(with = "serde_bytes")]
+    pub sha256: Vec<u8>,
 }
 
 /// The first frame of a file's unidirectional stream; the bytes from `offset` to the file's size follow.
@@ -1512,7 +1523,7 @@ impl FileMeta {
     fn is_valid(&self) -> bool {
         (1..=MAX_WIRE_NAME_LEN).contains(&self.name.len())
             && (1..=MAX_MIME_LEN).contains(&self.mime.len())
-            && self.sha256.len() == SHA256_LEN
+            && (self.sha256.is_empty() || self.sha256.len() == SHA256_LEN)
     }
 }
 
@@ -1531,6 +1542,9 @@ pub const CONTROL: &str = "feature:control";
 /// Both hellos carry this when the peer takes `heartbeat` and `heartbeat-ack`; older peers close a session on those
 /// types.
 pub const HEARTBEAT: &str = "feature:heartbeat";
+
+/// Both hellos carry this when the peer takes offers with an empty digest and `file-hash`; older peers reject both.
+pub const LATE_HASH: &str = "feature:late-hash";
 
 /// A desktop's hello carries this when it takes `presenting`; older desktops close a session on the type.
 pub const PRESENTING: &str = "feature:presenting";
@@ -1930,6 +1944,7 @@ pub enum Message {
     ResumeAt(ResumeAt),
     Cancel(TransferRef),
     FileDone(FileDone),
+    FileHash(FileHash),
     FileData(FileData),
     ClipOffer(ClipOffer),
     ClipPull(ClipPull),
@@ -2025,6 +2040,7 @@ impl Message {
             Self::ResumeAt(_) => "resume-at",
             Self::Cancel(_) => "cancel",
             Self::FileDone(_) => "file-done",
+            Self::FileHash(_) => "file-hash",
             Self::FileData(_) => "file-data",
             Self::ClipOffer(_) => "clip-offer",
             Self::ClipPull(_) => "clip-pull",
@@ -2120,6 +2136,7 @@ impl Message {
             Self::Resume(body) | Self::Cancel(body) => Value::serialized(body),
             Self::ResumeAt(body) => Value::serialized(body),
             Self::FileDone(body) => Value::serialized(body),
+            Self::FileHash(body) => Value::serialized(body),
             Self::FileData(body) => Value::serialized(body),
             Self::ClipOffer(body) => Value::serialized(body),
             Self::ClipPull(body) | Self::ClipData(body) => Value::serialized(body),
@@ -2205,6 +2222,7 @@ impl Message {
             "resume-at" => Self::ResumeAt(body.deserialized()?),
             "cancel" => Self::Cancel(body.deserialized()?),
             "file-done" => Self::FileDone(body.deserialized()?),
+            "file-hash" => Self::FileHash(body.deserialized()?),
             "file-data" => Self::FileData(body.deserialized()?),
             "clip-offer" => Self::ClipOffer(body.deserialized()?),
             "clip-pull" => Self::ClipPull(body.deserialized()?),
@@ -2296,6 +2314,7 @@ impl Message {
             Self::Hello(hello) => (1..=MAX_NAME_LEN).contains(&hello.name.chars().count()),
             Self::PairSpake(spake) => spake.msg.len() == SPAKE_MSG_LEN,
             Self::PairConfirm(confirm) => confirm.mac.len() == MAC_LEN,
+            Self::FileHash(hash) => hash.sha256.len() == SHA256_LEN,
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorRequest

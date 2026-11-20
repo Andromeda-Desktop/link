@@ -16,7 +16,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   texts-list-msg / texts-msg / texts-changed-msg / text-send-msg / text-sent-msg /
   calls-list-msg / calls-msg / calls-changed-msg / dial-msg / dialed-msg /
   remote-input-msg / remote-request-msg / remote-started-msg / remote-stop-msg / commands-msg / run-command-msg / ping-msg / presenting-msg / capabilities-msg / desktop-status-msg / system-command-msg / system-result-msg /
-  offer-msg / offer-reply-msg / resume-msg / resume-at-msg / cancel-msg / file-done-msg / file-data-msg /
+  offer-msg / offer-reply-msg / resume-msg / resume-at-msg / cancel-msg / file-done-msg / file-hash-msg / file-data-msg /
   clip-offer-msg / clip-pull-msg / clip-data-msg / status-msg
 
 ; 0-RTT. The first message on the control stream from each side.
@@ -67,7 +67,8 @@ offered-file = {
   name: tstr .size (1..4096),
   size: uint,
   mime: tstr .size (1..255),
-  sha256: bstr .size 32,
+  ; Empty only toward a peer with feature:late-hash: file-hash carries the digest after the last byte.
+  sha256: bstr .size 32 / bstr .size 0,
 }
 
 offer-reply-msg = { type: "offer-reply", id: uint, body: offer-reply }
@@ -85,6 +86,9 @@ cancel-msg = { type: "cancel", id: uint, body: { transfer: transfer-id } }
 
 ; The receiver's verdict on one file, after it verified the hash and published it (ok) or deleted it.
 file-done-msg = { type: "file-done", id: uint, body: { transfer: transfer-id, file: uint, ok: bool } }
+
+; Sender to receiver, after the last byte of a file offered with an empty sha256.
+file-hash-msg = { type: "file-hash", id: uint, body: { transfer: transfer-id, file: uint, sha256: bstr .size 32 } }
 
 ; The first frame of a file's unidirectional stream (envelope id 0); the bytes from offset to size follow.
 file-data-msg = { type: "file-data", id: uint, body: { transfer: transfer-id, file: uint, offset: uint } }

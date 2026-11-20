@@ -14,9 +14,9 @@ use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
-    MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_RECENT,
-    PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand,
-    SystemCommandKind, SystemResult, Text, TransferId,
+    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull,
+    PHOTOS_RECENT, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status,
+    SystemCommand, SystemCommandKind, SystemResult, Text, TransferId,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -1065,7 +1065,8 @@ impl Hub {
             items: features.iter().any(|feature| feature == CLIP_ITEMS),
             clock: features.iter().any(|feature| feature == CLIP_CLOCK),
         };
-        self.transfers.attach(id.clone(), session.clone(), clip).await;
+        let late_hash = features.iter().any(|feature| feature == LATE_HASH);
+        self.transfers.attach(id.clone(), session.clone(), clip, late_hash).await;
         self.features.insert(id.clone(), features);
         self.outbox.live(id.clone(), session.clone(), self.phone_has(&id, SHARE_OUTBOX));
         if self.phone_has(&id, MESSAGES) {

@@ -225,7 +225,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(extra) = oversize {
                 return files::send_oversize(phone, id, &paths, &names, extra).await;
             }
-            return files::send(phone, inbox()?, id, &paths, names).await;
+            return Box::pin(files::send(phone, inbox()?, id, &paths, names)).await;
         }
         Command::Share { kind, text, unchecked } => {
             let id = only_desktop(&phone)?;

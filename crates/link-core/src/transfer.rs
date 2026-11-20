@@ -12,8 +12,8 @@ use std::time::Duration;
 use link_proto::CloseCode;
 use link_proto::frame::MAX_FRAME;
 use link_proto::message::{
-    ClipPull, Envelope, FileData, FileDone, FileMeta, FileOffset, Message, Offer, OfferReply, RefuseReason, ResumeAt,
-    TransferId, TransferRef,
+    ClipPull, Envelope, FileData, FileDone, FileHash, FileMeta, FileOffset, Message, Offer, OfferReply, RefuseReason,
+    ResumeAt, TransferId, TransferRef,
 };
 use link_proto::transfer::{Budget, Incoming, MAX_IN_FLIGHT, Outgoing, OutgoingPhase, Overrun};
 use ring::digest;
@@ -64,6 +64,7 @@ pub struct OfferedFile {
     pub name: String,
     pub size: u64,
     pub mime: String,
+    /// Empty when the peer sends the digest after the bytes (`LATE_HASH`).
     pub sha256: Vec<u8>,
 }
 
@@ -98,7 +99,7 @@ pub struct Source {
 }
 
 enum Command {
-    Attach { peer: DeviceId, session: SessionHandle, clip: ClipPeer },
+    Attach { peer: DeviceId, session: SessionHandle, clip: ClipPeer, late_hash: bool },
     Detach { peer: DeviceId, stable_id: usize },
     Control { peer: DeviceId, message: Message },
     Stream { peer: DeviceId, recv: RecvStream },
@@ -123,6 +124,8 @@ struct Out {
     running: HashMap<u64, (AbortHandle, u64)>,
     sent: HashMap<u64, u64>,
     last_progress: Option<Instant>,
+    /// The offer went out with empty digests; each file's digest follows its last byte in `file-hash`.
+    late_hash: bool,
 }
 
 struct In {
@@ -132,19 +135,46 @@ struct In {
     running: HashMap<u64, (AbortHandle, u64)>,
     received: HashMap<u64, u64>,
     last_progress: Option<Instant>,
+    /// Files whose bytes all arrived before their `file-hash`, with the part's digest.
+    unverified: HashMap<u64, Vec<u8>>,
 }
 
 enum TaskEnd {
-    Hashed { id: TransferId, hashes: Result<Vec<Vec<u8>>, Error> },
-    Header { peer: DeviceId, recv: RecvStream, header: Result<Envelope, Error> },
-    Received { id: TransferId, file: u64, seq: u64, end: Received },
-    Sent { id: TransferId, file: u64, seq: u64, result: Result<(), Error> },
-    ClipServed { peer: DeviceId, result: Result<(), Error> },
-    ClipPulled { peer: DeviceId, header: ClipPull, result: Result<u64, Error> },
+    Hashed {
+        id: TransferId,
+        hashes: Result<Vec<Vec<u8>>, Error>,
+    },
+    Header {
+        peer: DeviceId,
+        recv: RecvStream,
+        header: Result<Envelope, Error>,
+    },
+    Received {
+        id: TransferId,
+        file: u64,
+        seq: u64,
+        end: Received,
+    },
+    /// `Ok(Some(digest))` when the file was hashed while it was sent.
+    Sent {
+        id: TransferId,
+        file: u64,
+        seq: u64,
+        result: Result<Option<Vec<u8>>, Error>,
+    },
+    ClipServed {
+        peer: DeviceId,
+        result: Result<(), Error>,
+    },
+    ClipPulled {
+        peer: DeviceId,
+        header: ClipPull,
+        result: Result<u64, Error>,
+    },
 }
 
 enum Received {
-    Complete { verified: bool },
+    Complete { digest: Vec<u8> },
     Paused { durable: u64 },
     Overrun(Overrun),
     Failed(Error),
@@ -171,6 +201,8 @@ pub struct TransferActor {
     commands: mpsc::Receiver<Command>,
     events: mpsc::UnboundedSender<TransferEvent>,
     sessions: HashMap<DeviceId, SessionHandle>,
+    /// Peers whose hello carries `LATE_HASH`.
+    late_hash: HashSet<DeviceId>,
     outgoing: HashMap<TransferId, Out>,
     incoming: HashMap<TransferId, In>,
     tasks: JoinSet<TaskEnd>,
@@ -193,6 +225,7 @@ pub fn transfers(inbox: Inbox) -> (TransferHandle, TransferActor, mpsc::Unbounde
         commands,
         events,
         sessions: HashMap::new(),
+        late_hash: HashSet::new(),
         outgoing: HashMap::new(),
         incoming: HashMap::new(),
         tasks: JoinSet::new(),
@@ -264,8 +297,9 @@ impl TransferHandle {
     }
 
     /// `peer` has a new live session; unfinished transfers with it resume there, and it gets the kept clip.
-    pub async fn attach(&self, peer: DeviceId, session: SessionHandle, clip: ClipPeer) {
-        self.tell(Command::Attach { peer, session, clip }).await;
+    /// `late_hash`: its hello carries `LATE_HASH`.
+    pub async fn attach(&self, peer: DeviceId, session: SessionHandle, clip: ClipPeer, late_hash: bool) {
+        self.tell(Command::Attach { peer, session, clip, late_hash }).await;
     }
 
     pub async fn detach(&self, peer: DeviceId, stable_id: usize) {
@@ -333,7 +367,12 @@ impl TransferActor {
 
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::Attach { peer, session, clip } => {
+            Command::Attach { peer, session, clip, late_hash } => {
+                if late_hash {
+                    self.late_hash.insert(peer.clone());
+                } else {
+                    self.late_hash.remove(&peer);
+                }
                 self.attach(peer.clone(), session).await;
                 self.offer_kept_clip(&peer, clip).await;
             }
@@ -397,6 +436,7 @@ impl TransferActor {
                 running: HashMap::new(),
                 received: HashMap::new(),
                 last_progress: None,
+                unverified: HashMap::new(),
             };
             self.incoming.insert(id, incoming);
         }
@@ -466,6 +506,7 @@ impl TransferActor {
                 Ok(())
             }
             Message::FileDone(done) => self.on_file_done(peer, &done),
+            Message::FileHash(hash) => self.on_file_hash(peer, hash).await,
             Message::ClipOffer(offer) => {
                 self.on_clip_offer(peer, offer);
                 Ok(())
@@ -533,6 +574,7 @@ impl TransferActor {
             running: HashMap::new(),
             received: HashMap::new(),
             last_progress: None,
+            unverified: HashMap::new(),
         };
         self.incoming.insert(id, incoming);
         self.update_busy(peer);
@@ -655,6 +697,29 @@ impl TransferActor {
         Ok(())
     }
 
+    /// A file's digest, after its last byte; the file is checked now if its bytes all arrived, else when they do.
+    async fn on_file_hash(&mut self, peer: &DeviceId, hash: FileHash) -> Result<(), Error> {
+        let unexpected = Error::Unexpected("file-hash");
+        let Some(incoming) = self.incoming.get_mut(&hash.transfer).filter(|incoming| incoming.record.peer == *peer)
+        else {
+            return Err(unexpected);
+        };
+        let record = incoming.record.file_mut(hash.file).ok_or(Error::Unexpected("file-hash"))?;
+        if record.done.is_some() || record.sha256 == hash.sha256 {
+            return Ok(());
+        }
+        if !record.sha256.is_empty() {
+            return Err(unexpected);
+        }
+        record.sha256 = hash.sha256;
+        let digest = incoming.unverified.remove(&hash.file);
+        self.save(hash.transfer);
+        if let Some(digest) = digest {
+            self.verify(hash.transfer, hash.file, &digest).await;
+        }
+        Ok(())
+    }
+
     fn start_send(&mut self, peer: &DeviceId, sources: Vec<Source>) -> Result<TransferId, Error> {
         if sources.is_empty() {
             return Err(Error::Unexpected("a transfer without files"));
@@ -674,6 +739,7 @@ impl TransferActor {
             files.push(FileMeta { id: index, name, size: source.size, mime: source.mime, sha256: Vec::new() });
         }
         let to_hash: Vec<(Arc<File>, u64)> = (0..).map_while(|index| shared.get(&index).cloned()).collect();
+        let late_hash = self.late_hash.contains(peer);
         let out = Out {
             peer: peer.clone(),
             sources: shared,
@@ -685,9 +751,15 @@ impl TransferActor {
             running: HashMap::new(),
             sent: HashMap::new(),
             last_progress: None,
+            late_hash,
         };
         self.outgoing.insert(id, out);
-        self.tasks.spawn(async move { TaskEnd::Hashed { id, hashes: blocking(move || hash_all(&to_hash)).await } });
+        if late_hash {
+            let hashes = Ok(vec![Vec::new(); to_hash.len()]);
+            self.tasks.spawn(async move { TaskEnd::Hashed { id, hashes } });
+        } else {
+            self.tasks.spawn(async move { TaskEnd::Hashed { id, hashes: blocking(move || hash_all(&to_hash)).await } });
+        }
         self.update_busy(peer);
         Ok(id)
     }
@@ -727,8 +799,9 @@ impl TransferActor {
             let ticker = Ticker { tx: ticks_tx.clone(), id, file: next.file, seq: *next_seq };
             let header = FileData { transfer: id, file: next.file, offset: next.offset };
             let session = session.clone();
+            let late_hash = out.late_hash;
             let abort = tasks.spawn(async move {
-                let result = send_file(&session, header, &file, size, &ticker).await;
+                let result = send_file(&session, header, &file, size, &ticker, late_hash).await;
                 TaskEnd::Sent { id, file: ticker.file, seq: ticker.seq, result }
             });
             out.running.insert(next.file, (abort, *next_seq));
@@ -751,8 +824,13 @@ impl TransferActor {
                 if out.running.get(&file).is_some_and(|(_, running)| *running == seq) {
                     out.running.remove(&file);
                 }
-                if let Err(error) = result {
-                    log::info!("{}: sending file {file} of {id} stopped: {error}", out.peer);
+                match result {
+                    Ok(Some(sha256)) => {
+                        let (peer, hash) = (out.peer.clone(), FileHash { transfer: id, file, sha256 });
+                        self.send_to(&peer, Message::FileHash(hash)).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::info!("{}: sending file {file} of {id} stopped: {error}", out.peer),
                 }
                 self.pump(id);
             }
@@ -799,11 +877,11 @@ impl TransferActor {
             }
         };
         let Some(record) = incoming.record.files.iter().find(|file| file.id == header.file) else { return };
-        let (part, expected) = (record.part.clone(), record.sha256.clone());
+        let part = record.part.clone();
         *next_seq += 1;
         let ticker = Ticker { tx: ticks_tx.clone(), id: header.transfer, file: header.file, seq: *next_seq };
         let abort = tasks.spawn(async move {
-            let end = receive(recv, &part, budget, &expected, &ticker).await;
+            let end = receive(recv, &part, budget, &ticker).await;
             TaskEnd::Received { id: ticker.id, file: ticker.file, seq: ticker.seq, end }
         });
         incoming.running.insert(header.file, (abort, *next_seq));
@@ -831,21 +909,14 @@ impl TransferActor {
                 self.save(id);
                 return;
             }
-            Received::Complete { verified: true } => match self.inbox.publish(&record.part, &record.name) {
-                Ok(path) => {
-                    log::info!("{peer}: received {}", path.display());
-                    record.path = Some(path);
-                    true
-                }
-                Err(error) => {
-                    log::error!("publishing {}: {error}", record.name);
-                    false
-                }
-            },
-            Received::Complete { verified: false } => {
-                log::warn!("{peer}: {} does not match its hash", record.name);
-                false
+            Received::Complete { digest } if record.sha256.is_empty() => {
+                record.durable = record.size;
+                incoming.state.stream_ended(file, record.size);
+                incoming.unverified.insert(file, digest);
+                self.save(id);
+                return;
             }
+            Received::Complete { digest } => return self.verify(id, file, &digest).await,
             Received::Overrun(overrun) => {
                 log::warn!("{peer}: {}: {overrun}", record.name);
                 false
@@ -855,6 +926,37 @@ impl TransferActor {
                 false
             }
         };
+        self.file_ended(id, file, ok).await;
+    }
+
+    /// The file's bytes all arrived and its expected digest is known: publish it when they match.
+    async fn verify(&mut self, id: TransferId, file: u64, digest: &[u8]) {
+        let Some(incoming) = self.incoming.get_mut(&id) else { return };
+        let peer = &incoming.record.peer;
+        let Some(record) = incoming.record.files.iter_mut().find(|record| record.id == file) else { return };
+        let ok = if record.sha256 == digest {
+            match self.inbox.publish(&record.part, &record.name) {
+                Ok(path) => {
+                    log::info!("{peer}: received {}", path.display());
+                    record.path = Some(path);
+                    true
+                }
+                Err(error) => {
+                    log::error!("publishing {}: {error}", record.name);
+                    false
+                }
+            }
+        } else {
+            log::warn!("{peer}: {} does not match its hash", record.name);
+            false
+        };
+        self.file_ended(id, file, ok).await;
+    }
+
+    async fn file_ended(&mut self, id: TransferId, file: u64, ok: bool) {
+        let Some(incoming) = self.incoming.get_mut(&id) else { return };
+        let peer = incoming.record.peer.clone();
+        let Some(record) = incoming.record.file_mut(file) else { return };
         if !ok {
             inbox::remove_quietly(&record.part);
         }
@@ -1085,37 +1187,52 @@ impl Drop for Outbound {
 }
 
 /// Sends the file from the header's offset; the next batch is read while the current one is written to the stream.
+/// With `late_hash` it reads from the start and returns the whole file's digest; bytes before the offset are only
+/// hashed.
 async fn send_file(
     session: &SessionHandle,
     header: FileData,
     file: &Arc<File>,
     size: u64,
     ticker: &Ticker,
-) -> Result<(), Error> {
-    let mut offset = header.offset;
+    late_hash: bool,
+) -> Result<Option<Vec<u8>>, Error> {
+    let resume_at = header.offset;
+    let mut offset = if late_hash { 0 } else { resume_at };
+    let mut hasher = late_hash.then(|| digest::Context::new(&digest::SHA256));
     let stream = session.connection().open_uni().await?;
     let mut out = Outbound { stream, finished: false };
     write_frame(&mut out.stream, Message::FileData(header), session.tap()).await?;
-    let mut next = (offset < size).then(|| read_batch(file.clone(), offset, size, Vec::new()));
+    let mut next = (offset < size).then(|| read_batch(file.clone(), offset, size, Vec::new(), hasher.take()));
     while let Some(reading) = next.take() {
-        let buf = reading.await.map_err(joined)??;
+        let (buf, context) = reading.await.map_err(joined)??;
+        hasher = context;
+        let start = offset;
         offset += buf.len() as u64;
         let spare = if offset < size { Vec::with_capacity(BATCH) } else { Vec::new() };
-        next = (offset < size).then(|| read_batch(file.clone(), offset, size, spare));
-        out.stream.write_all(&buf).await?;
-        ticker.progress(offset);
+        next = (offset < size).then(|| read_batch(file.clone(), offset, size, spare, hasher.take()));
+        let skip = usize::try_from(resume_at.saturating_sub(start)).map_or(buf.len(), |skip| skip.min(buf.len()));
+        if skip < buf.len() {
+            out.stream.write_all(&buf[skip..]).await?;
+            ticker.progress(offset);
+        }
     }
     out.stream.finish()?;
     out.finished = true;
-    Ok(())
+    Ok(hasher.map(|context| context.finish().as_ref().to_vec()))
 }
 
+/// A batch's bytes and the digest context that has hashed them, when the file is hashed while sent.
+type Batch = (Vec<u8>, Option<digest::Context>);
+
+/// Reads the batch at `offset` into `buf` and adds it to `hasher`, off the runtime thread.
 fn read_batch(
     file: Arc<File>,
     offset: u64,
     size: u64,
     mut buf: Vec<u8>,
-) -> tokio::task::JoinHandle<Result<Vec<u8>, Error>> {
+    mut hasher: Option<digest::Context>,
+) -> tokio::task::JoinHandle<Result<Batch, Error>> {
     tokio::task::spawn_blocking(move || {
         let want = usize::try_from(size - offset).map_or(BATCH, |left| left.min(BATCH));
         buf.resize(want, 0);
@@ -1127,7 +1244,10 @@ fn read_batch(
             }
             filled += read;
         }
-        Ok(buf)
+        if let Some(hasher) = &mut hasher {
+            hasher.update(&buf);
+        }
+        Ok((buf, hasher))
     })
 }
 
@@ -1152,13 +1272,7 @@ async fn flush(mut part: Part, mut batch: Vec<u8>, synced: u64, sync: bool) -> R
     .await
 }
 
-async fn receive(
-    mut recv: RecvStream,
-    part: &std::path::Path,
-    mut budget: Budget,
-    expected: &[u8],
-    ticker: &Ticker,
-) -> Received {
+async fn receive(mut recv: RecvStream, part: &std::path::Path, mut budget: Budget, ticker: &Ticker) -> Received {
     let (path, offset) = (part.to_path_buf(), budget.offset());
     let mut part = match blocking(move || Part::open(&path, offset)).await {
         Ok(part) => part,
@@ -1204,7 +1318,7 @@ async fn receive(
         return Received::Overrun(overrun);
     }
     match flush(part, batch, synced, true).await {
-        Ok((part, _, _)) => Received::Complete { verified: part.digest() == expected },
+        Ok((part, _, _)) => Received::Complete { digest: part.digest() },
         Err(error) => Received::Failed(error),
     }
 }

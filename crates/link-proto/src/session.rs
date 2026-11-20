@@ -68,6 +68,7 @@ impl SessionState {
             | Message::ResumeAt(_)
             | Message::Cancel(_)
             | Message::FileDone(_)
+            | Message::FileHash(_)
             | Message::ClipOffer(_)
             | Message::ClipPull(_)) => Ok(Inbound::Transfer(message)),
             message if receives(self.role, &message) => Ok(Inbound::Deliver(message)),

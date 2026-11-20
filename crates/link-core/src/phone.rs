@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
-    Hello, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, bluetooth_address,
+    Hello, LATE_HASH, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL,
+    bluetooth_address,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -293,6 +294,7 @@ impl Phone {
             CLIP_CLOCK,
             SHARE_OUTBOX,
             HEARTBEAT,
+            LATE_HASH,
         ]
         .map(str::to_owned);
         Hello { version: VERSION, name: self.name.clone(), addresses: features.to_vec() }

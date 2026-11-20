@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd, LATE_HASH,
     MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
     NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot,
     PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL,
@@ -868,7 +868,7 @@ impl ClientActor {
             items: desktop.has(CLIP_ITEMS),
             clock: desktop.has(CLIP_CLOCK),
         };
-        self.transfers.attach(id.clone(), handle.clone(), clip).await;
+        self.transfers.attach(id.clone(), handle.clone(), clip, desktop.has(LATE_HASH)).await;
         self.outbox.live(id.clone(), handle.clone(), desktop.has(SHARE_OUTBOX));
         self.retries.remove(&id);
         if via == Via::Bluetooth {
