@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -96,7 +97,7 @@ fun PairingScreen(
     LaunchedEffect(viewModel) { viewModel.paired.collect { pair(it) } }
     BackHandler(typing && !state.busy && state.link == null) { typing = false }
     BackHandler(state.link != null && !state.busy, viewModel::dismissLink)
-    val failure = state.failure?.text(LocalContext.current.resources)
+    val failure = state.failure?.text(LocalResources.current)
     Box(modifier) {
         Screen(background = LinkTheme.scheme.solidRegular) {
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {

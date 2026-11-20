@@ -68,9 +68,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -579,7 +579,7 @@ private fun Picture(
                     Text(stringResource(R.string.viewer_waiting, deskName), t.body, color = s.label2, align = TextAlign.Center)
                 } else {
                     Text(stringResource(R.string.viewer_stopped, deskName), t.body, color = s.label2, align = TextAlign.Center)
-                    val why = state.failure?.text(LocalContext.current.resources) ?: stopped.ifEmpty { null }
+                    val why = state.failure?.text(LocalResources.current) ?: stopped.ifEmpty { null }
                     if (why != null) Text(why, t.footnote, color = s.label3, align = TextAlign.Center)
                 }
             }

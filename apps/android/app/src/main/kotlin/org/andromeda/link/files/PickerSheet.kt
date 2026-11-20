@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -386,7 +387,7 @@ private fun Thumbnail(
 fun sendLabel(selected: Map<String, PhoneItem>): String {
     val context = LocalContext.current
     val bytes = Formatter.formatShortFileSize(context, selected.values.sumOf { it.size })
-    return context.resources.getQuantityString(R.plurals.picker_send, selected.size, selected.size, bytes)
+    return LocalResources.current.getQuantityString(R.plurals.picker_send, selected.size, selected.size, bytes)
 }
 
 /** An empty or locked tab: a symbol, a headline, and optionally a hint and one action. */

@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -118,7 +119,7 @@ fun ActivityScreen(
     }
     val toast =
         openFailure ?: when (val shown = message) {
-            is ActivityMessage.Failed -> shown.failure.text(context.resources)
+            is ActivityMessage.Failed -> shown.failure.text(LocalResources.current)
             ActivityMessage.Expired -> stringResource(R.string.activity_expired)
             null -> null
         }

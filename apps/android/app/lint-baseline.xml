@@ -134,182 +134,6 @@
     </issue>
 
     <issue
-        id="AndroidGradlePluginVersion"
-        message="A newer version of com.android.application than 8.11.1 is available: 9.5.0. (There is also a newer version of 8.11.𝑥 available, if upgrading to 9.5.0 is difficult: 8.11.2)"
-        errorLine1="agp = &quot;8.11.1&quot;"
-        errorLine2="      ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="2"
-            column="7"/>
-    </issue>
-
-    <issue
-        id="AndroidGradlePluginVersion"
-        message="A newer version of com.android.library than 8.11.1 is available: 9.5.0. (There is also a newer version of 8.11.𝑥 available, if upgrading to 9.5.0 is difficult: 8.11.2)"
-        errorLine1="agp = &quot;8.11.1&quot;"
-        errorLine2="      ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="2"
-            column="7"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.compose:compose-bom than 2025.06.01 is available: 2026.09.00"
-        errorLine1="composeBom = &quot;2025.06.01&quot;"
-        errorLine2="             ~~~~~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="5"
-            column="14"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.activity:activity-compose than 1.10.1 is available: 1.13.0"
-        errorLine1="activityCompose = &quot;1.10.1&quot;"
-        errorLine2="                  ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="6"
-            column="19"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.lifecycle:lifecycle-process than 2.9.1 is available: 2.11.0"
-        errorLine1="lifecycle = &quot;2.9.1&quot;"
-        errorLine2="            ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="7"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.lifecycle:lifecycle-runtime-compose than 2.9.1 is available: 2.11.0"
-        errorLine1="lifecycle = &quot;2.9.1&quot;"
-        errorLine2="            ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="7"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.lifecycle:lifecycle-viewmodel-compose than 2.9.1 is available: 2.11.0"
-        errorLine1="lifecycle = &quot;2.9.1&quot;"
-        errorLine2="            ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="7"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.core:core-ktx than 1.16.0 is available: 1.19.1"
-        errorLine1="coreKtx = &quot;1.16.0&quot;"
-        errorLine2="          ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="8"
-            column="11"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.camera:camera-camera2 than 1.4.2 is available: 1.6.2"
-        errorLine1="camerax = &quot;1.4.2&quot;"
-        errorLine2="          ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="10"
-            column="11"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.camera:camera-lifecycle than 1.4.2 is available: 1.6.2"
-        errorLine1="camerax = &quot;1.4.2&quot;"
-        errorLine2="          ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="10"
-            column="11"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.camera:camera-view than 1.4.2 is available: 1.6.2"
-        errorLine1="camerax = &quot;1.4.2&quot;"
-        errorLine2="          ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="10"
-            column="11"/>
-    </issue>
-
-    <issue
-        id="NewerVersionAvailable"
-        message="A newer version of org.jetbrains.kotlin.android than 2.2.20 is available: 2.4.21"
-        errorLine1="kotlin = &quot;2.2.20&quot;"
-        errorLine2="         ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="3"
-            column="10"/>
-    </issue>
-
-    <issue
-        id="NewerVersionAvailable"
-        message="A newer version of org.jetbrains.kotlin.plugin.compose than 2.2.20 is available: 2.4.21"
-        errorLine1="kotlin = &quot;2.2.20&quot;"
-        errorLine2="         ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="3"
-            column="10"/>
-    </issue>
-
-    <issue
-        id="NewerVersionAvailable"
-        message="A newer version of org.jetbrains.kotlinx:kotlinx-coroutines-android than 1.10.2 is available: 1.11.0"
-        errorLine1="coroutines = &quot;1.10.2&quot;"
-        errorLine2="             ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="4"
-            column="14"/>
-    </issue>
-
-    <issue
-        id="NewerVersionAvailable"
-        message="A newer version of net.java.dev.jna:jna than 5.17.0 is available: 5.19.1"
-        errorLine1="jna = &quot;5.17.0&quot;"
-        errorLine2="      ~~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="9"
-            column="7"/>
-    </issue>
-
-    <issue
-        id="NewerVersionAvailable"
-        message="A newer version of com.google.zxing:core than 3.5.3 is available: 3.5.4"
-        errorLine1="zxing = &quot;3.5.3&quot;"
-        errorLine2="        ~~~~~~~">
-        <location
-            file="$HOME/src/desktop/link/apps/android/gradle/libs.versions.toml"
-            line="11"
-            column="9"/>
-    </issue>
-
-    <issue
         id="ModifierParameter"
         message="Modifier parameter should be the first optional parameter"
         errorLine1="    modifier: Modifier = Modifier,"
@@ -946,6 +770,105 @@
             file="src/main/kotlin/org/andromeda/link/notifications/TransferNotifier.kt"
             line="102"
             column="44"/>
+    </issue>
+
+    <issue
+        id="AndroidGradlePluginVersion"
+        message="A newer version of com.android.application than 8.11.2 is available: 9.5.2"
+        errorLine1="agp = &quot;8.11.2&quot;"
+        errorLine2="      ~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="4"
+            column="7"/>
+    </issue>
+
+    <issue
+        id="AndroidGradlePluginVersion"
+        message="A newer version of com.android.library than 8.11.2 is available: 9.5.2"
+        errorLine1="agp = &quot;8.11.2&quot;"
+        errorLine2="      ~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="4"
+            column="7"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.compose:compose-bom than 2025.06.01 is available: 2026.11.01"
+        errorLine1="composeBom = &quot;2025.06.01&quot;"
+        errorLine2="             ~~~~~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="7"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.lifecycle:lifecycle-process than 2.9.1 is available: 2.11.1"
+        errorLine1="lifecycle = &quot;2.9.1&quot;"
+        errorLine2="            ~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="9"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.lifecycle:lifecycle-runtime-compose than 2.9.1 is available: 2.11.1"
+        errorLine1="lifecycle = &quot;2.9.1&quot;"
+        errorLine2="            ~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="9"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.lifecycle:lifecycle-viewmodel-compose than 2.9.1 is available: 2.11.1"
+        errorLine1="lifecycle = &quot;2.9.1&quot;"
+        errorLine2="            ~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="9"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.core:core-ktx than 1.16.0 is available: 1.19.1"
+        errorLine1="coreKtx = &quot;1.16.0&quot;"
+        errorLine2="          ~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="10"
+            column="11"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of org.jetbrains.kotlin.android than 2.2.20 is available: 2.4.21"
+        errorLine1="kotlin = &quot;2.2.20&quot;"
+        errorLine2="         ~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="5"
+            column="10"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of org.jetbrains.kotlin.plugin.compose than 2.2.20 is available: 2.4.21"
+        errorLine1="kotlin = &quot;2.2.20&quot;"
+        errorLine2="         ~~~~~~~~">
+        <location
+            file="../gradle/libs.versions.toml"
+            line="5"
+            column="10"/>
     </issue>
 
 </issues>

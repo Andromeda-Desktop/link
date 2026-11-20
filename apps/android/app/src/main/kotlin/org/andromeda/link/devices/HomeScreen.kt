@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -134,7 +135,7 @@ fun HomeScreen(
     // Only open and close recompose Home; the sheet reads the rest itself.
     val pickOpen by remember { derivedStateOf { pick.value.open } }
     val context = LocalContext.current
-    val resources = context.resources
+    val resources = LocalResources.current
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) viewModel.notificationsAllowed()

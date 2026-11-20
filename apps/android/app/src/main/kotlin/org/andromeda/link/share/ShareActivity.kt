@@ -14,7 +14,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -68,7 +68,7 @@ private fun ShareScreen(
     onDone: (String?) -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val resources = LocalContext.current.resources
+    val resources = LocalResources.current
     val done by rememberUpdatedState(onDone)
     LaunchedEffect(viewModel) {
         viewModel.outcome.collect { outcome ->

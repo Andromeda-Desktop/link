@@ -73,6 +73,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -153,7 +154,7 @@ fun RemoteScreen(
             }
         }
     }
-    val resources = LocalContext.current.resources
+    val resources = LocalResources.current
     Box(modifier) {
         Screen(toast = failure?.text(resources), onToastEnd = viewModel::failureShown) {
             if (mode == RemoteMode.Present) {
@@ -199,7 +200,7 @@ private fun Pad(
                 !desk.input -> surface
                 raw ->
                     surface.rawTouchpad(
-                        context.resources.displayMetrics,
+                        LocalResources.current.displayMetrics,
                         onTick = actions::tick,
                     ) { actions.send(RemoteInput.Touch(it)) }
                 else -> surface.pointerInput(actions) { interpret(actions, actions::move) }
