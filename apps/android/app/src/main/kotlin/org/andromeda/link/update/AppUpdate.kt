@@ -12,15 +12,23 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.andromeda.link.MainActivity
 import org.andromeda.link.R
 import org.andromeda.link.notifications.Channels
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 
 /** Updates the app from the newest GitHub release: the APK streams into a PackageInstaller session, Android confirms. */
@@ -38,11 +46,14 @@ object AppUpdate {
             val bytes: Long,
         ) : State
 
-        /** `progress` is 0..1, or null while the size is unknown. */
+        /** `total` is 0 while the size is unknown. */
         data class Downloading(
-            val version: String,
-            val progress: Float?,
-        ) : State
+            val update: Available,
+            val received: Long,
+            val total: Long,
+        ) : State {
+            val progress get() = if (total > 0) (received.toFloat() / total).coerceIn(0f, 1f) else 0f
+        }
 
         data object Installing : State
 
@@ -51,12 +62,81 @@ object AppUpdate {
         ) : State
     }
 
+    sealed interface Event {
+        data object Check : Event
+
+        data class Checked(
+            val result: State,
+        ) : Event
+
+        data class Start(
+            val update: State.Available,
+        ) : Event
+
+        data class Progress(
+            val received: Long,
+            val total: Long,
+        ) : Event
+
+        data object Downloaded : Event
+
+        data object Cancelled : Event
+
+        data class Fail(
+            val message: String,
+        ) : Event
+
+        data object Installed : Event
+
+        data object Aborted : Event
+    }
+
+    /** The one transition function: returns null for an event the state does not accept. */
+    internal fun reduce(
+        state: State,
+        event: Event,
+    ): State? =
+        when (event) {
+            Event.Check -> State.Checking.takeIf { state !is State.Downloading && state != State.Installing && state != State.Checking }
+            is Event.Checked ->
+                event.result.takeIf {
+                    state == State.Checking && (it == State.Current || it is State.Available || it is State.Failed)
+                }
+            is Event.Start -> State.Downloading(event.update, 0, event.update.bytes).takeIf { state == event.update }
+            is Event.Progress ->
+                (state as? State.Downloading)
+                    ?.takeIf { event.received >= it.received }
+                    ?.copy(received = event.received, total = event.total)
+            Event.Downloaded -> State.Installing.takeIf { state is State.Downloading }
+            Event.Cancelled -> (state as? State.Downloading)?.update
+            is Event.Fail ->
+                State.Failed(event.message).takeIf {
+                    state == State.Checking || state is State.Downloading || state == State.Installing
+                }
+            Event.Installed -> State.Current.takeIf { state == State.Installing }
+            Event.Aborted -> State.Idle.takeIf { state == State.Installing }
+        }
+
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state
 
+    private fun send(event: Event): Boolean {
+        while (true) {
+            val current = _state.value
+            val next = reduce(current, event) ?: return false
+            if (_state.compareAndSet(current, next)) return true
+        }
+    }
+
+    /** Outlives every screen: leaving Settings or the prompt must not stop a download. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var job: Job? = null
+
+    @Volatile private var connection: HttpURLConnection? = null
+
     suspend fun check(context: Context) {
-        _state.value = State.Checking
-        _state.value =
+        if (!send(Event.Check)) return
+        val result =
             withContext(Dispatchers.IO) {
                 runCatching {
                     val release = JSONObject(get(LATEST).inputStream.bufferedReader().use { it.readText() })
@@ -78,11 +158,11 @@ object AppUpdate {
                     }
                 }.getOrElse { State.Failed(it.message ?: it.javaClass.simpleName) }
             }
+        send(Event.Checked(result))
     }
 
     /** The background check: posts one notification per new version, and leaves a running install alone. */
     suspend fun checkAndNotify(context: Context) {
-        if (_state.value is State.Downloading || _state.value == State.Installing) return
         check(context)
         val update = _state.value as? State.Available ?: return
         val prefs = prefs(context)
@@ -118,54 +198,77 @@ object AppUpdate {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    suspend fun install(
+    fun install(
         context: Context,
         update: State.Available,
     ) {
-        _state.value = State.Downloading(update.version, null)
-        val failure =
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val installer = context.packageManager.packageInstaller
-                    val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-                    params.setAppPackageName(context.packageName)
-                    val id = installer.createSession(params)
-                    installer.openSession(id).use { session ->
-                        try {
-                            val connection = get(update.url)
-                            val total = connection.contentLengthLong.takeIf { it > 0 } ?: update.bytes
-                            connection.inputStream.use { input ->
-                                session.openWrite("link.apk", 0, total.takeIf { it > 0 } ?: -1).use { output ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    var written = 0L
-                                    while (true) {
-                                        val read = input.read(buffer)
-                                        if (read < 0) break
-                                        output.write(buffer, 0, read)
-                                        written += read
-                                        if (total > 0) _state.value = State.Downloading(update.version, written.toFloat() / total)
-                                    }
-                                    session.fsync(output)
-                                }
+        if (!send(Event.Start(update))) return
+        val app = context.applicationContext
+        job = scope.launch { download(app, update) }
+    }
+
+    /** Stops a download; the installer session is abandoned and the update shows as available again. */
+    fun cancel() {
+        job?.cancel()
+        // A blocked read only returns when the socket closes.
+        connection?.disconnect()
+    }
+
+    private suspend fun download(
+        context: Context,
+        update: State.Available,
+    ) {
+        try {
+            val installer = context.packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            params.setAppPackageName(context.packageName)
+            val id = installer.createSession(params)
+            installer.openSession(id).use { session ->
+                try {
+                    val http = open(update.url)
+                    connection = http
+                    http.ok()
+                    val total = http.contentLengthLong.takeIf { it > 0 } ?: update.bytes
+                    http.inputStream.use { input ->
+                        session.openWrite("link.apk", 0, total.takeIf { it > 0 } ?: -1).use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            var received = 0L
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                output.write(buffer, 0, read)
+                                received += read
+                                send(Event.Progress(received, total))
                             }
-                            _state.value = State.Installing
-                            val result =
-                                PendingIntent.getBroadcast(
-                                    context,
-                                    id,
-                                    Intent(context, UpdateReceiver::class.java),
-                                    // Mutable: the installer adds the status extras.
-                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-                                )
-                            session.commit(result.intentSender)
-                        } catch (e: Exception) {
-                            session.abandon()
-                            throw e
+                            session.fsync(output)
                         }
                     }
-                }.exceptionOrNull()
+                    currentCoroutineContext().ensureActive()
+                    send(Event.Downloaded)
+                    val result =
+                        PendingIntent.getBroadcast(
+                            context,
+                            id,
+                            Intent(context, UpdateReceiver::class.java),
+                            // Mutable: the installer adds the status extras.
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                        )
+                    session.commit(result.intentSender)
+                } catch (e: Exception) {
+                    session.abandon()
+                    throw e
+                }
             }
-        if (failure != null) _state.value = State.Failed(failure.message ?: failure.javaClass.simpleName)
+        } catch (e: Exception) {
+            when {
+                !currentCoroutineContext().isActive -> send(Event.Cancelled)
+                e is SocketTimeoutException -> send(Event.Fail(context.getString(R.string.update_stalled)))
+                else -> send(Event.Fail(e.message ?: e.javaClass.simpleName))
+            }
+        } finally {
+            connection = null
+        }
     }
 
     internal fun finished(
@@ -178,21 +281,29 @@ object AppUpdate {
                 val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
                 context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
-            PackageInstaller.STATUS_SUCCESS -> _state.value = State.Current
-            PackageInstaller.STATUS_FAILURE_ABORTED -> _state.value = State.Idle
-            else ->
-                _state.value =
-                    State.Failed(intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Install failed")
+            PackageInstaller.STATUS_SUCCESS -> send(Event.Installed)
+            PackageInstaller.STATUS_FAILURE_ABORTED -> send(Event.Aborted)
+            else -> send(Event.Fail(intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Install failed"))
         }
     }
 
-    private fun get(url: String): HttpURLConnection =
+    private fun get(url: String): HttpURLConnection = open(url).ok()
+
+    private fun open(url: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", "AndromedaLink")
-            if (responseCode !in 200..299) throw IllegalStateException("GitHub answered $responseCode")
+        }
+
+    private fun HttpURLConnection.ok() =
+        apply {
+            if (responseCode !in
+                200..299
+            ) {
+                throw IllegalStateException("GitHub answered $responseCode")
+            }
         }
 
     /** Compares dotted numeric versions ("0.2.10" > "0.2.9"); a missing part counts as 0. */

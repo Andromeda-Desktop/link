@@ -1,5 +1,6 @@
 package org.andromeda.link.devices
 
+import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,14 +50,20 @@ internal fun SoftwareUpdate() {
     val (action, onAction) =
         when (u) {
             AppUpdate.State.Idle, AppUpdate.State.Current -> R.string.update_check to { check() }
-            is AppUpdate.State.Available -> R.string.update_install to { scope.launch { AppUpdate.install(context, u) } }
+            is AppUpdate.State.Available -> R.string.update_install to { AppUpdate.install(context, u) }
+            is AppUpdate.State.Downloading -> R.string.cancel to { AppUpdate.cancel() }
             is AppUpdate.State.Failed -> R.string.update_retry to { check() }
-            else -> null to null
+            AppUpdate.State.Checking, AppUpdate.State.Installing -> null to null
         }
     val progress = (u as? AppUpdate.State.Downloading)?.progress ?: 0f
     val downloading =
         (u as? AppUpdate.State.Downloading)?.let {
-            stringResource(R.string.update_downloading, it.version, (progress * 100).toInt())
+            val received = Formatter.formatShortFileSize(context, it.received)
+            if (it.total > 0) {
+                stringResource(R.string.update_downloading, it.update.version, received, Formatter.formatShortFileSize(context, it.total))
+            } else {
+                stringResource(R.string.update_downloading_unknown, it.update.version, received)
+            }
         }
     Column {
         ValueRow(

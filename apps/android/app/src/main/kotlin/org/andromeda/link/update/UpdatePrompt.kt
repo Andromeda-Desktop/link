@@ -11,7 +11,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,7 +19,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.launch
 import org.andromeda.link.R
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
@@ -33,7 +31,6 @@ import org.andromeda.link.ui.theme.elevation
 @Composable
 fun UpdatePrompt() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val update by AppUpdate.state.collectAsStateWithLifecycle()
     var dismissed by remember { mutableStateOf(AppUpdate.dismissed(context)) }
     LaunchedEffect(Unit) { if (AppUpdate.state.value == AppUpdate.State.Idle) AppUpdate.check(context) }
@@ -63,7 +60,7 @@ fun UpdatePrompt() {
             )
             Capsule(
                 stringResource(R.string.update_install),
-                { scope.launch { AppUpdate.install(context, available) } },
+                { AppUpdate.install(context, available) },
                 Modifier.fillMaxWidth(),
                 kind = CapsuleKind.Primary,
             )
