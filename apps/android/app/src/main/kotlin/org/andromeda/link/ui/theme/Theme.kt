@@ -14,11 +14,16 @@ import androidx.core.view.WindowCompat
 
 private val LocalColors = staticCompositionLocalOf { LightColors }
 private val LocalType = staticCompositionLocalOf { LinkType() }
+private val LocalScheme = staticCompositionLocalOf { Tok.Scheme.light }
+private val LocalPhoneType = staticCompositionLocalOf { PhoneType() }
 
 /** The app's own design system. Screens are built from foundation primitives and these tokens; no Material. */
 object LinkTheme {
     val colors: LinkColors @Composable get() = LocalColors.current
     val type: LinkType @Composable get() = LocalType.current
+    val scheme: Tok.SchemeToken @Composable get() = LocalScheme.current
+    val phoneType: PhoneType @Composable get() = LocalPhoneType.current
+    val dark: Boolean @Composable get() = LocalColors.current.dark
 }
 
 @Composable
@@ -27,6 +32,7 @@ fun LinkTheme(
     content: @Composable () -> Unit,
 ) {
     val colors = if (dark) DarkColors else LightColors
+    val scheme = if (dark) Tok.Scheme.dark else Tok.Scheme.light
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -40,7 +46,9 @@ fun LinkTheme(
     CompositionLocalProvider(
         LocalColors provides colors,
         LocalType provides LinkType(),
-        LocalIndication provides PressHighlight,
+        LocalScheme provides scheme,
+        LocalPhoneType provides PhoneType(),
+        LocalIndication provides PressHighlight(scheme.fill2),
         LocalTextSelectionColors provides TextSelectionColors(colors.accent, colors.accent.copy(alpha = 0.3f)),
         content = content,
     )

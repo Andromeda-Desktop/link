@@ -11,16 +11,15 @@ import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.invalidateDraw
 import kotlinx.coroutines.launch
 
-/** The pressed state as a faint wash over the content, the design system's `surface-highlight`, instead of a ripple. */
-object PressHighlight : IndicationNodeFactory {
-    override fun create(interactionSource: InteractionSource): DelegatableNode = Node(interactionSource)
-
-    override fun equals(other: Any?): Boolean = other === this
-
-    override fun hashCode(): Int = javaClass.hashCode()
+/** The pressed state as a wash over the content instead of a ripple: two steps up the fill ladder (fill_2). */
+data class PressHighlight(
+    val wash: Color,
+) : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode = Node(interactionSource, wash)
 
     private class Node(
         private val source: InteractionSource,
+        private val wash: Color,
     ) : Modifier.Node(),
         DrawModifierNode {
         private var pressed = false
@@ -41,10 +40,7 @@ object PressHighlight : IndicationNodeFactory {
 
         override fun ContentDrawScope.draw() {
             drawContent()
-            if (pressed) drawRect(WASH)
+            if (pressed) drawRect(wash)
         }
     }
-
-    /** Grey at low alpha reads as a wash on both the white and the near-black surfaces. */
-    private val WASH = Color(0x14808080)
 }

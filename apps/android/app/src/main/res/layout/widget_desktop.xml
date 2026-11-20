@@ -20,12 +20,12 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:ellipsize="end"
-            android:fontFamily="@font/source_sans_3_bold"
+            android:fontFamily="@font/inter_variable"
+            android:textFontWeight="600"
             android:singleLine="true"
             android:text="@string/widget_no_desktop"
             android:textColor="@color/widget_text"
-            android:textSize="17sp"
-            android:textStyle="bold" />
+            android:textSize="17sp" />
 
         <ImageView
             android:id="@+id/widget_battery_glyph"
@@ -41,7 +41,8 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="2dp"
-            android:fontFamily="@font/source_sans_3_semibold"
+            android:fontFamily="@font/inter_variable"
+            android:textFontWeight="600"
             android:textColor="@color/widget_text"
             android:textSize="15sp"
             android:visibility="gone" />
@@ -97,7 +98,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
-                android:fontFamily="@font/source_sans_3_semibold"
+                android:fontFamily="@font/inter_variable"
+                android:textFontWeight="600"
                 android:singleLine="true"
                 android:textColor="@color/widget_text"
                 android:textSize="15sp" />
@@ -107,7 +109,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
-                android:fontFamily="@font/source_sans_3_regular"
+                android:fontFamily="@font/inter_variable"
+                android:textFontWeight="400"
                 android:singleLine="true"
                 android:textColor="@color/widget_text_secondary"
                 android:textSize="13sp" />
@@ -129,7 +132,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:fontFamily="@font/source_sans_3_regular"
+        android:fontFamily="@font/inter_variable"
+        android:textFontWeight="400"
         android:textColor="@color/widget_text_secondary"
         android:textSize="14sp"
         android:visibility="gone" />

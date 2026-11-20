@@ -1,57 +1,74 @@
 package org.andromeda.link.ui.theme
 
 import androidx.compose.runtime.Immutable
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import org.andromeda.link.R
 
-/** Source Sans 3 (SIL OFL 1.1, bundled with its license in assets/licenses). */
-val SourceSans =
+/** Inter (SIL OFL 1.1, bundled with its license in assets/licenses), one instance per token weight. */
+@OptIn(ExperimentalTextApi::class)
+val Inter =
     FontFamily(
-        Font(R.font.source_sans_3_regular, FontWeight.Normal),
-        Font(R.font.source_sans_3_medium, FontWeight.Medium),
-        Font(R.font.source_sans_3_semibold, FontWeight.SemiBold),
-        Font(R.font.source_sans_3_bold, FontWeight.Bold),
-        Font(R.font.source_sans_3_bold, FontWeight.ExtraBold),
+        listOf(300, 400, 500, 600).map {
+            Font(R.font.inter_variable, FontWeight(it), variationSettings = FontVariation.Settings(FontVariation.weight(it)))
+        },
     )
 
-/** The type roles: a small phone scale where body text is 14 sp. */
+/** The token type roles at phone size: desktop size x text_scale_l, in sp so text follows the user's size. */
 @Immutable
-data class LinkType(
-    val hero: TextStyle = role(40, FontWeight.Bold, 1.02f, -1.6f),
-    val displayLarge: TextStyle = role(32, FontWeight.ExtraBold, 1.10f, -1.0f),
-    val displayMedium: TextStyle = role(28, FontWeight.Bold, 1.15f, -0.5f),
-    val displaySmall: TextStyle = role(24, FontWeight.Bold, 1.20f, -0.5f),
-    val headlineLarge: TextStyle = role(20, FontWeight.Bold, 1.20f, -0.2f),
-    val headlineMedium: TextStyle = role(18, FontWeight.Bold, 1.25f, -0.2f),
-    val headlineSmall: TextStyle = role(16, FontWeight.SemiBold, 1.30f, 0f),
-    val titleLarge: TextStyle = role(16, FontWeight.SemiBold, 1.30f, 0f),
-    val titleMedium: TextStyle = role(14, FontWeight.SemiBold, 1.35f, 0f),
-    val titleSmall: TextStyle = role(13, FontWeight.SemiBold, 1.35f, 0f),
-    val bodyLarge: TextStyle = role(14, FontWeight.Normal, 1.50f, 0f),
-    val bodyMedium: TextStyle = role(13, FontWeight.Normal, 1.45f, 0f),
-    val bodySmall: TextStyle = role(12, FontWeight.Normal, 1.40f, 0f),
-    val labelLarge: TextStyle = role(12, FontWeight.SemiBold, 1.30f, 0.2f),
-    val labelMedium: TextStyle = role(11, FontWeight.SemiBold, 1.30f, 0.3f),
-    val labelSmall: TextStyle = role(10, FontWeight.Medium, 1.30f, 0.4f),
-    /** Readouts: transport, counts, tab names. */
-    val mono: TextStyle = role(11, FontWeight.Medium, 1.30f, 1.2f).copy(fontFamily = FontFamily.Monospace),
+data class PhoneType(
+    val caption: TextStyle = phone(Tok.Type.caption),
+    val footnote: TextStyle = phone(Tok.Type.footnote),
+    val body: TextStyle = phone(Tok.Type.body, singleLine = true),
+    val paragraph: TextStyle = phone(Tok.Type.paragraph),
+    val headline: TextStyle = phone(Tok.Type.headline, singleLine = true),
+    val title3: TextStyle = phone(Tok.Type.title3),
+    val title2: TextStyle = phone(Tok.Type.title2),
+    val title1: TextStyle = phone(Tok.Type.title1),
+    val large: TextStyle = phone(Tok.Type.large),
 )
 
-/** `tracking` is in px at the role's size, as the tokens give it; Compose wants em. */
-private fun role(
-    size: Int,
-    weight: FontWeight,
-    height: Float,
-    tracking: Float,
-) = TextStyle(
-    fontFamily = SourceSans,
-    fontWeight = weight,
-    fontSize = size.sp,
-    lineHeight = (size * height).sp,
-    letterSpacing = (tracking / size).em,
+/** Old role names over [PhoneType]; each screen moves to [LinkTheme.phoneType] when it is rebuilt. */
+@Immutable
+data class LinkType(
+    val hero: TextStyle = phone(Tok.Type.display),
+    val displayLarge: TextStyle = phone(Tok.Type.display),
+    val displayMedium: TextStyle = phone(Tok.Type.large),
+    val displaySmall: TextStyle = phone(Tok.Type.title1),
+    val headlineLarge: TextStyle = phone(Tok.Type.title2),
+    val headlineMedium: TextStyle = phone(Tok.Type.title3),
+    val headlineSmall: TextStyle = phone(Tok.Type.title3),
+    val titleLarge: TextStyle = phone(Tok.Type.title3),
+    val titleMedium: TextStyle = phone(Tok.Type.headline, singleLine = true),
+    val titleSmall: TextStyle = phone(Tok.Type.headline, singleLine = true),
+    val bodyLarge: TextStyle = phone(Tok.Type.paragraph),
+    val bodyMedium: TextStyle = phone(Tok.Type.body, singleLine = true),
+    val bodySmall: TextStyle = phone(Tok.Type.footnote),
+    val labelLarge: TextStyle = phone(Tok.Type.caption),
+    val labelMedium: TextStyle = phone(Tok.Type.caption),
+    val labelSmall: TextStyle = phone(Tok.Type.caption),
+    /** Readouts: transport, counts, tab names. */
+    val mono: TextStyle = phone(Tok.Type.mono).copy(fontFamily = FontFamily.Monospace),
 )
+
+/** Token tracking is already in em. [singleLine] roles (row text) take the unscaled paragraph line, as the mockups do. */
+private fun phone(
+    t: Tok.TypeToken,
+    singleLine: Boolean = false,
+): TextStyle {
+    val scale = Tok.TypeRules.textScaleL
+    return TextStyle(
+        fontFamily = Inter,
+        fontWeight = FontWeight(t.weight),
+        fontSize = (t.size * scale).sp,
+        lineHeight = (if (singleLine) Tok.Type.paragraph.line else t.line * scale).sp,
+        letterSpacing = t.tracking.em,
+        fontFeatureSettings = "tnum",
+    )
+}
