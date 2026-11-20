@@ -334,16 +334,10 @@ pub struct Hub {
     localsend_signals: mpsc::UnboundedReceiver<Signal>,
     /// Which backend each open transfer belongs to, for consent and cancelling.
     open: HashMap<TransferId, Backend>,
-    /// Phones whose hotspot this desktop joined, and the `NetworkManager` connection it joined with.
-    hotspots: HashMap<DeviceId, hotspot::Active>,
-    /// Each join's phone, the hotspot's SSID (None for a Wi-Fi Direct group), and the outcome.
-    joining: JoinSet<(DeviceId, Option<String>, Result<hotspot::Joined, String>)>,
-    /// Phones whose hotspot this desktop is joining now.
-    joining_hotspots: HashSet<DeviceId>,
-    /// Phones whose Wi-Fi Direct group this desktop is joining now.
-    joining_groups: HashSet<DeviceId>,
-    /// Hotspots waiting for the user's answer, with their SSID.
-    hotspot_asks: HashMap<DeviceId, (oneshot::Sender<bool>, String)>,
+    /// Each phone's group or hotspot this desktop joins or joined.
+    nearby: HashMap<DeviceId, Nearby>,
+    /// Spare-interface lookups and joins, off the actor.
+    joining: JoinSet<JoinStep>,
     /// The code a phone with a session reported while Android pairs Bluetooth with it, until when it counts.
     bt_pairing: Option<(u32, Instant)>,
     /// This desktop's Bluetooth adapter, named in the QR code, and the deadline that keeps it open to pairing.
@@ -378,6 +372,37 @@ pub struct RemoteStream {
     pub width: u32,
     pub height: u32,
     pub started: link_core::proto::message::RemoteStarted,
+}
+
+/// A phone's Wi-Fi Direct group or hotspot, from the first step of joining it until this desktop leaves it.
+enum Nearby {
+    /// `asked` holds the user's answer and the network's name while the shell asks.
+    Joining {
+        kind: NearbyKind,
+        asked: Option<(oneshot::Sender<bool>, String)>,
+    },
+    Joined(hotspot::Active),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NearbyKind {
+    Group,
+    Hotspot,
+}
+
+/// What a task in `joining` reports to the hub.
+enum JoinStep {
+    /// The spare-interface lookup for `group` ended; without one the user is asked first.
+    Spare {
+        id: DeviceId,
+        group: Hotspot,
+        spare: Option<crate::wifi_direct::Spare>,
+    },
+    Joined {
+        id: DeviceId,
+        kind: NearbyKind,
+        joined: Result<hotspot::Joined, String>,
+    },
 }
 
 struct Waiting {
@@ -447,11 +472,8 @@ impl Hub {
             localsend: transfers.localsend,
             localsend_signals: transfers.localsend_signals,
             open: HashMap::new(),
-            hotspots: HashMap::new(),
+            nearby: HashMap::new(),
             joining: JoinSet::new(),
-            joining_hotspots: HashSet::new(),
-            joining_groups: HashSet::new(),
-            hotspot_asks: HashMap::new(),
             bt_pairing: None,
             bluetooth: None,
             waiting: Vec::new(),
@@ -504,8 +526,9 @@ impl Hub {
                 Some(id) = self.remotes.ended() => log::debug!("{id}: a remote control stream ended"),
                 () = sleep_until(browse_deadline) => self.browsing.expire(),
                 () = sleep_until(contacts_deadline) => self.messages.expire(),
-                Some(joined) = self.joining.join_next() => match joined {
-                    Ok((id, ssid, joined)) => self.hotspot_joined(id, ssid, joined).await,
+                Some(step) = self.joining.join_next() => match step {
+                    Ok(JoinStep::Spare { id, group, spare }) => self.join_group(id, group, spare).await,
+                    Ok(JoinStep::Joined { id, kind, joined }) => self.hotspot_joined(id, kind, joined).await,
                     Err(join) => log::warn!("hotspot join task: {join}"),
                 },
                 () = sleep_until(give_up) => self.expire_waiting().await,
@@ -535,7 +558,11 @@ impl Hub {
                 let _ = reply.send(confirmed);
             }
             Command::AnswerHotspot { id, allow } => {
-                if let Some((answer, ssid)) = self.hotspot_asks.remove(&id) {
+                let asked = match self.nearby.get_mut(&id) {
+                    Some(Nearby::Joining { asked, .. }) => asked.take(),
+                    _ => None,
+                };
+                if let Some((answer, ssid)) = asked {
                     if allow {
                         self.emit(Event::Hotspot { id: id.clone(), ssid: Some(ssid) }).await;
                     }
@@ -1408,7 +1435,7 @@ impl Hub {
 
     /// Browsing goes on over Bluetooth while the phone starts its hotspot, so it asks once per session.
     async fn ask_hotspot_once(&mut self, id: &DeviceId, session: &SessionHandle) {
-        if self.hotspots.contains_key(id) || !self.hotspot_asked.insert(id.clone()) {
+        if matches!(self.nearby.get(id), Some(Nearby::Joined(_))) || !self.hotspot_asked.insert(id.clone()) {
             return;
         }
         log::info!("{id}: asking for the phone's hotspot to browse");
@@ -1567,22 +1594,37 @@ impl Hub {
     /// leaves its own network for it, so the shell asks first, as for the hotspot.
     async fn join_wifi_direct(&mut self, id: DeviceId, group: Hotspot) {
         let on_bluetooth = self.sessions.get(&id).is_some_and(|session| session.connection().quic().is_none());
-        if !on_bluetooth || self.hotspots.contains_key(&id) || self.joining_groups.contains(&id) {
+        if !on_bluetooth || self.nearby.contains_key(&id) {
             return log::info!("{id}: ignoring a Wi-Fi Direct group this session does not need");
         }
-        self.joining_groups.insert(id.clone());
         // `spare` may remove a stale spare interface, so not while a group of this desktop may be on it.
-        let spare_in_use = self.joining_groups.len() > 1 || self.hotspots.values().any(crate::wifi_direct::on_spare);
-        let spare = if spare_in_use {
-            None
-        } else {
-            tokio::time::timeout(SPARE_TIMEOUT, crate::wifi_direct::spare()).await.ok().flatten()
-        };
+        let spare_in_use = self.nearby.values().any(|nearby| match nearby {
+            Nearby::Joining { kind, .. } => *kind == NearbyKind::Group,
+            Nearby::Joined(active) => crate::wifi_direct::on_spare(active),
+        });
+        self.nearby.insert(id.clone(), Nearby::Joining { kind: NearbyKind::Group, asked: None });
+        if spare_in_use {
+            return self.join_group(id, group, None).await;
+        }
+        self.joining.spawn(async move {
+            let spare = tokio::time::timeout(SPARE_TIMEOUT, crate::wifi_direct::spare()).await.ok().flatten();
+            JoinStep::Spare { id, group, spare }
+        });
+    }
+
+    /// Joins the group on a spare interface beside this desktop's network, or without one asks to leave that network.
+    async fn join_group(&mut self, id: DeviceId, group: Hotspot, spare: Option<crate::wifi_direct::Spare>) {
+        if !matches!(self.nearby.get(&id), Some(Nearby::Joining { kind: NearbyKind::Group, .. })) {
+            if let Some(crate::wifi_direct::Spare::Added(interface)) = spare {
+                tokio::spawn(async move { crate::wifi_direct::remove(&interface).await });
+            }
+            return log::info!("{id}: dropping a Wi-Fi Direct group nobody waits for");
+        }
         if let Some(spare) = spare {
             log::info!("{id}: joining the phone's Wi-Fi Direct group {:?} beside this desktop's network", group.ssid);
             self.joining.spawn(async move {
                 let joined = crate::wifi_direct::join(spare, &group.ssid, &group.passphrase).await;
-                (id, None, joined)
+                JoinStep::Joined { id, kind: NearbyKind::Group, joined }
             });
             return;
         }
@@ -1593,21 +1635,22 @@ impl Hub {
                 Ok(Ok(true)) => hotspot::join(&group.ssid, &group.passphrase).await,
                 _ => Err(HOTSPOT_DECLINED.to_owned()),
             };
-            (id, None, joined)
+            JoinStep::Joined { id, kind: NearbyKind::Group, joined }
         });
     }
 
-    /// Joins the phone's hotspot off the actor; only a Bluetooth session needs one. The shell says so first, since the
-    /// laptop leaves its own Wi-Fi.
     async fn join_hotspot(&mut self, id: DeviceId, offered: Hotspot) {
         let on_bluetooth = self.sessions.get(&id).is_some_and(|session| session.connection().quic().is_none());
         if !on_bluetooth {
             return log::info!("{id}: ignoring a hotspot this session does not need");
         }
         // The phone offers its hotspot only after giving up on a group, which this desktop may have joined anyway.
-        let abandoned = self.hotspots.remove(&id);
+        let abandoned = match self.nearby.remove(&id) {
+            Some(Nearby::Joined(active)) => Some(active),
+            _ => None,
+        };
         log::info!("{id}: asking whether to join the phone's hotspot {:?}", offered.ssid);
-        self.joining_hotspots.insert(id.clone());
+        self.nearby.insert(id.clone(), Nearby::Joining { kind: NearbyKind::Hotspot, asked: None });
         let answered = self.ask_hotspot(&id, &offered.ssid).await;
         self.joining.spawn(async move {
             if let Some(group) = abandoned {
@@ -1617,37 +1660,41 @@ impl Hub {
                 Ok(Ok(true)) => hotspot::join(&offered.ssid, &offered.passphrase).await,
                 _ => Err(HOTSPOT_DECLINED.to_owned()),
             };
-            (id, Some(offered.ssid), joined)
+            JoinStep::Joined { id, kind: NearbyKind::Hotspot, joined }
         });
     }
 
     /// Asks the shell whether the desktop may leave its Wi-Fi for `ssid`; the answer comes through `AnswerHotspot`.
     async fn ask_hotspot(&mut self, id: &DeviceId, ssid: &str) -> oneshot::Receiver<bool> {
         let (answer, answered) = oneshot::channel();
-        self.hotspot_asks.insert(id.clone(), (answer, ssid.to_owned()));
+        if let Some(Nearby::Joining { asked, .. }) = self.nearby.get_mut(id) {
+            *asked = Some((answer, ssid.to_owned()));
+        }
         self.emit(Event::HotspotAsk { id: id.clone(), ssid: ssid.to_owned() }).await;
         answered
     }
 
     /// Answers the phone with where the desktop listens on its hotspot or group. A failed hotspot fails the sends
     /// waiting for it; a failed group does not, since the phone falls back to its hotspot.
-    async fn hotspot_joined(&mut self, id: DeviceId, ssid: Option<String>, joined: Result<hotspot::Joined, String>) {
-        if ssid.is_none() {
-            self.joining_groups.remove(&id);
-        }
-        if ssid.is_some() {
-            self.joining_hotspots.remove(&id);
-            if self.hotspot_asks.remove(&id).is_some() {
-                self.emit(Event::HotspotAsk { id: id.clone(), ssid: String::new() }).await;
-            }
-        } else if self.joining_hotspots.contains(&id) || self.hotspots.contains_key(&id) {
+    async fn hotspot_joined(&mut self, id: DeviceId, kind: NearbyKind, joined: Result<hotspot::Joined, String>) {
+        let asked = match self.nearby.get_mut(&id) {
+            Some(Nearby::Joining { kind: joining, asked }) if *joining == kind => Some(asked.take()),
+            _ => None,
+        };
+        let Some(asked) = asked else {
             // The phone gave up on its group and runs a hotspot now, which a HotspotEnd would stop.
-            log::info!("{id}: dropping the Wi-Fi Direct group the phone gave up on");
+            let what = match kind {
+                NearbyKind::Group => "Wi-Fi Direct group",
+                NearbyKind::Hotspot => "hotspot",
+            };
+            log::info!("{id}: dropping the {what} the phone gave up on");
             if let Ok(joined) = joined {
                 hotspot::leave(&joined.active).await;
             }
             return;
-        } else if self.hotspot_asks.remove(&id).is_some() {
+        };
+        self.nearby.remove(&id);
+        if asked.is_some() {
             self.emit(Event::HotspotAsk { id: id.clone(), ssid: String::new() }).await;
         }
         let Some(session) = self.sessions.get(&id).cloned() else {
@@ -1655,7 +1702,7 @@ impl Hub {
             if let Ok(joined) = joined {
                 hotspot::leave(&joined.active).await;
             }
-            if ssid.is_some() && !declined {
+            if kind == NearbyKind::Hotspot && !declined {
                 self.emit(Event::Hotspot { id, ssid: None }).await;
             }
             return;
@@ -1664,12 +1711,12 @@ impl Hub {
             Ok(joined) => {
                 let address = std::net::SocketAddr::new(joined.address, self.store.port).to_string();
                 log::info!("{id}: joined the hotspot at {address}");
-                self.hotspots.insert(id.clone(), joined.active);
+                self.nearby.insert(id.clone(), Nearby::Joined(joined.active));
                 Message::HotspotJoined(HotspotJoined { address })
             }
             Err(reason) => {
                 log::info!("{id}: joining the hotspot failed: {reason}");
-                if ssid.is_some() {
+                if kind == NearbyKind::Hotspot {
                     if reason != HOTSPOT_DECLINED {
                         self.emit(Event::Hotspot { id: id.clone(), ssid: None }).await;
                     }
@@ -1685,7 +1732,10 @@ impl Hub {
     }
 
     async fn leave_hotspot(&mut self, id: &DeviceId) {
-        if let Some(active) = self.hotspots.remove(id) {
+        if !matches!(self.nearby.get(id), Some(Nearby::Joined(_))) {
+            return;
+        }
+        if let Some(Nearby::Joined(active)) = self.nearby.remove(id) {
             hotspot::leave(&active).await;
             self.emit(Event::Hotspot { id: id.clone(), ssid: None }).await;
         }
