@@ -5,22 +5,24 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.text.format.DateUtils
 import android.text.format.Formatter
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,43 +32,76 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.ClipEntry
 import org.andromeda.link.core.domain.TransferRecord
-import org.andromeda.link.ui.components.DashboardCard
-import org.andromeda.link.ui.components.Footnote
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.IconChip
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.LinkIcons
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.components.Readout
 import org.andromeda.link.ui.components.Screen
-import org.andromeda.link.ui.components.SlidingPillControl
+import org.andromeda.link.ui.kit.BackKey
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.FilterChips
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.PillKind
+import org.andromeda.link.ui.kit.SectionTitle
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Size
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
+import java.net.URLConnection
 
 private enum class Filter { All, Received, Sent }
 
-/** The transfer history by day: each transfer's files, openable from here in either direction. */
+/** One row of the history: a transfer or a clip, in either direction. */
+private sealed interface Entry {
+    val time: Long
+    val incoming: Boolean
+
+    data class Move(
+        val record: TransferRecord,
+    ) : Entry {
+        override val time get() = record.time
+        override val incoming get() = record.incoming == true
+    }
+
+    data class Clip(
+        val clip: ClipEntry,
+    ) : Entry {
+        override val time get() = clip.time
+        override val incoming get() = clip.incoming
+    }
+}
+
+/**
+ * The transfer and clip history by day, newest first. [sendTo] names the desktop the empty state offers to send to;
+ * [showDesktop] adds the desktop name to each line when more than one desktop is paired.
+ */
 @Composable
-fun ActivityScreen(viewModel: ActivityViewModel) {
+fun ActivityScreen(
+    viewModel: ActivityViewModel,
+    sendTo: String?,
+    showDesktop: Boolean,
+    onBack: () -> Unit,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
-    val allClips by viewModel.clips.collectAsStateWithLifecycle()
+    val clips by viewModel.clips.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -87,154 +122,217 @@ fun ActivityScreen(viewModel: ActivityViewModel) {
             ActivityMessage.Expired -> stringResource(R.string.activity_expired)
             null -> null
         }
-    val clips =
-        remember(allClips, filter) {
-            allClips.filter {
-                when (filter) {
-                    Filter.All -> true
-                    Filter.Received -> it.incoming
-                    Filter.Sent -> !it.incoming
-                }
-            }
+    val all =
+        remember(transfers, clips) {
+            (transfers.map(Entry::Move) + clips.map(Entry::Clip)).sortedByDescending { it.time }
         }
     val days =
-        remember(transfers, filter) {
-            transfers
+        remember(all, filter) {
+            all
                 .filter {
                     when (filter) {
                         Filter.All -> true
-                        Filter.Received -> it.incoming == true
-                        Filter.Sent -> it.incoming == false
+                        Filter.Received -> it.incoming
+                        Filter.Sent -> !it.incoming
                     }
                 }.groupBy { day(it.time) }
         }
-    val downloads = stringResource(R.string.activity_downloads)
-    Screen(
-        stringResource(R.string.activity_title),
-        toast = toast,
-        onToastShown = {
-            openFailure = null
-            viewModel.messageShown()
-        },
-        actions = {
-            Box(
-                Modifier
-                    .padding(end = Space.s8)
-                    .size(Size.touch)
-                    .clip(Radius.pill)
-                    .background(LinkTheme.colors.surfaceTertiary)
-                    .clickable(role = Role.Button) { open { Intent(DownloadManager.ACTION_VIEW_DOWNLOADS) } }
-                    .semantics { contentDescription = downloads },
-                contentAlignment = Alignment.Center,
-            ) { Glyph(LinkIcons.Folder, LinkTheme.colors.textSecondary, Size.icon - 4.dp) }
-        },
-    ) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = Space.page, vertical = Space.s8),
-            verticalArrangement = Arrangement.spacedBy(Space.s12),
+    val filters =
+        listOf(
+            Filter.All to stringResource(R.string.activity_filter_all),
+            Filter.Received to stringResource(R.string.activity_filter_received),
+            Filter.Sent to stringResource(R.string.activity_filter_sent),
+        )
+    val gutter = Modifier.padding(horizontal = Tok.Space.p16.dp)
+    val header: @Composable () -> Unit = {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = Tok.Space.p12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                BackKey(LinkTheme.scheme.label1, onBack)
+                FolderKey { open { Intent(DownloadManager.ACTION_VIEW_DOWNLOADS) } }
+            }
+            Text(
+                stringResource(R.string.activity_title),
+                LinkTheme.phoneType.large,
+                modifier = gutter.padding(vertical = Tok.Space.p4.dp),
+                maxLines = 1,
+            )
+            FilterChips(filters, filter, { filter = it }, Modifier.padding(vertical = Tok.Space.p4.dp))
+        }
+    }
+    Box(modifier) {
+        Screen(
+            null,
+            toast = toast,
+            onToastShown = {
+                openFailure = null
+                viewModel.messageShown()
+            },
+            background = LinkTheme.scheme.solidRegular,
         ) {
-            item {
-                SlidingPillControl(
-                    listOf(
-                        stringResource(R.string.activity_filter_all),
-                        stringResource(R.string.activity_filter_received),
-                        stringResource(R.string.activity_filter_sent),
-                    ),
-                    filter.ordinal,
-                    { filter = Filter.entries[it] },
-                )
+            if (all.isEmpty()) {
+                header()
+                Empty(sendTo, onSend, Modifier.weight(1f))
+                return@Screen
             }
-            if (clips.isNotEmpty()) {
-                item(key = "clips") { ClipCard(clips, viewModel::copyAgain) }
-            }
-            if (days.isEmpty() && clips.isEmpty()) {
-                item {
-                    Column(Modifier.padding(top = Space.s32), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-                        Readout(stringResource(R.string.activity_empty_readout), LinkTheme.colors.textTertiary)
-                        Label(stringResource(R.string.activity_empty_title), LinkTheme.type.headlineLarge)
-                        Label(stringResource(R.string.activity_empty_hint), LinkTheme.type.bodyMedium, LinkTheme.colors.textSecondary)
+            LazyColumn(Modifier.fillMaxSize()) {
+                item(key = "header") { header() }
+                if (days.isEmpty()) {
+                    item(key = "none") {
+                        Text(
+                            stringResource(if (filter == Filter.Sent) R.string.activity_none_sent else R.string.activity_none_received),
+                            LinkTheme.phoneType.footnote,
+                            color = LinkTheme.scheme.label2,
+                            modifier = gutter.padding(start = Tok.Space.p4.dp, top = Tok.Space.p32.dp),
+                        )
                     }
                 }
-            }
-            days.forEach { (day, records) ->
-                item(key = "day-$day") { Readout(dayLabel(day), modifier = Modifier.padding(start = Space.s4, top = Space.s12)) }
-                items(records, key = { it.transferId }) { transfer ->
-                    TransferCard(
-                        transfer,
-                        transfer.transferId in busy,
-                        { viewModel.accept(transfer.transferId) },
-                        { viewModel.decline(transfer.transferId) },
-                        { viewModel.cancel(transfer.transferId) },
-                    ) { uri -> open { viewIntent(context, uri) } }
+                days.forEach { (day, entries) ->
+                    item(key = "day-$day") { SectionTitle(dayLabel(day), gutter) }
+                    items(entries, key = { it.key() }) { entry ->
+                        Box(gutter.padding(bottom = Tok.Space.p8.dp)) {
+                            when (entry) {
+                                is Entry.Move ->
+                                    MoveCard(
+                                        entry.record,
+                                        showDesktop,
+                                        entry.record.transferId in busy,
+                                        { viewModel.accept(entry.record.transferId) },
+                                        { viewModel.decline(entry.record.transferId) },
+                                        { viewModel.cancel(entry.record.transferId) },
+                                    ) { uri -> open { viewIntent(context, uri) } }
+                                is Entry.Clip -> ClipCard(entry.clip, showDesktop) { viewModel.copyAgain(entry.clip) }
+                            }
+                        }
+                    }
+                }
+                item(key = "foot") {
+                    Text(
+                        stringResource(R.string.activity_kept_hint),
+                        LinkTheme.phoneType.footnote,
+                        color = LinkTheme.scheme.label2,
+                        modifier =
+                            gutter
+                                .padding(
+                                    start = Tok.Space.p4.dp,
+                                    top = Tok.Space.p8.dp,
+                                ).navigationBarsPadding()
+                                .padding(bottom = Tok.Space.p16.dp),
+                    )
                 }
             }
-            item { Footnote(stringResource(R.string.activity_kept_hint)) }
-            item { Spacer(Modifier.height(Space.s16)) }
         }
     }
 }
 
+private fun Entry.key(): String =
+    when (this) {
+        is Entry.Move -> record.transferId
+        is Entry.Clip -> "clip-${clip.time}"
+    }
+
 @Composable
-private fun TransferCard(
-    transfer: TransferRecord,
-    busy: Boolean,
-    onAccept: () -> Unit,
-    onDecline: () -> Unit,
-    onCancel: () -> Unit,
-    onOpen: (String) -> Unit,
+private fun FolderKey(onClick: () -> Unit) {
+    val label = stringResource(R.string.activity_downloads)
+    Box(
+        Modifier
+            .size(Tok.Phone.hit.dp)
+            .clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { Symbol(Icons.Folder, LinkTheme.scheme.label1, size = Tok.Phone.symbol.dp) }
+}
+
+@Composable
+private fun Empty(
+    sendTo: String?,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val colors = LinkTheme.colors
-    val context = LocalContext.current
-    val incoming = transfer.incoming == true
-    val desktop = transfer.desktopName.ifEmpty { stringResource(R.string.app_name) }
-    var expanded by rememberSaveable(transfer.transferId) { mutableStateOf(false) }
-    // A received file is openable once it is published; a sent one from where it was read.
-    val rows =
-        if (incoming && transfer.saved.isNotEmpty()) {
-            transfer.saved.map { saved -> FileRow(saved.name, transfer.files.firstOrNull { it.name == saved.name }?.size, saved.uri) }
-        } else {
-            transfer.files.map { FileRow(it.name, it.size, if (incoming) null else it.uri) }
-        }
-    DashboardCard(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.padding(top = Space.s8),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.s12),
-        ) {
-            IconChip(if (incoming) LinkIcons.Download else LinkIcons.Upload)
-            Column(Modifier.weight(1f)) {
-                Label(
-                    stringResource(if (incoming) R.string.activity_from else R.string.activity_sent_to, desktop),
-                    LinkTheme.type.titleMedium,
-                    maxLines = 1,
-                )
-                Readout(
-                    listOfNotNull(
-                        DateUtils.formatDateTime(context, transfer.time, DateUtils.FORMAT_SHOW_TIME),
-                        context.resources.getQuantityString(R.plurals.activity_files, rows.size, rows.size),
-                        transfer.total.takeIf { it > 0 }?.let { Formatter.formatShortFileSize(context, it) },
-                    ).joinToString(" · "),
-                    colors.textTertiary,
-                )
-            }
-            StatusTag(transfer.status)
-        }
-        when (transfer.status) {
-            "transferring" -> Progress(transfer, busy, onCancel)
-            "offered" ->
-                Row(Modifier.padding(top = Space.s4), horizontalArrangement = Arrangement.spacedBy(Space.s8)) {
-                    PillButton(stringResource(R.string.transfer_accept), onAccept, Modifier.weight(1f), enabled = !busy)
-                    PillButton(stringResource(R.string.transfer_decline), onDecline, Modifier.weight(1f), PillKind.Tonal, enabled = !busy)
-                }
-        }
-        Column(Modifier.padding(top = Space.s4, bottom = Space.s4), verticalArrangement = Arrangement.spacedBy(Space.s4)) {
-            rows.take(if (expanded) rows.size else COLLAPSED).forEach { row -> FileLine(row, onOpen) }
-            if (rows.size > COLLAPSED && !expanded) {
-                PillButton(stringResource(R.string.activity_more, rows.size - COLLAPSED), { expanded = true }, kind = PillKind.Quiet)
-            }
+    val s = LinkTheme.scheme
+    Column(
+        modifier.fillMaxWidth().padding(horizontal = Tok.Space.p16.dp, vertical = Tok.Space.p32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp, Alignment.CenterVertically),
+    ) {
+        Box(
+            Modifier
+                .padding(bottom = Tok.Space.p8.dp)
+                .size(Tok.Space.p64.dp)
+                .clip(CircleShape)
+                .background(s.fill1),
+            contentAlignment = Alignment.Center,
+        ) { Symbol(Icons.Swap, s.label2, size = Tok.Space.p32.dp) }
+        Text(stringResource(R.string.activity_empty_title), LinkTheme.phoneType.title3, align = TextAlign.Center)
+        Text(
+            if (sendTo != null) stringResource(R.string.activity_empty_hint, sendTo) else stringResource(R.string.activity_empty_hint_none),
+            LinkTheme.phoneType.paragraph,
+            color = s.label2,
+            align = TextAlign.Center,
+        )
+        if (sendTo != null) {
+            Capsule(
+                stringResource(R.string.activity_send_to, sendTo),
+                onSend,
+                Modifier.padding(top = Tok.Space.p12.dp),
+                icon = Icons.Send,
+                kind = CapsuleKind.Primary,
+            )
         }
     }
+}
+
+/** A view card r16 with a stroke ring; the direction symbol sits on the first line, actions at the trailing edge. */
+@Composable
+private fun EntryCard(
+    symbol: ImageVector,
+    trailing: @Composable () -> Unit,
+    below: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val shape = RoundedCornerShape(Tok.Radius.r16.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(s.view)
+            .border(Dp.Hairline, s.stroke, shape)
+            .padding(start = Tok.Space.p12.dp, end = Tok.Space.p4.dp, top = Tok.Space.p12.dp, bottom = Tok.Space.p12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) {
+            Symbol(
+                symbol,
+                s.label2,
+                size = Tok.Size.symbolL.dp,
+                modifier = Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p2.dp),
+            )
+            Column(Modifier.weight(1f)) { content() }
+            Row(Modifier.offset(y = -Tok.Space.p4.dp), verticalAlignment = Alignment.CenterVertically) { trailing() }
+        }
+        Column(Modifier.padding(start = INDENT, end = Tok.Space.p12.dp)) { below() }
+    }
+}
+
+/** The indent of lines under an entry's text: the symbol's inset, the symbol and the gap. */
+private val INDENT = (Tok.Space.p4 + Tok.Size.symbolL + Tok.Space.p12).dp
+
+@Composable
+private fun Dismiss(
+    label: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(Tok.Phone.hit.dp)
+            .clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { Symbol(Icons.X, LinkTheme.scheme.label2, size = Tok.Size.symbolL.dp) }
 }
 
 private data class FileRow(
@@ -244,129 +342,182 @@ private data class FileRow(
 )
 
 @Composable
+private fun MoveCard(
+    transfer: TransferRecord,
+    showDesktop: Boolean,
+    busy: Boolean,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+    onCancel: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val context = LocalContext.current
+    val incoming = transfer.incoming == true
+    var expanded by rememberSaveable(transfer.transferId) { mutableStateOf(false) }
+    // A received file opens once it is published; a sent one from where it was read.
+    val rows =
+        if (incoming && transfer.saved.isNotEmpty()) {
+            transfer.saved.map { saved -> FileRow(saved.name, transfer.files.firstOrNull { it.name == saved.name }?.size, saved.uri) }
+        } else {
+            transfer.files.map { FileRow(it.name, it.size, if (incoming) null else it.uri) }
+        }
+    val single = rows.size == 1
+    val photos = rows.isNotEmpty() && rows.all { URLConnection.guessContentTypeFromName(it.name)?.startsWith("image/") == true }
+    val size = transfer.total.takeIf { it > 0 }?.let { Formatter.formatShortFileSize(context, it) }
+    val fraction = if (transfer.total <= 0) 0f else (transfer.bytes.toDouble() / transfer.total).toFloat().coerceIn(0f, 1f)
+    val meta =
+        listOfNotNull(
+            if (transfer.status == "transferring" && size != null) {
+                stringResource(R.string.activity_moving, (fraction * 100).toInt(), size)
+            } else {
+                size
+            },
+            DateUtils.formatDateTime(context, transfer.time, DateUtils.FORMAT_SHOW_TIME),
+        ).joinToString(" · ")
+    val desktop = transfer.desktopName.ifEmpty { stringResource(R.string.app_name) }
+    val openUri = rows.singleOrNull()?.uri?.takeIf { transfer.status == "done" }
+    EntryCard(
+        if (incoming) Icons.Down else Icons.Up,
+        trailing = {
+            if (!busy) {
+                when (transfer.status) {
+                    "offered" -> {
+                        Pill(stringResource(R.string.activity_save), onAccept, kind = PillKind.Primary)
+                        Dismiss(stringResource(R.string.transfer_decline), onDecline)
+                    }
+                    "transferring" -> Dismiss(stringResource(R.string.cancel), onCancel)
+                    else -> if (openUri != null) Pill(stringResource(R.string.activity_open), { onOpen(openUri) })
+                }
+            }
+        },
+        below = {
+            when (transfer.status) {
+                "transferring" ->
+                    Box(
+                        Modifier
+                            .padding(vertical = Tok.Space.p4.dp)
+                            .fillMaxWidth()
+                            .height(Tok.Space.p4.dp)
+                            .clip(CircleShape)
+                            .background(s.fill2)
+                            .semantics { progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) },
+                    ) { Box(Modifier.fillMaxWidth(fraction).height(Tok.Space.p4.dp).background(s.accent)) }
+                "declined", "cancelled" ->
+                    Text(
+                        stringResource(if (transfer.status == "declined") R.string.activity_declined else R.string.activity_cancelled),
+                        t.footnote,
+                        color = s.label2,
+                    )
+                "offered", "done" -> {}
+                else -> Failure(transfer.status)
+            }
+            if (!single) {
+                if (expanded) {
+                    rows.forEach { row -> FileLine(row, onOpen) }
+                } else {
+                    Row(Modifier.padding(top = Tok.Space.p4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(summary(rows), t.footnote, color = s.label2, modifier = Modifier.weight(1f), maxLines = 2)
+                        if (transfer.status == "done") Pill(stringResource(R.string.activity_show_all), { expanded = true })
+                    }
+                }
+            }
+        },
+    ) {
+        val name =
+            when {
+                single -> rows[0].name
+                photos -> pluralStringResource(R.plurals.activity_photos, rows.size, rows.size)
+                else -> pluralStringResource(R.plurals.activity_files, rows.size, rows.size)
+            }
+        Text(name, t.headline, maxLines = 2)
+        Line(meta, desktop, incoming, showDesktop)
+    }
+}
+
+/** The names of a multi-file transfer on two lines; the rest as a count. */
+@Composable
+private fun summary(rows: List<FileRow>): String {
+    val shown = rows.take(SUMMARY_NAMES).joinToString(", ") { it.name }
+    val rest = rows.size - SUMMARY_NAMES
+    return if (rest > 0) pluralStringResource(R.plurals.activity_and_more, rest, shown, rest) else shown
+}
+
+@Composable
+private fun Line(
+    meta: String,
+    desktop: String,
+    incoming: Boolean,
+    showDesktop: Boolean,
+) {
+    val text =
+        if (showDesktop) {
+            stringResource(if (incoming) R.string.activity_from else R.string.activity_to, desktop) + " · " + meta
+        } else {
+            meta
+        }
+    Text(text, LinkTheme.phoneType.footnote, color = LinkTheme.scheme.label2, maxLines = 1)
+}
+
+@Composable
+private fun Failure(status: String) {
+    val s = LinkTheme.scheme
+    val why =
+        when (status) {
+            "too-large" -> R.string.activity_too_large
+            "no-space" -> R.string.activity_no_space
+            "busy" -> R.string.activity_busy
+            else -> R.string.activity_failed
+        }
+    Row(Modifier.padding(top = Tok.Space.p4.dp), horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+        Symbol(Icons.Alert, s.dangerText, size = Tok.Size.symbol.dp, modifier = Modifier.padding(top = Tok.Space.p2.dp))
+        Text(stringResource(why), LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.SemiBold), color = s.dangerText)
+    }
+}
+
+@Composable
 private fun FileLine(
     row: FileRow,
     onOpen: (String) -> Unit,
 ) {
-    val colors = LinkTheme.colors
     val context = LocalContext.current
     val uri = row.uri
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(Radius.list)
-            .then(if (uri != null) Modifier.clickable(role = Role.Button) { onOpen(uri) } else Modifier)
-            .padding(vertical = Space.s6),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.s12),
-    ) {
-        val thumbnail = uri?.let { rememberThumbnail(it, row.name) }
-        Box(
-            Modifier.size(44.dp).clip(Radius.button).background(colors.surfacePrimary),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (thumbnail != null) {
-                Image(thumbnail, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            } else {
-                Readout(extension(row.name), colors.textTertiary)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(row.name, LinkTheme.phoneType.body, maxLines = 1)
+            row.size?.let {
+                Text(
+                    Formatter.formatShortFileSize(context, it),
+                    LinkTheme.phoneType.footnote,
+                    color = LinkTheme.scheme.label2,
+                )
             }
         }
-        Column(Modifier.weight(1f)) {
-            Label(row.name, LinkTheme.type.titleSmall, maxLines = 1)
-            row.size?.let { Label(Formatter.formatShortFileSize(context, it), LinkTheme.type.bodySmall, colors.textTertiary) }
-        }
-        if (uri != null) Readout(stringResource(R.string.activity_open), colors.accentText)
+        if (uri != null) Pill(stringResource(R.string.activity_open), { onOpen(uri) })
     }
 }
 
-@Composable
-private fun Progress(
-    transfer: TransferRecord,
-    busy: Boolean,
-    onCancel: () -> Unit,
-) {
-    val colors = LinkTheme.colors
-    val context = LocalContext.current
-    val fraction = if (transfer.total <= 0) 0f else (transfer.bytes.toDouble() / transfer.total).toFloat().coerceIn(0f, 1f)
-    Row(
-        Modifier.padding(top = Space.s4),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.s12),
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s6)) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(Space.s4)
-                    .clip(Radius.pill)
-                    .background(colors.surfacePrimary)
-                    .semantics { progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) },
-            ) { Box(Modifier.fillMaxWidth(fraction).height(Space.s4).background(colors.accent)) }
-            Readout(
-                stringResource(
-                    R.string.transfer_bytes,
-                    Formatter.formatShortFileSize(context, transfer.bytes),
-                    Formatter.formatShortFileSize(context, transfer.total),
-                ),
-                colors.textTertiary,
-            )
-        }
-        PillButton(stringResource(R.string.cancel), onCancel, kind = PillKind.Quiet, enabled = !busy)
-    }
-}
-
-/** The last clips, newest first; one with text can be put back on the clipboard. */
 @Composable
 private fun ClipCard(
-    clips: List<ClipEntry>,
-    onCopy: (ClipEntry) -> Unit,
+    clip: ClipEntry,
+    showDesktop: Boolean,
+    onCopy: () -> Unit,
 ) {
     val context = LocalContext.current
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    DashboardCard(Modifier.fillMaxWidth()) {
-        Readout(stringResource(R.string.activity_clipboard), modifier = Modifier.padding(top = Space.s8))
-        (if (expanded) clips else clips.take(COLLAPSED)).forEach { clip ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s12)) {
-                Column(Modifier.weight(1f)) {
-                    Label(clip.text ?: stringResource(R.string.activity_clip_other, clip.mime), LinkTheme.type.bodyMedium, maxLines = 1)
-                    val desktop = clip.desktopName ?: stringResource(R.string.app_name)
-                    Readout(
-                        listOf(
-                            if (clip.incoming) {
-                                stringResource(R.string.activity_from, desktop)
-                            } else {
-                                stringResource(R.string.activity_clip_sent)
-                            },
-                            DateUtils.formatDateTime(context, clip.time, DateUtils.FORMAT_SHOW_TIME),
-                        ).joinToString(" · "),
-                        LinkTheme.colors.textTertiary,
-                    )
-                }
-                if (clip.text != null) PillButton(stringResource(R.string.activity_copy_again), { onCopy(clip) }, kind = PillKind.Quiet)
-            }
-        }
-        if (!expanded && clips.size > COLLAPSED) {
-            PillButton(stringResource(R.string.activity_more, clips.size - COLLAPSED), { expanded = true }, kind = PillKind.Quiet)
-        }
+    EntryCard(
+        Icons.Clip,
+        trailing = { if (clip.text != null) Pill(stringResource(R.string.activity_copy), onCopy) },
+        below = {},
+    ) {
+        Text(clip.text ?: stringResource(R.string.activity_clip_other, clip.mime), LinkTheme.phoneType.paragraph, maxLines = 3)
+        Line(
+            DateUtils.formatDateTime(context, clip.time, DateUtils.FORMAT_SHOW_TIME),
+            clip.desktopName ?: stringResource(R.string.app_name),
+            clip.incoming,
+            showDesktop,
+        )
     }
-}
-
-@Composable
-private fun StatusTag(status: String) {
-    val colors = LinkTheme.colors
-    val (label, color) =
-        when (status) {
-            "offered" -> R.string.activity_awaiting_short to colors.warning
-            "transferring" -> R.string.activity_moving_short to colors.accentText
-            "done" -> R.string.activity_done to colors.success
-            "declined" -> R.string.activity_declined to colors.textTertiary
-            "cancelled" -> R.string.activity_cancelled to colors.textTertiary
-            "too-large" -> R.string.activity_too_large to colors.error
-            "no-space" -> R.string.activity_no_space to colors.error
-            "busy" -> R.string.activity_busy to colors.error
-            else -> R.string.activity_failed to colors.error
-        }
-    Readout(stringResource(label), color)
 }
 
 @Composable
@@ -377,7 +528,7 @@ private fun dayLabel(day: Long): String =
         else -> DateUtils.formatDateTime(LocalContext.current, day, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_WEEKDAY)
     }
 
-/** Local midnight of [time], so a day's transfers group together. */
+/** Local midnight of [time], so a day's entries group together. */
 private fun day(time: Long): Long =
     java.util.Calendar.getInstance().run {
         timeInMillis = time
@@ -388,6 +539,4 @@ private fun day(time: Long): Long =
         timeInMillis
     }
 
-private fun extension(name: String): String = name.substringAfterLast('.', "").take(4).ifEmpty { "file" }
-
-private const val COLLAPSED = 4
+private const val SUMMARY_NAMES = 12

@@ -2,23 +2,11 @@ package org.andromeda.link.transfer
 
 import android.content.Context
 import android.content.Intent
-import android.media.ThumbnailUtils
 import android.net.Uri
 import android.provider.MediaStore
-import android.util.Size
 import android.webkit.MimeTypeMap
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.IOException
 
 /**
  * An intent that opens [uri] in another app, or null when the file is gone. A `file:` URI, which the Files tab sends
@@ -53,36 +41,3 @@ private fun mediaStoreUri(
 
 private fun mimeOf(name: String): String =
     MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "*/*"
-
-/** A small preview of an image or video at [uri], or null for other files and ones that cannot be read. */
-@Composable
-fun rememberThumbnail(
-    uri: String,
-    name: String,
-): ImageBitmap? {
-    val context = LocalContext.current
-    val px = with(LocalDensity.current) { 44.dp.roundToPx() }
-    val thumbnail by produceState<ImageBitmap?>(null, uri) {
-        val mime = mimeOf(name)
-        if (!mime.startsWith("image/") && !mime.startsWith("video/")) return@produceState
-        value =
-            withContext(Dispatchers.IO) {
-                try {
-                    val parsed = Uri.parse(uri)
-                    val size = Size(px, px)
-                    val bitmap =
-                        when {
-                            parsed.scheme != "file" -> context.contentResolver.loadThumbnail(parsed, size, null)
-                            mime.startsWith("image/") -> ThumbnailUtils.createImageThumbnail(File(requireNotNull(parsed.path)), size, null)
-                            else -> ThumbnailUtils.createVideoThumbnail(File(requireNotNull(parsed.path)), size, null)
-                        }
-                    bitmap.asImageBitmap()
-                } catch (_: IOException) {
-                    null
-                } catch (_: SecurityException) {
-                    null
-                }
-            }
-    }
-    return thumbnail
-}
