@@ -50,6 +50,7 @@ import org.andromeda.link.transfer.ActivityScreen
 import org.andromeda.link.transfer.ActivityViewModel
 import org.andromeda.link.ui.theme.Tok
 import org.andromeda.link.ui.theme.spring
+import org.andromeda.link.update.UpdatePrompt
 
 private enum class Screen { Home, Activity, Settings, Device, Pairing, Setup, Media, MirrorApps, Remote, Presenter, Viewer }
 
@@ -134,6 +135,7 @@ fun LinkApp(
             screen = Screen.Setup
         }
     }
+    UpdatePrompt()
     Column(modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             AnimatedContent(

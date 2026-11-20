@@ -1,14 +1,24 @@
 package org.andromeda.link.update
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import org.andromeda.link.MainActivity
+import org.andromeda.link.R
+import org.andromeda.link.notifications.Channels
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -69,6 +79,44 @@ object AppUpdate {
                 }.getOrElse { State.Failed(it.message ?: it.javaClass.simpleName) }
             }
     }
+
+    /** The background check: posts one notification per new version, and leaves a running install alone. */
+    suspend fun checkAndNotify(context: Context) {
+        if (_state.value is State.Downloading || _state.value == State.Installing) return
+        check(context)
+        val update = _state.value as? State.Available ?: return
+        val prefs = prefs(context)
+        if (prefs.getString(KEY_NOTIFIED, null) == update.version) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        NotificationManagerCompat.from(context).notify(
+            TAG,
+            0,
+            NotificationCompat
+                .Builder(context, Channels.UPDATES)
+                .setSmallIcon(R.drawable.ic_stat_link)
+                .setContentTitle(context.getString(R.string.update_prompt_title, update.version))
+                .setContentText(context.getString(R.string.update_notify_text))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build(),
+        )
+        prefs.edit { putString(KEY_NOTIFIED, update.version) }
+    }
+
+    /** The version whose prompt the user put off; the app asks again only for a newer one. */
+    fun dismissed(context: Context): String? = prefs(context).getString(KEY_DISMISSED, null)
+
+    fun dismiss(
+        context: Context,
+        version: String,
+    ) = prefs(context).edit { putString(KEY_DISMISSED, version) }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     suspend fun install(
         context: Context,
@@ -161,6 +209,10 @@ object AppUpdate {
         return 0
     }
 
+    private const val PREFS = "update"
+    private const val KEY_DISMISSED = "dismissed"
+    private const val KEY_NOTIFIED = "notified"
+    private const val TAG = "update"
     private const val LATEST = "https://api.github.com/repos/Andromeda-Desktop/link/releases/latest"
 }
 

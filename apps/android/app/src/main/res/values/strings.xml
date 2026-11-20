@@ -430,6 +430,10 @@
     <string name="update_check">Check</string>
     <string name="update_install">Install</string>
     <string name="update_retry">Try again</string>
+    <string name="update_prompt_title">Link %1$s is available</string>
+    <string name="update_prompt_text">Link downloads it now, then Android asks you to confirm the install.</string>
+    <string name="update_notify_text">Tap to open Link and install it</string>
+    <string name="channel_updates">App updates</string>
     <string name="settings_log">Connection log</string>
     <string name="settings_log_hint">The last 500 lines, for a bug report</string>
     <string name="settings_log_subject">Andromeda Link log</string>

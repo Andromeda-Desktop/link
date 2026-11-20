@@ -45,6 +45,7 @@ import org.andromeda.link.ring.Ringer
 import org.andromeda.link.screen.MirrorAsk
 import org.andromeda.link.screen.ScreenMirror
 import org.andromeda.link.transfer.TransferService
+import org.andromeda.link.update.UpdateJob
 import org.andromeda.link.widget.DesktopWidget
 import java.io.File
 
@@ -91,6 +92,7 @@ class AppContainer(
 
     fun start() {
         Channels.create(application)
+        UpdateJob.schedule(application)
         LogAccess.load(application)
         presence.start()
         clipboard.start()
