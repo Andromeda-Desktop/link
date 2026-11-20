@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use crate::messages::{self, Messages};
 use crate::mirror::MirrorSender;
 use crate::net;
 use crate::outbox::{self, Outbox, OutboxActor, Seen, Sent};
+use crate::path::{Hop, LinkId};
 use crate::phone::{self, PairTarget, Phone};
 use crate::reach::{self, Reached, Via};
 use crate::session::{self, Route, SessionEvent, SessionHandle};
@@ -233,9 +235,11 @@ pub struct ClientActor {
     /// The status last sent, to tell a change of control fields only.
     status_last: Option<Status>,
     status_pending: bool,
-    /// Desktops whose live session runs over Bluetooth, probed for an IP path every [`PROBE_EVERY`].
-    on_bluetooth: HashSet<DeviceId>,
+    /// When to probe the desktops whose live session runs over Bluetooth for an IP path, every [`PROBE_EVERY`].
     next_probe: Option<Instant>,
+    /// Each IP session's standby LE link, with the session's stable id; losing Wi-Fi moves the session onto it.
+    standby: HashMap<DeviceId, (usize, LinkId)>,
+    standbys: JoinSet<(DeviceId, usize, std::io::Result<OwnedFd>)>,
     probes: JoinSet<(DeviceId, Result<Reached, Error>)>,
     /// Redials looking for an IP path, off the actor: a desktop that does not answer takes seconds to give up on.
     redials: JoinSet<(DeviceId, Duration, Result<Reached, Error>)>,
@@ -302,8 +306,9 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         status_sent: None,
         status_last: None,
         status_pending: false,
-        on_bluetooth: HashSet::new(),
         next_probe: None,
+        standby: HashMap::new(),
+        standbys: JoinSet::new(),
         probes: JoinSet::new(),
         redials: JoinSet::new(),
         redialing: HashSet::new(),
@@ -604,6 +609,10 @@ impl ClientActor {
                 () = sleep_until(next_retry) => self.retry_due(),
                 () = sleep_until(next_status) => self.send_status().await,
                 () = sleep_until(self.next_probe) => self.probe(),
+                Some(joined) = self.standbys.join_next() => match joined {
+                    Ok((id, stable_id, opened)) => self.standby_opened(id, stable_id, opened),
+                    Err(join) => log::warn!("standby link task: {join}"),
+                },
                 Some(_) = self.browsing.join_next() => {}
                 () = sleep_until(self.slot.deadline()) => self.slot_event(slot::Event::Tick).await,
                 Some(started) = self.starting.join_next() => match started {
@@ -652,6 +661,7 @@ impl ClientActor {
                 self.retries.remove(&id);
                 self.controlled_by.remove(&id);
                 self.status_to.remove(&id);
+                self.standby.remove(&id);
                 if let Some(handle) = self.sessions.remove(&id) {
                     handle.close(CloseCode::Done);
                 }
@@ -875,23 +885,17 @@ impl ClientActor {
         self.transfers.attach(id.clone(), handle.clone(), clip, desktop.has(LATE_HASH)).await;
         self.outbox.live(id.clone(), handle.clone(), desktop.has(SHARE_OUTBOX));
         self.retries.remove(&id);
-        if via == Via::Bluetooth {
-            log::info!("{id}: connected over Bluetooth");
-            self.on_bluetooth.insert(id.clone());
-            self.on_hotspot.remove(&id);
-            self.wifi_direct_failed.remove(&id);
-            self.next_probe = Some(Instant::now());
-        } else {
-            log::info!("{id}: connected at {}", addr.map_or_else(String::new, |addr| addr.to_string()));
-            self.on_bluetooth.remove(&id);
-            if matches!(via, Via::Hotspot | Via::WifiDirect) {
-                self.on_hotspot.insert(id.clone());
-            } else {
-                self.on_hotspot.remove(&id);
-            }
-            self.finish_upgrades(&id, &Ok(()));
-            let busy = self.is_busy(&id);
-            self.slot_event(slot::Event::Adopted { peer: id.clone(), busy }).await;
+        self.path_changed(&id, via, addr).await;
+        if via != Via::Bluetooth
+            && handle.path().is_some()
+            && let Some(open) = self.phone.l2cap_opener(&desktop)
+        {
+            let (id, stable_id) = (id.clone(), handle.stable_id());
+            self.standbys.spawn(async move {
+                let opened =
+                    tokio::task::spawn_blocking(open).await.unwrap_or_else(|join| Err(std::io::Error::other(join)));
+                (id, stable_id, opened)
+            });
         }
         if let Some(status) = self.status {
             let (handle, status) = (handle.clone(), self.status_message(&id, status));
@@ -903,6 +907,63 @@ impl ClientActor {
         self.send_notifications(&id, &handle, &[]).await;
         self.emit(ClientEvent::Connected { desktop, addr, via, resumed });
         handle
+    }
+
+    /// What follows a session's move to `via`, whether a new session or the same one on another path.
+    async fn path_changed(&mut self, id: &DeviceId, via: Via, addr: Option<SocketAddr>) {
+        if via == Via::Bluetooth {
+            log::info!("{id}: connected over Bluetooth");
+            self.on_hotspot.remove(id);
+            self.wifi_direct_failed.remove(id);
+            self.next_probe = Some(Instant::now());
+        } else {
+            log::info!("{id}: connected at {}", addr.map_or_else(String::new, |addr| addr.to_string()));
+            if matches!(via, Via::Hotspot | Via::WifiDirect) {
+                self.on_hotspot.insert(id.clone());
+            } else {
+                self.on_hotspot.remove(id);
+            }
+            self.finish_upgrades(id, &Ok(()));
+            let busy = self.is_busy(id);
+            self.slot_event(slot::Event::Adopted { peer: id.clone(), busy }).await;
+        }
+    }
+
+    /// Whether `id`'s live session runs over Bluetooth: RFCOMM, or QUIC routed over a link.
+    fn on_bluetooth(&self, id: &DeviceId) -> bool {
+        self.sessions.get(id).is_some_and(SessionHandle::on_bluetooth)
+    }
+
+    fn standby_opened(&mut self, id: DeviceId, stable_id: usize, opened: std::io::Result<OwnedFd>) {
+        let Some(quic) = self
+            .sessions
+            .get(&id)
+            .filter(|handle| handle.stable_id() == stable_id)
+            .and_then(|handle| handle.connection().quic().cloned())
+        else {
+            return;
+        };
+        let added = opened.map_err(Error::from).and_then(|fd| self.phone.add_standby(fd, quic));
+        match added {
+            Ok(link) => {
+                log::info!("{id}: standby Bluetooth link up");
+                self.standby.insert(id, (stable_id, link));
+            }
+            Err(error) => log::info!("{id}: no standby Bluetooth link: {error}"),
+        }
+    }
+
+    /// Moves `id`'s session onto its standby link, keeping its streams.
+    async fn move_to_standby(&mut self, id: DeviceId, link: LinkId) {
+        let Some(handle) = self.sessions.get(&id).cloned() else { return };
+        let Some(path) = handle.path() else { return };
+        log::info!("{id}: Wi-Fi is gone; moving the session to its standby Bluetooth link");
+        path.set(Hop::Link(link));
+        handle.wake();
+        self.path_changed(&id, Via::Bluetooth, None).await;
+        if let Some(desktop) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() {
+            self.emit(ClientEvent::Connected { desktop, addr: None, via: Via::Bluetooth, resumed: false });
+        }
     }
 
     /// A snapshot to a desktop that syncs, so that it pulls only what it lacks; every notification to an older one.
@@ -936,6 +997,9 @@ impl ClientActor {
     async fn ended(&mut self, ended: Ended) {
         let Ended { id, stable_id, result } = ended;
         self.transfers.detach(id.clone(), stable_id).await;
+        if self.standby.get(&id).is_some_and(|&(standby_of, _)| standby_of == stable_id) {
+            self.standby.remove(&id);
+        }
         if self.sessions.get(&id).is_none_or(|handle| handle.stable_id() != stable_id) {
             return;
         }
@@ -943,7 +1007,6 @@ impl ClientActor {
         self.controlled_by.remove(&id);
         self.status_to.remove(&id);
         self.mirroring.remove(&id);
-        self.on_bluetooth.remove(&id);
         self.on_hotspot.remove(&id);
         self.slot_event(slot::Event::SessionEnded { peer: id.clone() }).await;
         let reason = match &result {
@@ -1032,13 +1095,25 @@ impl ClientActor {
     /// round of redials; Wi-Fi coming back looks for an IP path at once, instead of at the next probe.
     async fn network_changed(&mut self, before: Option<NetworkKind>, now: NetworkKind) {
         if before == Some(NetworkKind::Wifi) && now != NetworkKind::Wifi {
+            let standby: Vec<(DeviceId, LinkId)> = self
+                .standby
+                .iter()
+                .filter(|&(id, &(stable_id, link))| {
+                    self.sessions
+                        .get(id)
+                        .is_some_and(|handle| handle.stable_id() == stable_id && !handle.on_bluetooth())
+                        && self.phone.has_link(link)
+                })
+                .map(|(id, &(_, link))| (id.clone(), link))
+                .collect();
+            for (id, link) in standby {
+                self.move_to_standby(id, link).await;
+            }
             let over_wifi: Vec<Peer> = self
                 .phone
                 .desktops()
                 .iter()
-                .filter(|peer| {
-                    peer.bluetooth.is_some() && !self.on_bluetooth.contains(&peer.id) && self.wants(&peer.id)
-                })
+                .filter(|peer| peer.bluetooth.is_some() && !self.on_bluetooth(&peer.id) && self.wants(&peer.id))
                 .cloned()
                 .collect();
             for peer in over_wifi {
@@ -1048,23 +1123,25 @@ impl ClientActor {
                     Err(error) => log::info!("{}: Bluetooth right after Wi-Fi: {error}", peer.id),
                 }
             }
-        } else if now == NetworkKind::Wifi && !self.on_bluetooth.is_empty() {
+        } else if now == NetworkKind::Wifi && self.sessions.values().any(SessionHandle::on_bluetooth) {
             self.next_probe = Some(Instant::now());
         }
     }
 
     /// Looks for an IP path to every desktop on Bluetooth, off the actor, since reaching one can take seconds.
     fn probe(&mut self) {
-        self.next_probe = (!self.on_bluetooth.is_empty()).then(|| Instant::now() + PROBE_EVERY);
+        let on_bluetooth: Vec<DeviceId> =
+            self.sessions.iter().filter(|(_, handle)| handle.on_bluetooth()).map(|(id, _)| id.clone()).collect();
+        self.next_probe = (!on_bluetooth.is_empty()).then(|| Instant::now() + PROBE_EVERY);
         // On mobile data the only IP path is an overlay such as Tailscale, which would move a Bluetooth session, and
         // its transfers, onto the data plan.
         if self.status.is_some_and(|status| status.network == NetworkKind::Cellular) {
             return;
         }
-        for id in &self.on_bluetooth {
-            let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == *id).cloned() else { continue };
+        for id in on_bluetooth {
+            let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { continue };
             let dialer = self.phone.dialer().clone();
-            let (id, session) = (id.clone(), self.sessions.get(id).cloned());
+            let session = self.sessions.get(&id).cloned();
             self.probes.spawn(async move {
                 if let (Some(session), Some(punch)) = (session, punch(&dialer))
                     && let Err(error) = session.send(punch).await
@@ -1077,13 +1154,30 @@ impl ClientActor {
         }
     }
 
-    /// Moves a Bluetooth session to the IP path a probe found; the desktop closes the older session.
+    /// Moves a Bluetooth session to the IP path a probe found: a QUIC session moves its route and keeps its streams;
+    /// an RFCOMM one gives way to a new session, and the desktop closes the older one.
     async fn probed(&mut self, id: DeviceId, reached: Result<Reached, Error>) {
         let Ok(reached) = reached else { return };
-        if !self.on_bluetooth.contains(&id) {
+        let Some(handle) = self.sessions.get(&id).filter(|handle| handle.on_bluetooth()).cloned() else { return };
+        let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
+        if let Some(path) = handle.path() {
+            // First: while the probe's connection lives, packets from the address it reached are its own.
+            crate::wire::Connection::from(reached.dialed.connection).close(CloseCode::Done);
+            if let Some(Hop::Link(link)) = path.via() {
+                self.standby.insert(id.clone(), (handle.stable_id(), link));
+            }
+            log::info!("{id}: moving the session from Bluetooth to {}", reached.addr);
+            path.set(Hop::Udp(reached.addr));
+            handle.wake();
+            self.path_changed(&id, reached.via, Some(reached.addr)).await;
+            self.emit(ClientEvent::Connected {
+                desktop: peer,
+                addr: Some(reached.addr),
+                via: reached.via,
+                resumed: false,
+            });
             return;
         }
-        let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
         match self.phone.adopt_reached(&peer, reached).await {
             Ok(session) => {
                 log::info!("{id}: moving from Bluetooth to {:?}", session.addr);
@@ -1095,7 +1189,7 @@ impl ClientActor {
 
     /// Starts the group or hotspot for `id`'s Bluetooth session, off the actor; its credentials go out once it is up.
     async fn start_hotspot(&mut self, id: DeviceId) {
-        if !self.on_bluetooth.contains(&id) {
+        if !self.on_bluetooth(&id) {
             self.finish_upgrades(&id, &Ok(()));
             return;
         }
@@ -1555,7 +1649,7 @@ impl ClientActor {
             .map(|peer| DesktopState {
                 peer: peer.clone(),
                 link: link(&peer.id),
-                bluetooth: link(&peer.id) == DesktopLink::Live && self.on_bluetooth.contains(&peer.id),
+                bluetooth: link(&peer.id) == DesktopLink::Live && self.on_bluetooth(&peer.id),
             })
             .collect()
     }

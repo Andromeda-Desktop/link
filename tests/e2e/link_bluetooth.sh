@@ -13,6 +13,7 @@
 # 4. More than 20 MiB, with a phone that cannot start a hotspot (link_hotspot.sh covers one that can), is refused
 #    from D-Bus SendFiles and from the phone before any byte moves.
 # 5. The IP path returning moves the held session from Bluetooth to QUIC by itself, with no lost share.
+# 5b. Over L2CAP: losing Wi-Fi moves the same session onto its standby link and back, with no new session.
 # 6. A phone whose key is not paired is refused over Bluetooth and nothing is delivered.
 # 7. Garbage on the Bluetooth socket fails the handshake and the daemon keeps serving.
 # Every control message is validated against api/messages.cddl.
@@ -157,6 +158,30 @@ wait_for 5 "D-Bus does not show the phone after the move" connected
 link Share "$ID" text "'back on wifi'" > /dev/null || fail "Share after moving to IP"
 wait_for 5 "the phone missed the share after the move" grep -q '"text":"back on wifi"' "$OUT/hold.jsonl"
 record '{"step":"moves-up-to-ip"}'
+
+if [[ ${LINK_BT:-l2cap} == l2cap ]]; then
+  # The link the session left stays as its standby; losing Wi-Fi moves the same session onto it and back.
+  ENDED=$(events disconnected)
+  say "status 80 0 wifi"
+  wait_for 5 "the phone did not take the Wi-Fi status" eval '[[ $(events status-set) == 1 ]]'
+  blackhole
+  say "status 80 0 cellular"
+  wait_for 10 "losing Wi-Fi did not move the session to its standby link" eval '[[ $(events connected) == 3 ]]'
+  grep '"event":"connected"' "$OUT/hold.jsonl" | tail -1 | grep -q '"via":"bluetooth"' || fail "the standby move is not on Bluetooth"
+  grep -q "moving the session to its standby Bluetooth link" "$OUT/hold.log" || fail "the phone did not use the standby link"
+  link Share "$ID" text "'on the standby link'" > /dev/null || fail "Share on the standby link"
+  wait_for 5 "the phone missed the share on the standby link" grep -q '"text":"on the standby link"' "$OUT/hold.jsonl"
+  say "text standby to desktop"
+  wait_for 10 "the desktop missed the phone's text on the standby link" grep -qF 'standby to desktop' "$OUT/signals.txt"
+  clear_path
+  say "status 80 0 wifi"
+  wait_for 30 "Wi-Fi back did not move the session to IP" eval '[[ $(events connected) == 4 ]]'
+  grep '"event":"connected"' "$OUT/hold.jsonl" | tail -1 | grep -q '"via":"last-known"' || fail "the move back is not on IP"
+  link Share "$ID" text "'off the standby link'" > /dev/null || fail "Share after the move back"
+  wait_for 5 "the phone missed the share after the move back" grep -q '"text":"off the standby link"' "$OUT/hold.jsonl"
+  [[ $(events disconnected) == "$ENDED" ]] || fail "the session ended during the standby moves"
+  record '{"step":"wifi-loss-moves-to-standby"}'
+fi
 
 blackhole
 mkdir -p "$RUNTIME/stranger"

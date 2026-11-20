@@ -287,6 +287,10 @@ impl PathSocket {
         route
     }
 
+    pub fn has_link(&self, id: LinkId) -> bool {
+        self.shared.slot(id).is_some()
+    }
+
     /// The link `peer` is reached over now.
     pub fn link_to(&self, peer: SocketAddr) -> Option<LinkId> {
         match lock(&self.shared.routes).to.get(&canonical(peer)) {

@@ -212,6 +212,11 @@ impl SessionHandle {
         &self.connection
     }
 
+    /// The connection's path, for a QUIC session on a `PathSocket`.
+    pub fn path(&self) -> Option<&crate::path::Route> {
+        self.path.as_ref()
+    }
+
     pub fn on_bluetooth(&self) -> bool {
         self.path.as_ref().map_or_else(|| self.connection.on_bluetooth(), crate::path::Route::on_link)
     }

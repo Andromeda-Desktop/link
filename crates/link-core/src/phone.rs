@@ -20,7 +20,7 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, Hop, PathSocket, Route, link_address};
+use crate::path::{FdLink, Hop, LinkId, PathSocket, Route, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::store::{Feature, Peer, Store};
 use crate::stream::{BluetoothOpener, FdStream, StreamDialer};
@@ -248,6 +248,25 @@ impl Phone {
         }
         log::info!("{}: no IP path ({ip}); trying Bluetooth", peer.id);
         self.connect_bluetooth(peer).await
+    }
+
+    /// Opens an LE L2CAP channel to `peer` when run, a blocking call for a worker thread.
+    pub fn l2cap_opener(&self, peer: &Peer) -> Option<impl FnOnce() -> std::io::Result<OwnedFd> + Send + 'static> {
+        let (address, opener) = (peer.bluetooth.clone()?, self.bluetooth.clone()?);
+        Some(move || opener.open_l2cap(&address))
+    }
+
+    /// Adds `fd` as a standby link that ends with `connection`; the connection's route can move onto it.
+    pub fn add_standby(&mut self, fd: OwnedFd, connection: quinn::Connection) -> Result<LinkId, Error> {
+        self.links = self.links.wrapping_add(1);
+        let link = self.socket.add_link(FdLink::new(fd)?, link_address(self.links));
+        self.socket.tie(link, connection);
+        Ok(link)
+    }
+
+    /// Whether link `id` still runs.
+    pub fn has_link(&self, id: LinkId) -> bool {
+        self.socket.has_link(id)
     }
 
     /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi. QUIC over an LE L2CAP
