@@ -241,6 +241,8 @@ pub struct ClientActor {
     standby: HashMap<DeviceId, (usize, LinkId)>,
     standbys: JoinSet<(DeviceId, usize, std::io::Result<OwnedFd>)>,
     probes: JoinSet<(DeviceId, Result<Reached, Error>)>,
+    /// The probe running for each desktop: a new one stops it, since two dials to one address contend for its packets.
+    probing: HashMap<DeviceId, tokio::task::AbortHandle>,
     /// Redials looking for an IP path, off the actor: a desktop that does not answer takes seconds to give up on.
     redials: JoinSet<(DeviceId, Duration, Result<Reached, Error>)>,
     redialing: HashSet<DeviceId>,
@@ -310,6 +312,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         standby: HashMap::new(),
         standbys: JoinSet::new(),
         probes: JoinSet::new(),
+        probing: HashMap::new(),
         redials: JoinSet::new(),
         redialing: HashSet::new(),
         slot: Slot::Idle,
@@ -635,6 +638,7 @@ impl ClientActor {
                 },
                 Some(joined) = self.probes.join_next() => match joined {
                     Ok((id, reached)) => self.probed(id, reached).await,
+                    Err(join) if join.is_cancelled() => {}
                     Err(join) => log::warn!("probe task: {join}"),
                 },
             }
@@ -953,11 +957,18 @@ impl ClientActor {
         }
     }
 
+    /// The standby link `id`'s live IP session can move onto now.
+    fn standby_for(&self, id: &DeviceId) -> Option<LinkId> {
+        let &(stable_id, link) = self.standby.get(id)?;
+        let handle = self.sessions.get(id)?;
+        (handle.stable_id() == stable_id && !handle.on_bluetooth() && self.phone.has_link(link)).then_some(link)
+    }
+
     /// Moves `id`'s session onto its standby link, keeping its streams.
-    async fn move_to_standby(&mut self, id: DeviceId, link: LinkId) {
+    async fn move_to_standby(&mut self, id: DeviceId, link: LinkId, why: &str) {
         let Some(handle) = self.sessions.get(&id).cloned() else { return };
         let Some(path) = handle.path() else { return };
-        log::info!("{id}: Wi-Fi is gone; moving the session to its standby Bluetooth link");
+        log::info!("{id}: {why}; moving the session to its standby Bluetooth link");
         path.set(Hop::Link(link));
         handle.wake();
         self.path_changed(&id, Via::Bluetooth, None).await;
@@ -1095,19 +1106,10 @@ impl ClientActor {
     /// round of redials; Wi-Fi coming back looks for an IP path at once, instead of at the next probe.
     async fn network_changed(&mut self, before: Option<NetworkKind>, now: NetworkKind) {
         if before == Some(NetworkKind::Wifi) && now != NetworkKind::Wifi {
-            let standby: Vec<(DeviceId, LinkId)> = self
-                .standby
-                .iter()
-                .filter(|&(id, &(stable_id, link))| {
-                    self.sessions
-                        .get(id)
-                        .is_some_and(|handle| handle.stable_id() == stable_id && !handle.on_bluetooth())
-                        && self.phone.has_link(link)
-                })
-                .map(|(id, &(_, link))| (id.clone(), link))
-                .collect();
+            let standby: Vec<(DeviceId, LinkId)> =
+                self.standby.keys().filter_map(|id| Some((id.clone(), self.standby_for(id)?))).collect();
             for (id, link) in standby {
-                self.move_to_standby(id, link).await;
+                self.move_to_standby(id, link, "Wi-Fi is gone").await;
             }
             let over_wifi: Vec<Peer> = self
                 .phone
@@ -1142,21 +1144,27 @@ impl ClientActor {
             let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { continue };
             let dialer = self.phone.dialer().clone();
             let session = self.sessions.get(&id).cloned();
-            self.probes.spawn(async move {
+            if let Some(older) = self.probing.remove(&id) {
+                older.abort();
+            }
+            let task_id = id.clone();
+            let probe = self.probes.spawn(async move {
                 if let (Some(session), Some(punch)) = (session, punch(&dialer))
                     && let Err(error) = session.send(punch).await
                 {
-                    log::info!("{id}: asking for a punch: {error}");
+                    log::info!("{task_id}: asking for a punch: {error}");
                 }
                 let reached = reach::reach(&dialer, &peer).await;
-                (id, reached)
+                (task_id, reached)
             });
+            self.probing.insert(id, probe);
         }
     }
 
     /// Moves a Bluetooth session to the IP path a probe found: a QUIC session moves its route and keeps its streams;
     /// an RFCOMM one gives way to a new session, and the desktop closes the older one.
     async fn probed(&mut self, id: DeviceId, reached: Result<Reached, Error>) {
+        self.probing.remove(&id);
         let Ok(reached) = reached else { return };
         let Some(handle) = self.sessions.get(&id).filter(|handle| handle.on_bluetooth()).cloned() else { return };
         let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
@@ -1606,6 +1614,10 @@ impl ClientActor {
             // Closed is reported as Disconnected.
             SessionEvent::Link { from, state } if state != LinkState::Closed => {
                 let live = matches!(state, LinkState::Live { .. });
+                // A Bluetooth session moves up only through a probe, which proves the IP path first.
+                if !live && let Some(link) = self.standby_for(&from) {
+                    self.move_to_standby(from.clone(), link, "the desktop's heartbeat is overdue").await;
+                }
                 if live && let Some(handle) = self.sessions.get(&from) {
                     let items = self.phone.desktops().iter().any(|peer| peer.id == from && peer.has(SHARE_OUTBOX));
                     self.outbox.live(from.clone(), handle.clone(), items);

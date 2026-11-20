@@ -13,7 +13,8 @@
 # 4. More than 20 MiB, with a phone that cannot start a hotspot (link_hotspot.sh covers one that can), is refused
 #    from D-Bus SendFiles and from the phone before any byte moves.
 # 5. The IP path returning moves the held session from Bluetooth to QUIC by itself, with no lost share.
-# 5b. Over L2CAP: losing Wi-Fi moves the same session onto its standby link and back, with no new session.
+# 5b. Over L2CAP: losing Wi-Fi, or an overdue heartbeat, moves the same session onto its standby link and back, with
+#     no new session.
 # 6. A phone whose key is not paired is refused over Bluetooth and nothing is delivered.
 # 7. Garbage on the Bluetooth socket fails the handshake and the daemon keeps serving.
 # Every control message is validated against api/messages.cddl.
@@ -179,6 +180,17 @@ if [[ ${LINK_BT:-l2cap} == l2cap ]]; then
   grep '"event":"connected"' "$OUT/hold.jsonl" | tail -1 | grep -q '"via":"last-known"' || fail "the move back is not on IP"
   link Share "$ID" text "'off the standby link'" > /dev/null || fail "Share after the move back"
   wait_for 5 "the phone missed the share after the move back" grep -q '"text":"off the standby link"' "$OUT/hold.jsonl"
+  # A path that goes quiet while the phone still reports Wi-Fi: the overdue heartbeat moves the session.
+  blackhole
+  wait_for 20 "an overdue heartbeat did not move the session to its standby link" eval '[[ $(events connected) == 5 ]]'
+  grep -q "heartbeat is overdue; moving the session to its standby" "$OUT/hold.log" || fail "the move was not for the heartbeat"
+  link Share "$ID" text "'after the heartbeat move'" > /dev/null || fail "Share after the heartbeat move"
+  wait_for 5 "the phone missed the share after the heartbeat move" grep -q '"text":"after the heartbeat move"' "$OUT/hold.jsonl"
+  clear_path
+  say "status 80 0 cellular"
+  say "status 80 0 wifi"
+  wait_for 30 "the session did not move back to IP after the heartbeat move" eval '[[ $(events connected) == 6 ]]'
+  grep '"event":"connected"' "$OUT/hold.jsonl" | tail -1 | grep -q '"via":"last-known"' || fail "the session did not stay on IP"
   [[ $(events disconnected) == "$ENDED" ]] || fail "the session ended during the standby moves"
   record '{"step":"wifi-loss-moves-to-standby"}'
 fi

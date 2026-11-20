@@ -91,8 +91,8 @@ pub enum Hop {
 struct Routes {
     to: HashMap<SocketAddr, Hop>,
     /// The reverse of each route: packets from the key (a UDP address or a link's own address) reach quinn as from
-    /// the value.
-    from: HashMap<SocketAddr, SocketAddr>,
+    /// the last peer in the list. A newer dial to the same address takes it over; its end gives it back.
+    from: HashMap<SocketAddr, Vec<SocketAddr>>,
     /// Virtual addresses handed out and not yet released, routed or not.
     virtuals: HashSet<SocketAddr>,
 }
@@ -102,7 +102,7 @@ impl Routes {
     fn set(&mut self, peer: SocketAddr, via: Hop, source: SocketAddr) {
         self.remove(peer);
         if source != peer {
-            self.from.insert(source, peer);
+            self.from.entry(source).or_default().push(peer);
         }
         if source != peer || matches!(via, Hop::Link(_)) {
             self.to.insert(peer, via);
@@ -111,7 +111,10 @@ impl Routes {
 
     fn remove(&mut self, peer: SocketAddr) {
         self.to.remove(&peer);
-        self.from.retain(|_, to| *to != peer);
+        self.from.retain(|_, owners| {
+            owners.retain(|owner| *owner != peer);
+            !owners.is_empty()
+        });
     }
 }
 
@@ -560,7 +563,11 @@ impl AsyncUdpSocket for PathSocket {
         {
             let len = packet.len().min(buf.len());
             buf[..len].copy_from_slice(&packet[..len]);
-            let addr = lock(&self.shared.routes).from.get(&canonical(addr)).copied().unwrap_or(addr);
+            let addr = lock(&self.shared.routes)
+                .from
+                .get(&canonical(addr))
+                .and_then(|owners| owners.last().copied())
+                .unwrap_or(addr);
             *first = RecvMeta { addr, len, stride: len, ..RecvMeta::default() };
             return Poll::Ready(Ok(1));
         }
@@ -568,7 +575,7 @@ impl AsyncUdpSocket for PathSocket {
         let routes = lock(&self.shared.routes);
         if !routes.from.is_empty() {
             for meta in meta.iter_mut().take(received) {
-                if let Some(&peer) = routes.from.get(&canonical(meta.addr)) {
+                if let Some(&peer) = routes.from.get(&canonical(meta.addr)).and_then(|owners| owners.last()) {
                     meta.addr = peer;
                 }
             }
@@ -688,6 +695,43 @@ mod tests {
         assert_eq!(got, TOTAL);
         assert!(seen_link, "the desktop never saw the connection on the link");
         assert_eq!(last.port(), phone_socket.local_addr()?.port(), "the connection did not move back to UDP");
+        Ok(())
+    }
+
+    /// A second dial to the same address takes its packets over while it lives, and gives them back when it ends.
+    #[tokio::test]
+    async fn a_second_dial_to_an_address_gives_it_back_when_it_ends() -> Result {
+        let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
+        let server_addr = server.socket.local_addr()?;
+        let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
+        let dialer = Dialer::on_path(&Identity::generate()?, phone.clone())?;
+        let accepted = tokio::spawn(async move {
+            let first = server.endpoint.accept().await.ok_or("no first")?.await?;
+            let second = server.endpoint.accept().await.ok_or("no second")?.await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, first, second))
+        });
+        let first = dialer.dial(server_addr, ServerPin::Any).await?;
+        let second = dialer.dial(server_addr, ServerPin::Any).await?;
+        let (_server, on_desktop, second_on_desktop) = accepted.await??;
+        second.connection.close(0u32.into(), b"done");
+        drop(second);
+        second_on_desktop.closed().await;
+        // Its route goes once quinn drops the drained connection.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut send = on_desktop.open_uni().await?;
+        send.write_all(b"still here").await?;
+        send.finish()?;
+        let got = tokio::time::timeout(Duration::from_secs(5), async {
+            first
+                .connection
+                .accept_uni()
+                .await?
+                .read_to_end(64)
+                .await
+                .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
+        })
+        .await??;
+        assert_eq!(got, b"still here");
         Ok(())
     }
 
