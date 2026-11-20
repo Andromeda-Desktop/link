@@ -4,11 +4,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
+import org.andromeda.link.core.domain.DesktopLink
 
 /** The status of a desktop that is not connected: that it paused this phone, else when it was last seen. */
 @Composable
 internal fun disconnectedLine(desktop: Desktop): String =
-    if (desktop.paused) {
+    if (desktop.link == DesktopLink.Reconnecting) {
+        stringResource(R.string.home_reconnecting)
+    } else if (desktop.paused) {
         stringResource(R.string.home_paused_by, desktop.name)
     } else {
         stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))

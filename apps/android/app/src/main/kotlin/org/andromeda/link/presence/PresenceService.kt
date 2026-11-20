@@ -19,6 +19,7 @@ import org.andromeda.link.MainActivity
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.ClipboardReadActivity
 import org.andromeda.link.core.data.LinkRepository
+import org.andromeda.link.core.domain.DesktopLink
 import org.andromeda.link.notifications.Channels
 
 /**
@@ -60,9 +61,12 @@ class PresenceService : Service() {
         ): Notification {
             val desktops = repository.desktops.value
             val connected = desktops.filter { it.connected }
+            val reconnecting = desktops.filter { it.link == DesktopLink.Reconnecting }
             val title =
                 if (connected.isNotEmpty()) {
                     context.getString(R.string.presence_connected, connected.joinToString { it.name })
+                } else if (reconnecting.isNotEmpty()) {
+                    context.getString(R.string.presence_reconnecting, reconnecting.joinToString { it.name })
                 } else {
                     context.getString(R.string.presence_looking, desktops.joinToString { it.name })
                 }

@@ -74,6 +74,7 @@ import kotlinx.coroutines.withContext
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
+import org.andromeda.link.core.domain.DesktopLink
 import org.andromeda.link.core.domain.DesktopPlayer
 import org.andromeda.link.core.domain.DesktopStatus
 import org.andromeda.link.core.domain.DesktopVolume
@@ -270,7 +271,7 @@ fun HomeScreen(
                             onSettings = onSettings,
                         )
                     }
-                    if (!live) {
+                    if (primary.link == DesktopLink.Offline) {
                         item { StatusCard(primary, state.refreshing) { viewModel.connect(primary) } }
                     } else if (player != null) {
                         item {
@@ -418,6 +419,8 @@ private fun Presence(
                         R.string.home_connected_via,
                         stringResource(if (desktop.bluetooth) R.string.home_via_bluetooth else R.string.home_via_wifi),
                     )
+            desktop.link == DesktopLink.Reconnecting ->
+                Modifier.border(Tok.Space.p2.dp, s.warning, CircleShape) to stringResource(R.string.home_reconnecting)
             refreshing -> Modifier.border(Tok.Space.p2.dp, s.warning, CircleShape) to stringResource(R.string.home_connecting)
             desktop.paused -> null to stringResource(R.string.home_paused_short, desktop.name)
             else -> Modifier.background(s.label3, CircleShape) to stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))

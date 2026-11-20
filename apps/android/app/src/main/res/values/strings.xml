@@ -54,6 +54,7 @@
     <string name="cancel">Cancel</string>
     <string name="presence_connected">Connected to %1$s</string>
     <string name="presence_looking">Looking for %1$s</string>
+    <string name="presence_reconnecting">Reconnecting to %1$s</string>
     <string name="presence_ring">Ring</string>
     <string name="presence_lock">Lock</string>
     <string name="tile_lock">Lock desktop</string>
@@ -452,6 +453,7 @@
     <string name="settings_clipboard_auto">Automatic</string>
     <string name="update_downloading_title">Update downloading</string>
     <string name="home_connecting">Connecting…</string>
+    <string name="home_reconnecting">Reconnecting…</string>
     <string name="home_paused_short">Paused by %1$s</string>
     <plurals name="home_fixes">
         <item quantity="one">%d fix needed</item>

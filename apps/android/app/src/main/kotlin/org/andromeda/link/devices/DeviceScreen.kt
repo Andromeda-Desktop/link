@@ -192,7 +192,7 @@ private fun Identity(
                         if (on) {
                             stringResource(R.string.home_connected_via, via)
                         } else {
-                            stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))
+                            disconnectedLine(desktop)
                         },
                         t.footnote,
                         color = s.label2,
