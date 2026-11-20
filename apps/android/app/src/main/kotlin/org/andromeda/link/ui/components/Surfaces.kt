@@ -22,17 +22,21 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,11 +54,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.theme.LinkTheme
 import org.andromeda.link.ui.theme.Motion
 import org.andromeda.link.ui.theme.Radius
 import org.andromeda.link.ui.theme.Size
 import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
+import org.andromeda.link.ui.theme.elevation
 
 /** Text in a type role; the design system's only text primitive. */
 @Composable
@@ -146,6 +153,8 @@ fun Screen(
     onBack: (() -> Unit)? = null,
     toast: String? = null,
     onToastShown: () -> Unit = {},
+    /** Room under the toast: more on a screen with a floating dock. */
+    toastInset: Dp = Tok.Space.p24.dp,
     actions: @Composable () -> Unit = {},
     overlay: @Composable BoxScope.() -> Unit = {},
     background: Color = LinkTheme.colors.surfacePrimary,
@@ -188,15 +197,16 @@ fun Screen(
             Column(Modifier.weight(1f).fillMaxWidth(), content = content)
         }
         overlay()
-        ToastHost(toast, onToastShown, Modifier.align(Alignment.BottomCenter))
+        ToastHost(toast, onToastShown, toastInset, Modifier.align(Alignment.BottomCenter))
     }
 }
 
-/** One line at the bottom in a pill, for a few seconds. */
+/** A message over the bottom edge for a few seconds (rulebook §9.11): a 40 capsule, or a r20 card when it wraps. */
 @Composable
 private fun ToastHost(
     message: String?,
     onShown: () -> Unit,
+    inset: Dp,
     modifier: Modifier = Modifier,
 ) {
     LaunchedEffect(message) {
@@ -205,20 +215,29 @@ private fun ToastHost(
             onShown()
         }
     }
+    // The last text stays while the toast slides out.
+    var shown by remember { mutableStateOf("") }
+    if (message != null) shown = message
     AnimatedVisibility(
         visible = message != null,
-        modifier = modifier.navigationBarsPadding().padding(Space.s20),
+        modifier = modifier.navigationBarsPadding().padding(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = inset),
         enter = slideInVertically(tween(Motion.NORMAL, easing = Motion.smoothEnter)) { it } + fadeIn(tween(Motion.FAST)),
         exit = slideOutVertically(tween(Motion.FAST, easing = Motion.exit)) { it } + fadeOut(tween(Motion.FADE_OUT)),
     ) {
-        val colors = LinkTheme.colors
+        val s = LinkTheme.scheme
+        val radius = Tok.Size.controlL.dp / 2
+        val shape = RoundedCornerShape(radius)
         Box(
             Modifier
-                .clip(Radius.pill)
-                .background(colors.textPrimary)
-                .padding(horizontal = Space.s20, vertical = Space.s14),
+                .heightIn(min = Tok.Size.controlL.dp)
+                .elevation(Tok.Elevation.e3, radius)
+                .clip(shape)
+                .background(s.view)
+                .border(Dp.Hairline, s.stroke, shape)
+                .padding(horizontal = Tok.Space.p16.dp, vertical = Tok.Space.p8.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Label(message.orEmpty(), LinkTheme.type.titleMedium, colors.textInverse)
+            Text(shown, LinkTheme.phoneType.body, color = s.label1, align = TextAlign.Center)
         }
     }
 }

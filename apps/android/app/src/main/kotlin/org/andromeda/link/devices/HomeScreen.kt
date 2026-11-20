@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -187,6 +190,7 @@ fun HomeScreen(
             title = null,
             toast = toast,
             onToastShown = viewModel::messageShown,
+            toastInset = (Tok.Phone.dockInset + Tok.Phone.hit + Tok.Space.p12).dp,
             overlay = {
                 if (primary != null) {
                     // Under the open picker, Home's controls would duplicate the sheet's for TalkBack.
@@ -270,12 +274,10 @@ fun HomeScreen(
                         item { StatusCard(primary, state.refreshing) { viewModel.connect(primary) } }
                     } else if (player != null) {
                         item {
-                            MediaCard(
-                                player,
-                                desk.volumes[primary.id],
-                                onOpen = onMedia,
-                                onVolume = { viewModel.setVolume(primary, it, unmute = true) },
-                            ) { command, value -> viewModel.media(player, command, value) }
+                            Column {
+                                MediaCard(player, onOpen = onMedia) { command, value -> viewModel.media(player, command, value) }
+                                Levels(primary, desk.can(primary.id), status, desk.volumes[primary.id], controls, volumeEnabled = true)
+                            }
                         }
                     }
                     val offers = desk.transfers.filter { it.incoming == true && it.status in OFFER_STATUSES }
@@ -294,7 +296,8 @@ fun HomeScreen(
                             primary,
                             desk.can(primary.id),
                             status,
-                            desk.volumes[primary.id].takeIf { player == null },
+                            desk.volumes[primary.id],
+                            levels = player == null,
                             primary.id in state.ringing,
                             autoClipboard,
                             controls,
@@ -503,13 +506,11 @@ private fun StatusCard(
     }
 }
 
-/** Only while a player plays: art, title, artist, progress, previous / play / next, and the volume inside. */
+/** Only while a player plays: art with title and artist, the seek line with times, then previous / play / next. */
 @Composable
 private fun MediaCard(
     shown: DesktopPlayer,
-    volume: DesktopVolume?,
     onOpen: () -> Unit,
-    onVolume: (Int) -> Unit,
     onCommand: (MediaCommandKind, Long?) -> Unit,
 ) {
     val s = LinkTheme.scheme
@@ -526,50 +527,43 @@ private fun MediaCard(
             .border(Dp.Hairline, s.stroke, shape)
             .padding(Tok.Space.p12.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                Modifier.weight(1f).clickable(role = Role.Button, onClick = onOpen),
-                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Artwork(player.artwork)
-                Column(Modifier.weight(1f)) {
-                    Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
-                    val by = if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
-                    Text(by, t.footnote, color = s.label2, maxLines = 1)
-                    Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
-                        onCommand(MediaCommandKind.Seek, it)
-                    }
-                }
+        Row(
+            Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onOpen),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Artwork(player.artwork)
+            Column(Modifier.weight(1f)) {
+                Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
+                val by = if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
+                Text(by, t.footnote, color = s.label2, maxLines = 1)
             }
+        }
+        Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
+            onCommand(MediaCommandKind.Seek, it)
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = Tok.Space.p4.dp),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p24.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             MediaKey(Icons.Prev, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can) {
                 onCommand(MediaCommandKind.Previous, null)
             }
             val playLabel = stringResource(if (playing) R.string.home_pause else R.string.home_play)
             Box(
                 Modifier
-                    .size(Tok.Phone.hit.dp)
+                    .size(Tok.Phone.roundKeyL.dp)
                     .clip(CircleShape)
                     .background(s.label1)
                     .clickable(enabled = MediaCommandKind.PlayPause in player.can, role = Role.Button) {
                         onCommand(MediaCommandKind.PlayPause, null)
                     }.semantics { contentDescription = playLabel },
                 contentAlignment = Alignment.Center,
-            ) { Symbol(if (playing) Icons.Pause else Icons.Play, s.view, size = Tok.Size.symbolL.dp) }
+            ) { Symbol(if (playing) Icons.Pause else Icons.Play, s.view, size = Tok.Phone.symbol.dp) }
             MediaKey(Icons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can) {
                 onCommand(MediaCommandKind.Next, null)
             }
-        }
-        if (volume != null) {
-            CapsuleSlider(
-                volume.percent,
-                Icons.Vol,
-                stringResource(R.string.home_volume),
-                enabled = true,
-                modifier = Modifier.padding(top = Tok.Space.p8.dp),
-                large = false,
-                onChange = onVolume,
-            )
         }
     }
 }
@@ -589,7 +583,7 @@ private fun MediaKey(
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
-    ) { Symbol(icon, if (enabled) s.label1 else s.label3, size = Tok.Size.symbolL.dp) }
+    ) { Symbol(icon, if (enabled) s.label1 else s.label3, size = Tok.Phone.symbol.dp) }
 }
 
 @Composable
@@ -601,13 +595,13 @@ private fun Artwork(bytes: ByteArray?) {
             value = withContext(Dispatchers.Default) { bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap() }
         }.value
     Box(
-        Modifier.size(Tok.Size.rowTwo.dp).clip(RoundedCornerShape(Tok.Radius.r12.dp)).background(s.fill2),
-        contentAlignment = Alignment.Center,
+        Modifier
+            .size(Tok.Size.rowTwo.dp)
+            .clip(RoundedCornerShape(Tok.Radius.r12.dp))
+            .background(Brush.linearGradient(listOf(s.accent, s.fill2))),
     ) {
         if (image != null) {
             Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        } else {
-            Symbol(Icons.Play, s.label2)
         }
     }
 }
@@ -635,28 +629,56 @@ private fun Progress(
     if (lengthMs == null) return
     val position = if (playing) positionMs + (now - receivedAt) else positionMs
     val fraction = (position.toFloat() / lengthMs.coerceAtLeast(1)).coerceIn(0f, 1f)
-    val line = Tok.Space.p2.dp + 1.dp
-    DragTrack(
-        fraction,
-        stringResource(R.string.media_position),
-        seekable,
-        Modifier.fillMaxWidth().height(Tok.Size.controlS.dp),
-        onDone = { onSeek((it * lengthMs).toLong()) },
-    ) { value, _ ->
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(line)
-                .clip(CircleShape)
-                .background(s.fill2),
-        )
-        Box(
-            Modifier
-                .fillMaxWidth(value)
-                .height(line)
-                .clip(CircleShape)
-                .background(s.label1),
-        )
+    val t = LinkTheme.phoneType
+    val line = Tok.Space.p4.dp
+    val thumb = Tok.Space.p12.dp
+    Column(Modifier.fillMaxWidth()) {
+        DragTrack(
+            fraction,
+            stringResource(R.string.media_position),
+            seekable,
+            Modifier.fillMaxWidth().height(Tok.Size.controlS.dp),
+            onDone = { onSeek((it * lengthMs).toLong()) },
+        ) { value, _ ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(line)
+                    .clip(CircleShape)
+                    .background(s.fill2),
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth(value)
+                    .height(line)
+                    .clip(CircleShape)
+                    .background(s.label1),
+            )
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .offset(x = (maxWidth - thumb) * value)
+                        .size(thumb)
+                        .clip(CircleShape)
+                        .background(s.label1),
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            val times = t.caption.copy(fontFeatureSettings = "tnum")
+            Text(clock(position.coerceAtMost(lengthMs)), times, color = s.label2)
+            Text(clock(lengthMs), times, color = s.label2)
+        }
+    }
+}
+
+/** m:ss, or h:mm:ss from an hour on. */
+private fun clock(ms: Long): String {
+    val sec = ms.coerceAtLeast(0) / 1_000
+    return if (sec >= 3_600) {
+        "%d:%02d:%02d".format(sec / 3_600, sec / 60 % 60, sec % 60)
+    } else {
+        "%d:%02d".format(sec / 60, sec % 60)
     }
 }
 
@@ -713,8 +735,9 @@ private fun Controls(
     /** Null when the desktop does not list its capabilities: it then hides nothing. */
     capabilities: Set<String>?,
     status: DesktopStatus?,
-    /** Null while the media card holds the volume. */
     volume: DesktopVolume?,
+    /** False while the media card holds the volume and brightness. */
+    levels: Boolean,
     ringing: Boolean,
     autoClipboard: Boolean,
     controls: DeskControls,
@@ -778,18 +801,34 @@ private fun Controls(
         ) {
             ModeTile(Icons.Screen, stringResource(R.string.key_screen), stringResource(R.string.home_screen_hint), live, onViewer)
         }
+        if (levels) Levels(desktop, capabilities, status, volume, controls, volumeEnabled = control)
+    }
+}
+
+/** Volume and brightness as one group: under the media card while a player plays, else at the end of the controls. */
+@Composable
+private fun Levels(
+    desktop: Desktop,
+    capabilities: Set<String>?,
+    status: DesktopStatus?,
+    volume: DesktopVolume?,
+    controls: DeskControls,
+    volumeEnabled: Boolean,
+) {
+    val control = desktop.connected && CAN_CONTROL in capabilities.orEmpty()
+    Column {
         if (volume != null) {
             CapsuleSlider(
                 volume.percent,
                 Icons.Vol,
                 stringResource(R.string.home_volume),
-                control,
+                volumeEnabled,
                 { controls.setVolume(desktop, it, unmute = volume.muted) },
                 Modifier.padding(top = Tok.Space.p8.dp),
             )
         }
         val brightness = status?.brightness
-        if (brightness != null && has("brightness")) {
+        if (brightness != null && capabilities?.contains("brightness") != false) {
             CapsuleSlider(
                 brightness,
                 Icons.Sun,

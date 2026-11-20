@@ -180,20 +180,20 @@
         <error line="35" column="5" source="standard:function-naming" />
     </file>
     <file name="src/main/kotlin/org/andromeda/link/ui/components/Surfaces.kt">
-        <error line="61" column="5" source="standard:function-naming" />
-        <error line="61" column="5" source="compose:param-order-check" />
-        <error line="73" column="5" source="standard:function-naming" />
-        <error line="73" column="5" source="compose:param-order-check" />
-        <error line="98" column="5" source="standard:function-naming" />
-        <error line="128" column="5" source="standard:function-naming" />
-        <error line="144" column="5" source="standard:function-naming" />
-        <error line="144" column="5" source="compose:modifier-missing-check" />
-        <error line="148" column="5" source="compose:parameter-naming" />
-        <error line="197" column="13" source="standard:function-naming" />
-        <error line="199" column="5" source="compose:lambda-param-in-effect" />
-        <error line="199" column="5" source="compose:parameter-naming" />
-        <error line="230" column="5" source="standard:function-naming" />
-        <error line="230" column="5" source="compose:param-order-check" />
+        <error line="68" column="5" source="standard:function-naming" />
+        <error line="68" column="5" source="compose:param-order-check" />
+        <error line="80" column="5" source="standard:function-naming" />
+        <error line="80" column="5" source="compose:param-order-check" />
+        <error line="105" column="5" source="standard:function-naming" />
+        <error line="135" column="5" source="standard:function-naming" />
+        <error line="151" column="5" source="standard:function-naming" />
+        <error line="151" column="5" source="compose:modifier-missing-check" />
+        <error line="155" column="5" source="compose:parameter-naming" />
+        <error line="206" column="13" source="standard:function-naming" />
+        <error line="208" column="5" source="compose:lambda-param-in-effect" />
+        <error line="208" column="5" source="compose:parameter-naming" />
+        <error line="249" column="5" source="standard:function-naming" />
+        <error line="249" column="5" source="compose:param-order-check" />
     </file>
     <file name="src/main/kotlin/org/andromeda/link/ui/components/Tether.kt">
         <error line="47" column="5" source="standard:function-naming" />
