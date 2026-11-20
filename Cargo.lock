@@ -1985,6 +1985,7 @@ dependencies = [
  "log",
  "mdns-sd",
  "quinn",
+ "quinn-proto",
  "ring",
  "rustix",
  "rustls",

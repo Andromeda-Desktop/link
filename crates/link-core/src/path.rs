@@ -9,10 +9,12 @@ use std::io::{self, IoSliceMut};
 use std::net::SocketAddr;
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
+use std::time::Instant;
 
+use quinn::congestion::{Controller, ControllerFactory};
 use quinn::udp::{RecvMeta, Transmit};
 use quinn::{AsyncUdpSocket, UdpPoller};
 use tokio::io::Interest;
@@ -21,10 +23,13 @@ use tokio::sync::mpsc;
 
 pub type LinkId = usize;
 
-/// `UDP` in [`PathSocket::blocked`]: the last send that would block went to UDP.
-const UDP: usize = usize::MAX;
-/// Packets queued per link before a send would block: about 90 KB, a few round trips of a Bluetooth link.
+/// Packets queued per link before a send would block: about 90 KB, a few round trips of a Bluetooth link. Also the
+/// most segments one send may carry, so a whole batch always fits an empty queue.
 const QUEUE: usize = 64;
+/// The congestion window while a connection runs over a link. The Android Bluetooth stack takes ~250 KB of writes at
+/// once, and any controller fills it (rtt 2-2.7 s); 12 KiB kept a loaded ping p95 at 123-126 ms on the test phone
+/// with bulk unchanged at ~1 Mbit/s.
+pub const LINK_WINDOW: u64 = 12 << 10;
 /// Inbound packets from all links waiting for the endpoint.
 const INBOUND: usize = 256;
 /// The largest packet a link may deliver; QUIC packets stay far below it.
@@ -63,6 +68,7 @@ impl MessageLink for FdLink {
 }
 
 struct Slot {
+    /// One packet per message, counted against `QUEUE`.
     tx: mpsc::Sender<Vec<u8>>,
     /// The endpoint task waiting for room in `tx`.
     writable: Mutex<Option<Waker>>,
@@ -90,13 +96,23 @@ impl Shared {
     }
 }
 
+/// Where the last send that would block went, so the poller waits for room there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Blocked {
+    Udp,
+    /// A batch of `packets` did not fit link `id`'s queue.
+    Link {
+        id: LinkId,
+        packets: usize,
+    },
+}
+
 pub struct PathSocket {
     udp: Arc<dyn AsyncUdpSocket>,
     shared: Arc<Shared>,
     inbound_tx: mpsc::Sender<(SocketAddr, Vec<u8>)>,
     inbound: Mutex<mpsc::Receiver<(SocketAddr, Vec<u8>)>>,
-    /// Where the last send that would block went, so the poller waits on that one.
-    blocked: AtomicUsize,
+    blocked: Mutex<Blocked>,
 }
 
 impl fmt::Debug for PathSocket {
@@ -123,7 +139,7 @@ impl PathSocket {
             shared: Arc::default(),
             inbound_tx,
             inbound: Mutex::new(inbound),
-            blocked: AtomicUsize::new(UDP),
+            blocked: Mutex::new(Blocked::Udp),
         }))
     }
 
@@ -173,30 +189,142 @@ impl PathSocket {
         id
     }
 
-    /// Sends to `to` over `via`, or over UDP with `None`.
-    pub fn route(&self, to: SocketAddr, via: Option<LinkId>) {
-        let mut routes = lock(&self.shared.routes);
-        let to = canonical(to);
-        match via {
-            Some(link) => routes.insert(to, link),
-            None => routes.remove(&to),
-        };
+    /// The path to `peer`, one connection's remote address.
+    pub fn route_to(self: &Arc<Self>, peer: SocketAddr) -> Route {
+        Route { socket: self.clone(), peer: canonical(peer), state: Arc::default() }
     }
 
+    /// Enqueues the whole batch or nothing: a batch cut short would lose its last packets.
     fn send_link(&self, id: LinkId, slot: &Slot, transmit: &Transmit) -> io::Result<()> {
         let size = transmit.segment_size.unwrap_or(transmit.contents.len()).max(1);
-        for (index, packet) in transmit.contents.chunks(size).enumerate() {
-            match slot.tx.try_send(packet.to_vec()) {
-                Ok(()) => {}
-                // QUIC recovers a lost packet; only a send that moved nothing must wait.
-                Err(mpsc::error::TrySendError::Full(_)) if index == 0 => {
-                    self.blocked.store(id, Ordering::Relaxed);
-                    return Err(io::ErrorKind::WouldBlock.into());
+        let packets = transmit.contents.len().div_ceil(size).max(1);
+        match slot.tx.try_reserve_many(packets) {
+            Ok(permits) => {
+                for (permit, packet) in permits.zip(transmit.contents.chunks(size)) {
+                    permit.send(packet.to_vec());
                 }
-                Err(_) => return Ok(()),
+                Ok(())
             }
+            Err(mpsc::error::TrySendError::Full(())) => {
+                *lock(&self.blocked) = Blocked::Link { id, packets };
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            // The link ended and its routes went with it; QUIC sends the batch again over UDP.
+            Err(mpsc::error::TrySendError::Closed(())) => Ok(()),
         }
-        Ok(())
+    }
+}
+
+/// One connection's path: whether its peer is reached over a link or UDP. Changing it here also tells the
+/// connection's congestion controller, so the two never disagree.
+pub struct Route {
+    socket: Arc<PathSocket>,
+    peer: SocketAddr,
+    state: Arc<RouteState>,
+}
+
+#[derive(Default)]
+struct RouteState {
+    on_link: AtomicBool,
+    /// Counts path changes; the controller starts afresh when it sees a new one.
+    changes: AtomicU64,
+}
+
+impl Route {
+    /// Sends to the peer over `via`, or over UDP with `None`.
+    pub fn set(&self, via: Option<LinkId>) {
+        {
+            let mut routes = lock(&self.socket.shared.routes);
+            match via {
+                Some(link) => routes.insert(self.peer, link),
+                None => routes.remove(&self.peer),
+            };
+        }
+        self.state.on_link.store(via.is_some(), Ordering::Relaxed);
+        self.state.changes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `inner` for this connection, capped at [`LINK_WINDOW`] while it runs over a link and rebuilt after every path
+    /// change: a window learnt on one path is wrong on the other.
+    pub fn congestion(
+        &self,
+        inner: Arc<dyn ControllerFactory + Send + Sync>,
+    ) -> Arc<dyn ControllerFactory + Send + Sync> {
+        Arc::new(PathCongestion { inner, state: self.state.clone() })
+    }
+}
+
+struct PathCongestion {
+    inner: Arc<dyn ControllerFactory + Send + Sync>,
+    state: Arc<RouteState>,
+}
+
+impl ControllerFactory for PathCongestion {
+    fn build(self: Arc<Self>, now: Instant, mtu: u16) -> Box<dyn Controller> {
+        let seen = self.state.changes.load(Ordering::Relaxed);
+        Box::new(PathController { controller: self.inner.clone().build(now, mtu), factory: self, seen, mtu })
+    }
+}
+
+struct PathController {
+    controller: Box<dyn Controller>,
+    factory: Arc<PathCongestion>,
+    /// The path change `controller` was built for.
+    seen: u64,
+    mtu: u16,
+}
+
+impl Controller for PathController {
+    fn on_sent(&mut self, now: Instant, bytes: u64, last_packet_number: u64) {
+        let changes = self.factory.state.changes.load(Ordering::Relaxed);
+        if changes != self.seen {
+            self.controller = self.factory.inner.clone().build(now, self.mtu);
+            self.seen = changes;
+        }
+        self.controller.on_sent(now, bytes, last_packet_number);
+    }
+
+    fn on_ack(&mut self, now: Instant, sent: Instant, bytes: u64, app_limited: bool, rtt: &quinn_proto::RttEstimator) {
+        self.controller.on_ack(now, sent, bytes, app_limited, rtt);
+    }
+
+    fn on_end_acks(&mut self, now: Instant, in_flight: u64, app_limited: bool, largest_acked: Option<u64>) {
+        self.controller.on_end_acks(now, in_flight, app_limited, largest_acked);
+    }
+
+    fn on_congestion_event(&mut self, now: Instant, sent: Instant, persistent: bool, lost_bytes: u64) {
+        self.controller.on_congestion_event(now, sent, persistent, lost_bytes);
+    }
+
+    fn on_mtu_update(&mut self, mtu: u16) {
+        self.mtu = mtu;
+        self.controller.on_mtu_update(mtu);
+    }
+
+    fn window(&self) -> u64 {
+        let window = self.controller.window();
+        if self.factory.state.on_link.load(Ordering::Relaxed) { window.min(LINK_WINDOW) } else { window }
+    }
+
+    fn metrics(&self) -> quinn_proto::congestion::ControllerMetrics {
+        self.controller.metrics()
+    }
+
+    fn clone_box(&self) -> Box<dyn Controller> {
+        Box::new(Self {
+            controller: self.controller.clone_box(),
+            factory: self.factory.clone(),
+            seen: self.seen,
+            mtu: self.mtu,
+        })
+    }
+
+    fn initial_window(&self) -> u64 {
+        self.controller.initial_window()
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
     }
 }
 
@@ -215,7 +343,7 @@ impl AsyncUdpSocket for PathSocket {
         }
         let result = self.udp.try_send(transmit);
         if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
-            self.blocked.store(UDP, Ordering::Relaxed);
+            *lock(&self.blocked) = Blocked::Udp;
         }
         result
     }
@@ -242,7 +370,7 @@ impl AsyncUdpSocket for PathSocket {
     }
 
     fn max_transmit_segments(&self) -> usize {
-        self.udp.max_transmit_segments()
+        self.udp.max_transmit_segments().min(QUEUE)
     }
 
     fn max_receive_segments(&self) -> usize {
@@ -267,13 +395,13 @@ impl fmt::Debug for PathPoller {
 
 impl UdpPoller for PathPoller {
     fn poll_writable(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        let blocked = self.socket.blocked.load(Ordering::Relaxed);
-        if blocked != UDP
-            && let Some(slot) = self.socket.shared.slot(blocked)
+        let blocked = *lock(&self.socket.blocked);
+        if let Blocked::Link { id, packets } = blocked
+            && let Some(slot) = self.socket.shared.slot(id)
         {
             // Registered before the check, so a packet the writer takes in between still wakes this task.
             *lock(&slot.writable) = Some(cx.waker().clone());
-            return if slot.tx.capacity() > 0 { Poll::Ready(Ok(())) } else { Poll::Pending };
+            return if slot.tx.capacity() >= packets { Poll::Ready(Ok(())) } else { Poll::Pending };
         }
         self.udp.as_mut().poll_writable(cx)
     }
@@ -306,7 +434,7 @@ mod tests {
         let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
         let link_addr: SocketAddr = "10.255.255.1:1".parse()?;
         let desk_link = server_socket.add_link(FdLink::new(desk_end)?, link_addr);
-        server_socket.route(link_addr, Some(desk_link));
+        server_socket.route_to(link_addr).set(Some(desk_link));
         let phone_link = phone_socket.add_link(FdLink::new(phone_end)?, server_addr);
 
         let desktop = Identity::generate()?;
@@ -329,14 +457,15 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((got, seen_link, connection.remote_address()))
         });
 
+        let path = phone_socket.route_to(server_addr);
         let connection = dialer.dial(server_addr, pin).await?.connection;
         let mut send = connection.open_uni().await?;
         for at in (0..TOTAL).step_by(CHUNK) {
             if at == TOTAL / 8 {
-                phone_socket.route(server_addr, Some(phone_link));
+                path.set(Some(phone_link));
             }
             if at == TOTAL / 2 {
-                phone_socket.route(server_addr, None);
+                path.set(None);
             }
             let chunk: Vec<u8> = (at..at + CHUNK).map(byte).collect();
             send.write_all(&chunk).await?;
@@ -346,6 +475,53 @@ mod tests {
         assert_eq!(got, TOTAL);
         assert!(seen_link, "the desktop never saw the connection on the link");
         assert_eq!(last.port(), phone_socket.local_addr()?.port(), "the connection did not move back to UDP");
+        Ok(())
+    }
+
+    /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
+    #[tokio::test]
+    async fn a_batch_that_does_not_fit_waits_whole() -> Result {
+        let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
+        let (tx, _rx) = mpsc::channel(QUEUE);
+        let slot = Slot { tx, writable: Mutex::default() };
+        for _ in 0..QUEUE - 2 {
+            slot.tx.try_send(vec![0])?;
+        }
+        let batch = |packets: usize| Transmit {
+            destination: "10.0.0.1:1".parse().unwrap_or(SocketAddr::from(([0; 4], 0))),
+            ecn: None,
+            contents: &[7; 30][..packets * 10],
+            segment_size: Some(10),
+            src_ip: None,
+        };
+        let three = socket.send_link(0, &slot, &batch(3));
+        assert!(three.is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock));
+        assert_eq!(slot.tx.capacity(), 2, "a batch that did not fit left packets behind");
+        assert_eq!(*lock(&socket.blocked), Blocked::Link { id: 0, packets: 3 });
+        socket.send_link(0, &slot, &batch(2))?;
+        assert_eq!(slot.tx.capacity(), 0);
+        Ok(())
+    }
+
+    /// The window stays under the link cap while the path is a link, and a path change starts a fresh controller.
+    #[tokio::test]
+    async fn the_window_follows_the_path() -> Result {
+        let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
+        let path = socket.route_to("10.0.0.1:1".parse()?);
+        let mut inner = quinn::congestion::NewRenoConfig::default();
+        inner.initial_window(4 * LINK_WINDOW);
+        let factory = path.congestion(Arc::new(inner));
+        let start = Instant::now();
+        let mut controller = factory.build(start, 1200);
+        let initial = controller.window();
+        let later = |ms| start + std::time::Duration::from_millis(ms);
+        controller.on_congestion_event(later(2), later(1), false, 1200);
+        assert!(controller.window() < initial, "a loss did not shrink the window");
+        path.set(Some(0));
+        assert!(controller.window() <= LINK_WINDOW);
+        path.set(None);
+        controller.on_sent(later(3), 1200, 1);
+        assert_eq!(controller.window(), initial, "the window learnt before the moves survived them");
         Ok(())
     }
 }

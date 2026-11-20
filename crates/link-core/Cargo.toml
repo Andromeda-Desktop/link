@@ -13,6 +13,7 @@ if-addrs.workspace = true
 log.workspace = true
 mdns-sd.workspace = true
 quinn.workspace = true
+quinn-proto.workspace = true
 ring.workspace = true
 rustix = { workspace = true, features = ["net"] }
 rustls.workspace = true
