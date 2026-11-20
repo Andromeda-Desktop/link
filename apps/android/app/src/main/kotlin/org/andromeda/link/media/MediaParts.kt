@@ -197,7 +197,7 @@ internal fun Progress(
 }
 
 /** m:ss, or h:mm:ss from an hour on. */
-private fun clock(ms: Long): String {
+internal fun clock(ms: Long): String {
     val sec = ms.coerceAtLeast(0) / 1_000
     return if (sec >= 3_600) {
         "%d:%02d:%02d".format(sec / 3_600, sec / 60 % 60, sec % 60)

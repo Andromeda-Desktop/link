@@ -35,29 +35,6 @@ data class PhoneType(
     val mono: TextStyle = phone(Tok.Type.mono).copy(fontFamily = FontFamily.Monospace),
 )
 
-/** Old role names over [PhoneType]; each screen moves to [LinkTheme.phoneType] when it is rebuilt. */
-@Immutable
-data class LinkType(
-    val hero: TextStyle = phone(Tok.Type.display),
-    val displayLarge: TextStyle = phone(Tok.Type.display),
-    val displayMedium: TextStyle = phone(Tok.Type.large),
-    val displaySmall: TextStyle = phone(Tok.Type.title1),
-    val headlineLarge: TextStyle = phone(Tok.Type.title2),
-    val headlineMedium: TextStyle = phone(Tok.Type.title3),
-    val headlineSmall: TextStyle = phone(Tok.Type.title3),
-    val titleLarge: TextStyle = phone(Tok.Type.title3),
-    val titleMedium: TextStyle = phone(Tok.Type.headline, singleLine = true),
-    val titleSmall: TextStyle = phone(Tok.Type.headline, singleLine = true),
-    val bodyLarge: TextStyle = phone(Tok.Type.paragraph),
-    val bodyMedium: TextStyle = phone(Tok.Type.body, singleLine = true),
-    val bodySmall: TextStyle = phone(Tok.Type.footnote),
-    val labelLarge: TextStyle = phone(Tok.Type.caption),
-    val labelMedium: TextStyle = phone(Tok.Type.caption),
-    val labelSmall: TextStyle = phone(Tok.Type.caption),
-    /** Readouts: transport, counts, tab names. */
-    val mono: TextStyle = phone(Tok.Type.mono).copy(fontFamily = FontFamily.Monospace),
-)
-
 /** Token tracking is already in em. [singleLine] roles (row text) take the unscaled paragraph line, as the mockups do. */
 private fun phone(
     t: Tok.TypeToken,

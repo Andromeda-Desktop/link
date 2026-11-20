@@ -4,12 +4,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -23,126 +23,147 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import org.andromeda.link.R
-import org.andromeda.link.ui.components.CenteredText
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.components.SlidingPillControl
+import org.andromeda.link.media.clock
+import org.andromeda.link.ui.kit.BackKey
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Segmented
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Motion
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Size
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
+import org.andromeda.link.ui.theme.elevation
+import org.andromeda.link.ui.theme.spring
 
-/** The in-app picker: Photos, Videos, and Files over one selection, and a send bar once anything is picked. */
+/**
+ * The in-app picker over one selection: Photos, Videos and Files in a view sheet (r28, inset 8, e4) that hugs its
+ * content up to [Tok.Phone.pickMaxTop] under the status bar, and one send capsule that is off until something is picked.
+ */
 @Composable
 fun BoxScope.PickerSheet(
     viewModel: PickerActions,
     state: PickerState,
     desktopName: String,
     onSend: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     BackHandler(state.open) { if (state.tab != PickerTab.Files || !viewModel.up()) viewModel.close() }
-    val colors = LinkTheme.colors
-    AnimatedVisibility(state.open, enter = fadeIn(tween(Motion.FAST)), exit = fadeOut(tween(Motion.FADE_OUT))) {
+    val s = LinkTheme.scheme
+    AnimatedVisibility(state.open, enter = fadeIn(spring(Tok.Spring.fade)), exit = fadeOut(spring(Tok.Spring.fadeOut))) {
         Box(
             Modifier
                 .fillMaxSize()
-                .background(colors.surfaceOverlay)
+                .background(s.scrim)
                 .clickable(remember { MutableInteractionSource() }, indication = null, onClick = viewModel::close),
         )
     }
     AnimatedVisibility(
         state.open,
-        modifier = Modifier.align(Alignment.BottomCenter),
-        enter = slideInVertically(tween(Motion.NORMAL, easing = Motion.smoothEnter)) { it },
-        exit = slideOutVertically(tween(Motion.FAST, easing = Motion.exit)) { it },
+        modifier
+            .align(Alignment.BottomCenter)
+            .statusBarsPadding()
+            .padding(top = Tok.Phone.pickMaxTop.dp),
+        enter = slideInVertically(spring<IntOffset>(Tok.Spring.open)) { it } + fadeIn(spring(Tok.Spring.fade)),
+        exit = slideOutVertically(spring<IntOffset>(Tok.Spring.close)) { it } + fadeOut(spring(Tok.Spring.fadeOut)),
     ) {
+        val shape = RoundedCornerShape(Tok.Radius.r28.dp)
         Column(
             Modifier
+                .navigationBarsPadding()
+                .padding(Tok.Space.p8.dp)
                 .fillMaxWidth()
-                .fillMaxHeight(SHEET_HEIGHT)
-                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                .background(if (colors.dark) colors.surfaceSecondary else colors.surfacePrimary)
+                .elevation(Tok.Elevation.e4, Tok.Radius.r28.dp)
+                .clip(shape)
+                .background(s.view)
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
-                .navigationBarsPadding(),
+                .padding(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, top = Tok.Space.p8.dp, bottom = Tok.Space.p16.dp),
+            verticalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
         ) {
             Box(
                 Modifier
-                    .padding(top = Space.s8)
                     .align(Alignment.CenterHorizontally)
-                    .size(36.dp, 4.dp)
-                    .clip(Radius.pill)
-                    .background(colors.borderPrimary),
+                    .size(Tok.Phone.grab.dp, Tok.Space.p4.dp)
+                    .clip(CircleShape)
+                    .background(s.fill3),
             )
-            Row(Modifier.padding(start = Space.page, end = Space.s8, top = Space.s8), verticalAlignment = Alignment.CenterVertically) {
-                Label(
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
                     stringResource(R.string.picker_title, desktopName),
-                    LinkTheme.type.headlineMedium,
-                    modifier = Modifier.weight(1f),
+                    LinkTheme.phoneType.title3,
+                    Modifier.weight(1f),
                     maxLines = 1,
                 )
-                IconButton(Icons.Filled.Close, viewModel::close)
+                CloseKey(viewModel::close)
             }
-            SlidingPillControl(
+            Segmented(
                 listOf(
-                    stringResource(R.string.picker_photos),
-                    stringResource(R.string.picker_videos),
-                    stringResource(R.string.picker_files),
+                    PickerTab.Photos to stringResource(R.string.picker_photos),
+                    PickerTab.Videos to stringResource(R.string.picker_videos),
+                    PickerTab.Files to stringResource(R.string.picker_files),
                 ),
-                selected = state.tab.ordinal,
-                onSelect = { viewModel.select(PickerTab.entries[it]) },
-                modifier = Modifier.padding(horizontal = Space.page, vertical = Space.s12).fillMaxWidth(),
+                state.tab,
+                viewModel::select,
             )
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.weight(1f, fill = false).fillMaxWidth()) {
                 when (state.tab) {
-                    PickerTab.Photos -> MediaGrid(viewModel, state, state.photos)
-                    PickerTab.Videos -> MediaGrid(viewModel, state, state.videos)
+                    PickerTab.Photos -> MediaGrid(viewModel, state, state.photos, Icons.Photo)
+                    PickerTab.Videos -> MediaGrid(viewModel, state, state.videos, Icons.Video)
                     PickerTab.Files -> FileList(viewModel, state)
                 }
             }
-            if (state.selected.isNotEmpty()) SendBar(state, onSend)
+            Capsule(
+                if (state.selected.isEmpty()) stringResource(R.string.picker_send_none) else sendLabel(state.selected),
+                onSend,
+                Modifier.fillMaxWidth(),
+                icon = Icons.Up,
+                kind = CapsuleKind.Primary,
+                large = true,
+                enabled = state.selected.isNotEmpty(),
+            )
         }
     }
 }
@@ -152,52 +173,45 @@ private fun MediaGrid(
     viewModel: PickerActions,
     state: PickerState,
     items: List<PhoneItem>,
+    icon: ImageVector,
 ) {
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.refresh() }
     if (state.access == MediaAccess.None) {
-        Grant(
+        Notice(
+            icon,
             stringResource(R.string.picker_media_title),
             stringResource(R.string.picker_media_hint),
             stringResource(R.string.picker_media_allow),
-        ) {
-            ask.launch(PhoneFiles.mediaPermissions)
-        }
+        ) { ask.launch(PhoneFiles.mediaPermissions) }
         return
     }
     Column {
         if (state.access == MediaAccess.Partial) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { ask.launch(PhoneFiles.mediaPermissions) }
-                    .padding(horizontal = Space.page, vertical = Space.s8),
+                Modifier.padding(bottom = Tok.Space.p8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Label(
+                Text(
                     stringResource(R.string.picker_partial),
-                    LinkTheme.type.bodyMedium,
-                    LinkTheme.colors.textSecondary,
+                    LinkTheme.phoneType.footnote,
                     Modifier.weight(1f),
+                    color = LinkTheme.scheme.label2,
                 )
-                Label(stringResource(R.string.picker_partial_more), LinkTheme.type.titleSmall, LinkTheme.colors.accentText)
+                Pill(stringResource(R.string.picker_partial_more), { ask.launch(PhoneFiles.mediaPermissions) })
             }
         }
         if (items.isEmpty()) {
-            Hint(stringResource(R.string.picker_empty))
+            Notice(icon, stringResource(R.string.picker_empty))
             return
         }
         LazyVerticalGrid(
             GridCells.Fixed(GRID_COLUMNS),
-            contentPadding = PaddingValues(horizontal = Space.s12, vertical = Space.s4),
-            horizontalArrangement = Arrangement.spacedBy(Space.s4),
-            verticalArrangement = Arrangement.spacedBy(Space.s4),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
+            verticalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
         ) {
             items(items, key = { it.key }) { item ->
-                MediaTile(
-                    item,
-                    state.selected.keys.indexOf(item.key),
-                    viewModel::thumbnail,
-                    Modifier.fillMaxWidth(),
-                ) { viewModel.toggle(item) }
+                MediaTile(item, state.selected.keys.indexOf(item.key), viewModel::thumbnail) { viewModel.toggle(item) }
             }
         }
     }
@@ -211,7 +225,8 @@ private fun FileList(
     val context = LocalContext.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.refresh() }
     if (!state.allFiles) {
-        Grant(
+        Notice(
+            Icons.Folder,
             stringResource(R.string.picker_files_title),
             stringResource(R.string.picker_files_hint),
             stringResource(R.string.picker_files_allow),
@@ -226,45 +241,45 @@ private fun FileList(
         }
         return
     }
+    val s = LinkTheme.scheme
     Column {
-        Row(
-            Modifier.fillMaxWidth().padding(start = Space.s8, end = Space.page),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(Icons.AutoMirrored.Filled.ArrowBack, { viewModel.up() })
-            val path = (listOf(stringResource(R.string.picker_storage)) + state.path).joinToString(" / ")
-            Label(path, LinkTheme.type.titleMedium, LinkTheme.colors.textSecondary, maxLines = 1)
+        Row(Modifier.padding(end = Tok.Space.p4.dp), verticalAlignment = Alignment.CenterVertically) {
+            BackKey(s.label2, { viewModel.up() })
+            val path = (listOf(stringResource(R.string.picker_storage)) + state.path).joinToString(" › ")
+            Text(path, LinkTheme.phoneType.footnote, Modifier.weight(1f), color = s.label2, maxLines = 1)
         }
         val entries = state.entries
         if (entries.isNullOrEmpty()) {
-            val text = if (entries == null) R.string.picker_folder_unreadable else R.string.picker_folder_empty
-            Hint(stringResource(text))
+            Notice(Icons.Folder, stringResource(if (entries == null) R.string.picker_folder_unreadable else R.string.picker_folder_empty))
             return
         }
-        LazyColumn(contentPadding = PaddingValues(bottom = Space.s8)) {
+        LazyColumn {
             items(entries, key = { it.key }) { item ->
-                val selected = item.key in state.selected
+                val order = state.selected.keys.indexOf(item.key)
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .heightIn(min = Tok.Size.rowTwo.dp)
                         .clickable { item.folder?.let(viewModel::openFolder) ?: viewModel.toggle(item) }
-                        .background(if (selected) LinkTheme.colors.accent.copy(alpha = 0.10f) else Color.Transparent)
-                        .padding(horizontal = Space.page, vertical = Space.s10),
-                    horizontalArrangement = Arrangement.spacedBy(Space.s12),
+                        .semantics { if (item.folder == null) selected = order >= 0 }
+                        .padding(vertical = Tok.Space.p8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     FileIcon(item, viewModel::thumbnail)
                     Column(Modifier.weight(1f)) {
-                        Label(item.name, LinkTheme.type.titleMedium, maxLines = 1)
+                        Text(item.name, LinkTheme.phoneType.body)
                         if (item.folder == null) {
-                            Label(
-                                Formatter.formatShortFileSize(context, item.size),
-                                LinkTheme.type.bodySmall,
-                                LinkTheme.colors.textSecondary,
-                            )
+                            val size = Formatter.formatShortFileSize(context, item.size)
+                            val date = DateUtils.formatDateTime(context, item.modified * 1_000, DATE_FLAGS)
+                            Text("$size · $date", LinkTheme.phoneType.footnote, color = s.label2)
                         }
                     }
-                    if (selected) CheckBadge(null)
+                    if (item.folder == null) {
+                        OrderBadge(order, onImage = false)
+                    } else {
+                        Symbol(Icons.Chev, s.label3, size = Tok.Size.symbolL.dp)
+                    }
                 }
             }
         }
@@ -276,41 +291,78 @@ private fun FileIcon(
     item: PhoneItem,
     thumbnail: suspend (PhoneItem, Int) -> ImageBitmap?,
 ) {
-    val colors = LinkTheme.colors
-    val box = Modifier.size(Size.iconContainer).clip(Radius.small)
+    val s = LinkTheme.scheme
+    val box =
+        Modifier
+            .size(Tok.Size.controlL.dp)
+            .clip(RoundedCornerShape(Tok.Radius.r12.dp))
+            .background(s.fill1)
     if (item.visual) {
-        Thumbnail(item, Size.iconContainer, thumbnail, box.background(colors.surfaceTertiary))
+        Thumbnail(item, Tok.Size.controlL.dp, thumbnail, box)
     } else {
-        Box(box.background(colors.accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-            Glyph(if (item.folder != null) FolderGlyph else FileGlyph, colors.accentText, Size.icon - 2.dp)
+        Box(box, contentAlignment = Alignment.Center) {
+            Symbol(if (item.folder != null) Icons.Folder else Icons.File, s.label2)
         }
     }
 }
 
-/** A square photo or video with its pick order when selected; shared by Home's recent row. */
+/** A square photo or video: an inset accent ring and its pick order when picked, the length on a video. */
 @Composable
-fun MediaTile(
+private fun MediaTile(
     item: PhoneItem,
     order: Int,
     thumbnail: suspend (PhoneItem, Int) -> ImageBitmap?,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val colors = LinkTheme.colors
-    val selected = order >= 0
+    val s = LinkTheme.scheme
+    val shape = RoundedCornerShape(Tok.Radius.r8.dp)
     Box(
-        modifier
+        Modifier
+            .fillMaxWidth()
             .aspectRatio(1f)
-            .clip(Radius.small)
-            .background(colors.surfaceTertiary)
+            .clip(shape)
+            .background(s.fill2)
             .clickable(onClick = onClick)
-            .then(if (selected) Modifier.border(3.dp, colors.accent, Radius.small) else Modifier),
+            .semantics { selected = order >= 0 },
     ) {
         Thumbnail(item, THUMB_DP, thumbnail, Modifier.fillMaxSize())
-        if (item.mime.startsWith("video/")) {
-            Glyph(Icons.Filled.PlayArrow, Color.White, Size.iconSmall + 4.dp, Modifier.align(Alignment.BottomStart).padding(Space.s6))
+        if (order >= 0) Box(Modifier.matchParentSize().border(Tok.Phone.pickRing.dp, s.accent, shape))
+        if (item.durationMs > 0) {
+            val lift =
+                with(LocalDensity.current) {
+                    Tok.Space.p2.dp
+                        .toPx()
+                }
+            Text(
+                clock(item.durationMs),
+                LinkTheme.phoneType.caption.copy(fontWeight = FontWeight.SemiBold, shadow = Shadow(s.scrim, Offset(0f, lift), lift)),
+                Modifier.align(Alignment.BottomStart).padding(start = Tok.Space.p8.dp, bottom = Tok.Space.p4.dp),
+                color = s.onAccent,
+            )
         }
-        if (selected) CheckBadge(order + 1, Modifier.align(Alignment.TopEnd).padding(Space.s6))
+        OrderBadge(order, onImage = true, Modifier.align(Alignment.TopEnd).padding(Tok.Space.p8.dp))
+    }
+}
+
+/** The pick-order badge: the order on accent once picked, an empty ring before (light on a photo, label_3 in a list). */
+@Composable
+private fun OrderBadge(
+    order: Int,
+    onImage: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val s = LinkTheme.scheme
+    val base = modifier.size(Tok.Phone.pickBadge.dp).clip(CircleShape)
+    if (order >= 0) {
+        Box(base.background(s.accent), contentAlignment = Alignment.Center) {
+            Text((order + 1).toString(), LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.SemiBold), color = s.onAccent)
+        }
+    } else {
+        val ring = if (onImage) s.onAccent else s.label3
+        Box(
+            (if (onImage) base.background(s.scrim) else base)
+                .border(Tok.Phone.pickBadgeRing.dp, ring, CircleShape),
+        )
     }
 }
 
@@ -322,33 +374,11 @@ private fun Thumbnail(
     modifier: Modifier = Modifier,
 ) {
     val px = with(LocalDensity.current) { size.roundToPx() }
-    val bitmap by produceState<ImageBitmap?>(null, item.key, px) { value = thumbnail(item, px) }
+    val load by rememberUpdatedState(thumbnail)
+    val bitmap by produceState<ImageBitmap?>(null, item.key, px) { value = load(item, px) }
     Box(modifier) {
         bitmap?.let { Image(it, contentDescription = item.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
     }
-}
-
-@Composable
-private fun CheckBadge(
-    number: Int?,
-    modifier: Modifier = Modifier,
-) {
-    val colors = LinkTheme.colors
-    Box(modifier.size(24.dp).clip(Radius.pill).background(colors.accent), contentAlignment = Alignment.Center) {
-        if (number == null) {
-            Glyph(Icons.Filled.Check, colors.onAccent, Size.iconSmall)
-        } else {
-            Label(number.toString(), LinkTheme.type.labelLarge, colors.onAccent)
-        }
-    }
-}
-
-@Composable
-private fun SendBar(
-    state: PickerState,
-    onSend: () -> Unit,
-) {
-    PillButton(sendLabel(state.selected), onSend, Modifier.fillMaxWidth().padding(horizontal = Space.page, vertical = Space.s12))
 }
 
 /** "Send 3 items · 12 MB". */
@@ -359,55 +389,41 @@ fun sendLabel(selected: Map<String, PhoneItem>): String {
     return context.resources.getQuantityString(R.plurals.picker_send, selected.size, selected.size, bytes)
 }
 
+/** An empty or locked tab: a symbol, a headline, and optionally a hint and one action. */
 @Composable
-private fun Hint(text: String) {
-    Label(
-        text,
-        LinkTheme.type.bodyLarge,
-        LinkTheme.colors.textSecondary,
-        Modifier.fillMaxWidth().padding(top = Space.s48),
-        textAlign = TextAlign.Center,
-    )
-}
-
-@Composable
-private fun Grant(
-    title: String,
-    body: String,
-    action: String,
-    onAllow: () -> Unit,
-) {
-    Column(
-        Modifier.fillMaxWidth().padding(horizontal = Space.page, vertical = Space.s32),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Space.s20),
-    ) {
-        CenteredText(title, body)
-        PillButton(action, onAllow, kind = PillKind.Filled)
-    }
-}
-
-@Composable
-private fun IconButton(
+private fun Notice(
     icon: ImageVector,
-    onClick: () -> Unit,
+    title: String,
+    hint: String? = null,
+    action: String? = null,
+    onAction: () -> Unit = {},
 ) {
-    Box(Modifier.size(Size.touch).clip(Radius.pill).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Glyph(icon, LinkTheme.colors.textSecondary)
+    val s = LinkTheme.scheme
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = Tok.Space.p16.dp, vertical = Tok.Space.p48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+    ) {
+        Symbol(icon, s.label2, size = Tok.Phone.heroSymbol.dp)
+        Text(title, LinkTheme.phoneType.headline, align = TextAlign.Center)
+        if (hint != null) Text(hint, LinkTheme.phoneType.footnote, color = s.label2, align = TextAlign.Center)
+        if (action != null) Capsule(action, onAction, Modifier.padding(top = Tok.Space.p8.dp), kind = CapsuleKind.Primary)
     }
 }
 
-private fun glyph(
-    name: String,
-    path: String,
-) = ImageVector
-    .Builder(name, 24.dp, 24.dp, 24f, 24f)
-    .addPath(PathParser().parsePathString(path).toNodes(), fill = SolidColor(Color.Black))
-    .build()
+@Composable
+private fun CloseKey(onClose: () -> Unit) {
+    val close = stringResource(R.string.close)
+    Box(
+        Modifier
+            .size(Tok.Phone.hit.dp)
+            .clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onClose)
+            .semantics { contentDescription = close },
+        contentAlignment = Alignment.Center,
+    ) { Symbol(Icons.X, LinkTheme.scheme.label2) }
+}
 
-private val FolderGlyph = glyph("Folder", "M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z")
-private val FileGlyph = glyph("File", "M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z")
-
-private const val SHEET_HEIGHT = 0.88f
 private const val GRID_COLUMNS = 3
+private const val DATE_FLAGS = DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH
 private val THUMB_DP = 128.dp

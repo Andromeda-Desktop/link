@@ -30,6 +30,8 @@ data class PhoneItem(
     val mime: String,
     val modified: Long,
     val folder: File? = null,
+    /** Videos from MediaStore only; 0 for everything else. */
+    val durationMs: Long = 0,
 ) {
     val key: String get() = uri.toString()
     val visual: Boolean get() = mime.startsWith("image/") || mime.startsWith("video/")
@@ -81,6 +83,7 @@ class PhoneFiles(
                     MediaStore.MediaColumns.SIZE,
                     MediaStore.MediaColumns.MIME_TYPE,
                     MediaStore.MediaColumns.DATE_ADDED,
+                    MediaStore.MediaColumns.DURATION,
                 )
             val query =
                 Bundle().apply {
@@ -100,6 +103,7 @@ class PhoneFiles(
                                     size = cursor.getLong(2),
                                     mime = cursor.getString(3) ?: mimeTypeOf(cursor.getString(1).orEmpty()),
                                     modified = cursor.getLong(4),
+                                    durationMs = cursor.getLong(5),
                                 ),
                             )
                         }

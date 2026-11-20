@@ -528,5 +528,9 @@ object Tok {
         val codeCell = 64.0f
         val finderCorner = 44.0f
         val finderInset = 0.22f
+        val pickRing = 3.0f
+        val pickBadge = 24.0f
+        val pickBadgeRing = 1.5f
+        val pickMaxTop = 64.0f
     }
 }
