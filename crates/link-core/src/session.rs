@@ -333,7 +333,7 @@ impl Live {
     async fn on_envelope(&mut self, envelope: Envelope) -> Result<bool, Error> {
         let now = Instant::now();
         if let (Some(path), Some(quic)) = (&self.route.path, self.connection.quic()) {
-            path.follow(quic.remote_address());
+            path.follow_connection(quic);
         }
         match envelope.message {
             Message::Heartbeat(Heartbeat { seq, next_ms }) if self.beat.on => {

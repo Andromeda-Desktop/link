@@ -367,6 +367,8 @@ struct RouteState {
     on_link: AtomicBool,
     /// Counts path changes; the controller starts afresh when it sees a new one.
     changes: AtomicU64,
+    /// The last link a server's connection was tied to, so each move onto a link ties once.
+    tied: Mutex<Option<LinkId>>,
     /// Held for its drop.
     _release: Option<Release>,
 }
@@ -405,6 +407,16 @@ impl Route {
         let on_link = self.socket.link_to(remote).is_some();
         if self.state.on_link.swap(on_link, Ordering::Relaxed) != on_link {
             self.state.changes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// [`Route::follow`] for a server's `connection`, which also ends with a link it moved onto, and that link with it.
+    pub fn follow_connection(&self, connection: &quinn::Connection) {
+        let remote = connection.remote_address();
+        self.follow(remote);
+        let Some(link) = self.socket.link_to(remote) else { return };
+        if lock(&self.state.tied).replace(link) != Some(link) {
+            self.socket.tie(link, connection.clone());
         }
     }
 
@@ -679,7 +691,40 @@ mod tests {
         Ok(())
     }
 
-    /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
+    /// A desktop connection that moved onto a link ends when that link ends, not at the idle timeout.
+    #[tokio::test]
+    async fn a_connection_that_moved_onto_a_link_ends_with_it() -> Result {
+        let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
+        let desktop = server.socket.clone();
+        let server_addr = desktop.local_addr()?;
+        let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
+        let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
+        let desk_link = desktop.add_link(FdLink::new(desk_end)?, link_address(1));
+        desktop.route_to(link_address(1)).set(Hop::Link(desk_link));
+        let phone_link = phone.add_link(FdLink::new(phone_end)?, link_address(2));
+
+        let accepted = tokio::spawn(async move {
+            let incoming = server.endpoint.accept().await.ok_or("no connection")?;
+            let (connecting, route) = server.accept(incoming)?;
+            let connection = connecting.await?;
+            route.follow_connection(&connection);
+            connection.accept_uni().await?.read_to_end(64).await?;
+            route.follow_connection(&connection);
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, connection))
+        });
+        let dialed = Dialer::on_path(&Identity::generate()?, phone.clone())?.dial(server_addr, ServerPin::Any).await?;
+        dialed.route.as_ref().ok_or("a path dialer gives a route")?.set(Hop::Link(phone_link));
+        let mut send = dialed.connection.open_uni().await?;
+        send.write_all(b"over the link").await?;
+        send.finish()?;
+        let (_server, on_desktop) = accepted.await??;
+        assert_eq!(on_desktop.remote_address(), link_address(1), "the desktop did not follow the move");
+
+        desktop.close_link(desk_link);
+        tokio::time::timeout(Duration::from_secs(2), on_desktop.closed()).await?;
+        Ok(())
+    }
+
     /// A connection that runs over a link ends at both ends when one end closes the link, not at the idle timeout.
     #[tokio::test]
     async fn a_connection_ends_with_its_link() -> Result {
@@ -710,6 +755,7 @@ mod tests {
         Ok(())
     }
 
+    /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
     #[tokio::test]
     async fn a_batch_that_does_not_fit_waits_whole() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;

@@ -103,9 +103,7 @@ async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc
     let Ok(peer) = tls::peer_spki(connection.peer_identity()) else {
         return Connection::from(connection).close(CloseCode::ProtocolError);
     };
-    if let Some(link) = server.socket.link_to(remote) {
-        server.socket.tie(link, connection.clone());
-    }
+    path.follow_connection(&connection);
     let quic = connection;
     let connection = Connection::from(quic.clone());
     let result = match context.hub.admit(peer.clone()).await {
