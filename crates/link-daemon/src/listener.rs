@@ -8,7 +8,7 @@ use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
-    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_ITEMS, CONTROL, HEARTBEAT, MESSAGES,
+    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, MESSAGES,
     MIRROR_STREAMS, NOTIFICATION_SYNC, PRESENTING, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL,
     WIFI_DIRECT_JOIN,
 };
@@ -218,6 +218,7 @@ impl Context {
                 SYSTEM_CONTROL,
                 NOTIFICATION_SYNC,
                 CLIP_ITEMS,
+                CLIP_CLOCK,
                 MIRROR_STREAMS,
                 SCREEN_SHAPE,
                 HEARTBEAT,

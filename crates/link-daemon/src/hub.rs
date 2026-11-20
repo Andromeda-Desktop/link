@@ -11,8 +11,8 @@ use link_core::link_state::LinkState;
 use link_core::net;
 use link_core::proto::CloseCode;
 use link_core::proto::message::{
-    CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_ITEMS, CONTROL, Call, CallState, Capabilities,
-    DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
+    CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
+    Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
     MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_RECENT,
     PhotoRefusal, Ping, RemoteInput, Ringer, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind,
     SystemResult, Text, TransferId,
@@ -1028,6 +1028,7 @@ impl Hub {
         let clip = ClipPeer {
             granted: self.store.peer(&id).is_some_and(|peer| peer.grants.clipboard),
             items: features.iter().any(|feature| feature == CLIP_ITEMS),
+            clock: features.iter().any(|feature| feature == CLIP_CLOCK),
         };
         self.transfers.attach(id.clone(), session.clone(), clip).await;
         self.features.insert(id.clone(), features);

@@ -38,22 +38,57 @@ pub enum ClipBytes {
 }
 
 /// A peer that just connected: whether it holds the clipboard grant, so it gets the kept copy, and whether its hello
-/// carries [`link_proto::message::CLIP_ITEMS`].
+/// carries [`link_proto::message::CLIP_ITEMS`] and [`link_proto::message::CLIP_CLOCK`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClipPeer {
     pub granted: bool,
     pub items: bool,
+    pub clock: bool,
 }
 
-/// A peer's offer older than this side's clip is dropped this long after it connects: both sides offer their kept
-/// clip on connect, and the newer one wins. Later offers are new copies, so clock skew never drops them.
+/// Without [`link_proto::message::CLIP_CLOCK`], a peer's offer older than this side's clip is dropped this long after
+/// it connects: both sides offer their kept clip on connect, and the newer one wins. Later offers are new copies, so
+/// clock skew never drops them.
 const CONNECT_WINDOW: Duration = Duration::from_secs(10);
+
+/// A hybrid logical clock for copies, in ms since the Unix epoch: each stamp is past every stamp made or seen here, so
+/// a copy made after a peer's clip arrived orders after it whatever the two clocks say.
+#[derive(Debug, Default)]
+struct ClipClock(u64);
+
+impl ClipClock {
+    fn stamp(&mut self, now: u64) -> u64 {
+        self.0 = now.max(self.0.saturating_add(1));
+        self.0
+    }
+
+    fn observe(&mut self, at: u64) {
+        self.0 = self.0.max(at);
+    }
+}
+
+/// Whether a peer's offer stamped `at` with `origin` replaces the kept copy stamped `kept` (`at`, `origin`).
+/// `since_connect` is how long ago the peer connected; `clock` is whether it announced
+/// [`link_proto::message::CLIP_CLOCK`].
+fn replaces(
+    clock: bool,
+    since_connect: Option<Duration>,
+    at: Option<u64>,
+    origin: Option<u64>,
+    kept: (u64, u64),
+) -> bool {
+    match (clock, at, origin) {
+        (true, Some(at), Some(origin)) => (at, origin) > kept,
+        _ => !(since_connect.is_some_and(|since| since < CONNECT_WINDOW) && at.is_some_and(|at| at < kept.0)),
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Clips {
     peers: HashMap<DeviceId, ClipState>,
-    /// Whether each peer takes [`link_proto::message::CLIP_ITEMS`], and when it connected.
-    connected: HashMap<DeviceId, (bool, Instant)>,
+    /// Each connected peer's features, and when it connected.
+    connected: HashMap<DeviceId, (ClipPeer, Instant)>,
+    clock: ClipClock,
     /// This side's latest copy, kept while no peer is connected and offered on connect.
     local: Option<Local>,
     pulls: Vec<Pull>,
@@ -163,7 +198,13 @@ fn now_ms() -> u64 {
 impl TransferActor {
     /// Keeps `clip` as this side's latest copy and offers it to `peers`; with none connected, it waits for one.
     pub(super) async fn offer_clip(&mut self, peers: &[DeviceId], clip: LocalClip) -> Result<(), Error> {
+        let fresh = clip.copied.is_none();
         let mut local = clip.local()?;
+        if fresh {
+            local.at = self.clips.clock.stamp(local.at);
+        } else {
+            self.clips.clock.observe(local.at);
+        }
         // A clipboard manager that takes a peer's clip offers it again: it keeps that clip's origin, so the peer drops it.
         if let Some(origin) = self
             .clips
@@ -187,29 +228,38 @@ impl TransferActor {
 
     /// Offers the kept copy to a peer that just connected, unless that peer's last offer is newer.
     pub(super) async fn offer_kept_clip(&mut self, peer: &DeviceId, clip: ClipPeer) {
-        self.clips.connected.insert(peer.clone(), (clip.items, Instant::now()));
-        let theirs = self.clips.peers.get(peer).and_then(ClipState::received).and_then(|offer| offer.at).unwrap_or(0);
-        if clip.granted && self.clips.local.as_ref().is_some_and(|local| local.at > theirs) {
+        self.clips.connected.insert(peer.clone(), (clip, Instant::now()));
+        let theirs = self.clips.peers.get(peer).and_then(ClipState::received).map_or((0, 0), |offer| {
+            (offer.at.unwrap_or(0), if clip.clock { offer.origin.unwrap_or(0) } else { u64::MAX })
+        });
+        if clip.granted && self.clips.local.as_ref().is_some_and(|local| (local.at, local.origin) > theirs) {
             self.send_clip(peer).await;
         }
     }
 
     async fn send_clip(&mut self, peer: &DeviceId) {
-        let items = self.clips.connected.get(peer).is_some_and(|(items, _)| *items);
+        let items = self.clips.connected.get(peer).is_some_and(|(clip, _)| clip.items);
         let Some(local) = &self.clips.local else { return };
         let offer = self.clips.peers.entry(peer.clone()).or_default().offer(local.offer(items));
         self.send_to(peer, Message::ClipOffer(offer)).await;
     }
 
     pub(super) fn on_clip_offer(&mut self, peer: &DeviceId, offer: ClipOffer) {
+        if let Some(at) = offer.at {
+            self.clips.clock.observe(at);
+        }
         if let Some(local) = &self.clips.local {
             if offer.origin == Some(local.origin) {
                 log::debug!("{peer}: the offer is this side's own clip; dropping it");
                 return;
             }
-            let connected = self.clips.connected.get(peer).map(|(_, since)| since.elapsed());
-            if connected.is_some_and(|since| since < CONNECT_WINDOW) && offer.at.is_some_and(|at| at < local.at) {
-                log::info!("{peer}: the kept clip it offered is older than this side's; dropping it");
+            let (clock, since) = self
+                .clips
+                .connected
+                .get(peer)
+                .map_or((false, None), |(clip, since)| (clip.clock, Some(since.elapsed())));
+            if !replaces(clock, since, offer.at, offer.origin, (local.at, local.origin)) {
+                log::info!("{peer}: the clip it offered is older than this side's; dropping it");
                 return;
             }
         }
@@ -390,4 +440,62 @@ async fn copy(mut recv: RecvStream, sink: File, mut budget: Budget) -> Result<u6
         sink.write_all(&chunk).await?;
     }
     Ok(budget.offset())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy's (`at`, origin).
+    type Stamp = (u64, u64);
+
+    fn deliver(clock: &mut ClipClock, kept: &mut Option<Stamp>, offer: Stamp) {
+        clock.observe(offer.0);
+        if kept.is_none_or(|kept| replaces(true, Some(Duration::ZERO), Some(offer.0), Some(offer.1), kept)) {
+            *kept = Some(offer);
+        }
+    }
+
+    /// Two peers with clocks up to 40 s apart copy at random and get each other's offers in any order: a copy stamps
+    /// after every clip its side holds, and once all offers arrive both sides keep the same, latest, copy.
+    #[test]
+    fn random_copies_converge_on_the_latest() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for _ in 0..2000 {
+            // Half the runs copy within milliseconds on equal clocks, so stamps tie and the origin decides.
+            let (skew, step) = if next(2) == 0 { (40_000, 3000) } else { (1, 3) };
+            let skews = [next(skew), next(skew)];
+            let mut clocks = [ClipClock::default(), ClipClock::default()];
+            let mut kept: [Option<Stamp>; 2] = [None, None];
+            let (mut in_flight, mut made): (Vec<(usize, Stamp)>, Vec<Stamp>) = (Vec::new(), Vec::new());
+            let mut wall = 1_000_000;
+            for origin in 0..30 {
+                wall += next(step);
+                if next(3) == 0 || in_flight.is_empty() {
+                    let side = usize::from(next(2) == 1);
+                    let at = clocks[side].stamp(wall + skews[side]);
+                    assert!(kept[side].is_none_or(|held| at > held.0), "a copy stamps after the clip its side holds");
+                    kept[side] = Some((at, origin));
+                    made.push((at, origin));
+                    in_flight.push((1 - side, (at, origin)));
+                } else {
+                    // The oldest or the newest offer in flight arrives next, so offers overtake each other.
+                    let (to, offer) =
+                        if next(2) == 0 { in_flight.swap_remove(0) } else { in_flight.pop().unwrap_or_default() };
+                    deliver(&mut clocks[to], &mut kept[to], offer);
+                }
+            }
+            while let Some((to, offer)) = in_flight.pop() {
+                deliver(&mut clocks[to], &mut kept[to], offer);
+            }
+            let latest = made.iter().max().copied();
+            assert_eq!(kept, [latest, latest]);
+        }
+    }
 }

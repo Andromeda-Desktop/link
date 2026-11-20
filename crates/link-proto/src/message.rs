@@ -65,6 +65,10 @@ pub const NOTIFICATION_SYNC: &str = "feature:notification-sync";
 /// bytes; older peers close a session on those fields.
 pub const CLIP_ITEMS: &str = "feature:clip-items";
 
+/// Both hellos carry this when the peer stamps `clip-offer`'s `at` past every `at` it has made or seen, so two such
+/// peers keep the offer with the larger (`at`, `origin`) whatever their clocks say.
+pub const CLIP_CLOCK: &str = "feature:clip-clock";
+
 /// A desktop's hello carries this when it takes a mirror's video as one stream per keyframe (`mirror-data`'s `gop`);
 /// phones send older desktops video and sound on one stream.
 pub const MIRROR_STREAMS: &str = "feature:mirror-streams";

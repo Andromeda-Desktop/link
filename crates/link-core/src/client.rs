@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd, MAX_PUNCH_ADDRESSES,
-    MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop, NOTIFICATION_SYNC,
-    NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, PRESENTING,
-    PhotoRefusal, Punch, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status,
-    SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd,
+    MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
+    NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot,
+    PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share,
+    Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -842,7 +842,11 @@ impl ClientActor {
             old.close(CloseCode::Done);
         }
         // Before finish_upgrades wakes the sends waiting on this move, so none goes out on the closing session.
-        let clip = ClipPeer { granted: desktop.grants.clipboard, items: desktop.has(CLIP_ITEMS) };
+        let clip = ClipPeer {
+            granted: desktop.grants.clipboard,
+            items: desktop.has(CLIP_ITEMS),
+            clock: desktop.has(CLIP_CLOCK),
+        };
         self.transfers.attach(id.clone(), handle.clone(), clip).await;
         self.retries.remove(&id);
         if via == Via::Bluetooth {
