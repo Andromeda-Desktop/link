@@ -102,14 +102,13 @@ pub struct ClipType {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
-#[expect(clippy::struct_excessive_bools, reason = "independent facts about one desktop")]
 pub struct Desktop {
     pub id: String,
     pub name: String,
     pub addresses: Vec<String>,
     /// Unix seconds.
     pub last_seen: u64,
-    pub connected: bool,
+    pub link: DesktopLink,
     /// Connected over Bluetooth, since no IP path answered.
     pub bluetooth: bool,
     pub sharing: Sharing,
@@ -195,6 +194,11 @@ pub enum ShareKind {
 pub enum LinkEvent {
     Connected {
         desktop_id: String,
+    },
+    /// A connected desktop's heartbeats went late (`live` false) or came back.
+    Link {
+        desktop_id: String,
+        live: bool,
     },
     /// The desktop asks to mirror the screen: show Android's capture prompt, then [`LinkClient::start_mirror`], or
     /// refuse with [`LinkClient::stop_mirror`].
@@ -585,6 +589,15 @@ pub struct MediaPlayer {
 #[uniffi::export]
 pub fn generate_identity() -> Result<Vec<u8>, LinkError> {
     Ok(Identity::generate()?.pkcs8().to_vec())
+}
+
+/// What the app shows for a paired desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DesktopLink {
+    Live,
+    /// A session is open but the desktop's heartbeats are late.
+    Reconnecting,
+    Offline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -1106,7 +1119,7 @@ impl LinkClient {
     pub async fn pair_uri(&self, uri: String) -> Result<Desktop, LinkError> {
         let target = PairTarget::Uri(PairingUri::parse(&uri)?);
         let client = self.client.clone();
-        self.run(async move { client.pair(target).await }).await.map(|peer| describe(&peer, true, false))
+        self.run(async move { client.pair(target).await }).await.map(|peer| describe(&peer, DesktopLink::Live, false))
     }
 
     /// Pairs with a typed code. `addresses` may be empty: the core then finds the pairing desktop by mDNS.
@@ -1114,7 +1127,7 @@ impl LinkClient {
         let candidates = addresses.iter().filter_map(|text| text.parse().ok()).collect();
         let target = PairTarget::Code { code, candidates };
         let client = self.client.clone();
-        self.run(async move { client.pair(target).await }).await.map(|peer| describe(&peer, true, false))
+        self.run(async move { client.pair(target).await }).await.map(|peer| describe(&peer, DesktopLink::Live, false))
     }
 
     /// Opens a session now unless one is live.
@@ -1148,7 +1161,7 @@ impl LinkClient {
     pub async fn desktops(&self) -> Result<Vec<Desktop>, LinkError> {
         let client = self.client.clone();
         let states = self.run(async move { client.desktops().await }).await?;
-        Ok(states.iter().map(|state| describe(&state.peer, state.connected, state.bluetooth)).collect())
+        Ok(states.iter().map(|state| describe(&state.peer, state.link.into(), state.bluetooth)).collect())
     }
 
     pub async fn set_sharing(&self, desktop_id: String, feature: Feature, on: bool) -> Result<(), LinkError> {
@@ -1511,6 +1524,7 @@ fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) -> Option<Lin
     Some(match event {
         ClientEvent::Connected { desktop, .. } => LinkEvent::Connected { desktop_id: desktop.id.to_string() },
         ClientEvent::Disconnected { id, .. } => LinkEvent::Disconnected { desktop_id: id.to_string() },
+        ClientEvent::Link { id, live } => LinkEvent::Link { desktop_id: id.to_string(), live },
         ClientEvent::Received { from, share } => LinkEvent::Received {
             desktop_id: from.to_string(),
             kind: match share.kind {
@@ -1646,7 +1660,17 @@ impl LinkClient {
     }
 }
 
-fn describe(peer: &Peer, connected: bool, bluetooth: bool) -> Desktop {
+impl From<client::DesktopLink> for DesktopLink {
+    fn from(link: client::DesktopLink) -> Self {
+        match link {
+            client::DesktopLink::Live => Self::Live,
+            client::DesktopLink::Reconnecting => Self::Reconnecting,
+            client::DesktopLink::Offline => Self::Offline,
+        }
+    }
+}
+
+fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Desktop {
     let store::Grants { clipboard, files, notifications, media, ring, calls, browse, screen, messages, .. } =
         peer.grants;
     Desktop {
@@ -1654,7 +1678,7 @@ fn describe(peer: &Peer, connected: bool, bluetooth: bool) -> Desktop {
         name: peer.name.clone(),
         addresses: peer.addresses.iter().map(ToString::to_string).collect(),
         last_seen: peer.last_seen,
-        connected,
+        link,
         bluetooth,
         sharing: Sharing { clipboard, files, notifications, media, ring, calls, browse, screen, messages },
         bluetooth_address: peer.bluetooth.clone(),

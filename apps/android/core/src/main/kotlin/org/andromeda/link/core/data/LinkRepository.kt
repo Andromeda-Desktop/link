@@ -28,6 +28,7 @@ import org.andromeda.link.core.domain.CallState
 import org.andromeda.link.core.domain.ClipPart
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.DesktopCommand
+import org.andromeda.link.core.domain.DesktopLink
 import org.andromeda.link.core.domain.DesktopPlayer
 import org.andromeda.link.core.domain.DesktopStatus
 import org.andromeda.link.core.domain.DesktopVolume
@@ -87,6 +88,7 @@ import java.io.IOException
 import org.andromeda.link.ffi.CallAction as FfiCallAction
 import org.andromeda.link.ffi.CallState as FfiCallState
 import org.andromeda.link.ffi.Desktop as FfiDesktop
+import org.andromeda.link.ffi.DesktopLink as FfiDesktopLink
 import org.andromeda.link.ffi.Feature as FfiFeature
 import org.andromeda.link.ffi.MediaCommandKind as FfiCommand
 import org.andromeda.link.ffi.MediaPlayer as FfiPlayer
@@ -648,8 +650,9 @@ class LinkRepository(
                     refresh()
                     _connections.emit(event.desktopId)
                 }
+                is LinkEvent.Link -> setLink(event.desktopId, if (event.live) DesktopLink.Live else DesktopLink.Reconnecting)
                 is LinkEvent.Disconnected -> {
-                    markConnected(event.desktopId, false)
+                    setLink(event.desktopId, DesktopLink.Offline)
                     _desktopPlayers.update { list -> list.filter { it.desktopId != event.desktopId } }
                     _capabilities.update { it - event.desktopId }
                 }
@@ -829,15 +832,15 @@ class LinkRepository(
     }
 
     /** A desktop not listed yet was just paired; the list is reread outside the event loop, which must keep reading. */
-    private fun markConnected(
+    private fun setLink(
         id: String,
-        connected: Boolean,
+        link: DesktopLink,
     ) {
         if (_desktops.value.none { it.id == id }) {
             scope.launch { refresh() }
             return
         }
-        _desktops.update { list -> list.map { if (it.id == id) it.copy(connected = connected) else it } }
+        _desktops.update { list -> list.map { if (it.id == id) it.copy(link = link) else it } }
     }
 
     private fun setPaused(
@@ -875,7 +878,12 @@ private fun FfiDesktop.toDomain() =
     Desktop(
         id = id,
         name = name,
-        connected = connected,
+        link =
+            when (link) {
+                FfiDesktopLink.LIVE -> DesktopLink.Live
+                FfiDesktopLink.RECONNECTING -> DesktopLink.Reconnecting
+                FfiDesktopLink.OFFLINE -> DesktopLink.Offline
+            },
         bluetooth = bluetooth,
         lastSeen = lastSeen.toLong(),
         sharing =

@@ -3,7 +3,7 @@ package org.andromeda.link.core.domain
 data class Desktop(
     val id: String,
     val name: String,
-    val connected: Boolean,
+    val link: DesktopLink,
     /** Connected over Bluetooth, since no Wi-Fi path answered. */
     val bluetooth: Boolean = false,
     /** Unix seconds. */
@@ -17,7 +17,12 @@ data class Desktop(
     val control: Boolean = false,
     /** The desktop disconnected this phone and refuses it until the user connects it there. */
     val paused: Boolean = false,
-)
+) {
+    val connected: Boolean get() = link == DesktopLink.Live
+}
+
+/** Reconnecting: a session is open but the desktop's heartbeats are late. */
+enum class DesktopLink { Live, Reconnecting, Offline }
 
 /** This phone's switches for one desktop; all but browsing, the screen, and messages on after pairing. */
 data class Sharing(

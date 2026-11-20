@@ -64,6 +64,11 @@ pub enum ClientEvent {
         id: DeviceId,
         reason: String,
     },
+    /// A connected desktop's heartbeats went late (`live` false) or came back.
+    Link {
+        id: DeviceId,
+        live: bool,
+    },
     Received {
         from: DeviceId,
         share: Share,
@@ -91,10 +96,19 @@ pub enum ClientEvent {
     },
 }
 
+/// What the phone shows for a paired desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLink {
+    Live,
+    /// A session is open but the desktop's heartbeats are late.
+    Reconnecting,
+    Offline,
+}
+
 #[derive(Debug, Clone)]
 pub struct DesktopState {
     pub peer: Peer,
-    pub connected: bool,
+    pub link: DesktopLink,
     /// The live session runs over Bluetooth.
     pub bluetooth: bool,
 }
@@ -400,7 +414,7 @@ impl Client {
         let desktops = self.desktops().await?;
         let connected: Vec<DeviceId> = desktops
             .into_iter()
-            .filter(|desktop| desktop.connected && desktop.peer.grants.clipboard)
+            .filter(|desktop| desktop.link == DesktopLink::Live && desktop.peer.grants.clipboard)
             .map(|desktop| desktop.peer.id)
             .collect();
         let count = connected.len();
@@ -1325,6 +1339,9 @@ impl ClientActor {
             }
             return;
         }
+        for handle in self.sessions.values() {
+            handle.wake();
+        }
         let now = Instant::now();
         for peer in self.phone.desktops() {
             if !self.sessions.get(&peer.id).is_some_and(SessionHandle::is_live) {
@@ -1503,6 +1520,10 @@ impl ClientActor {
                     log::info!("{from}: dropped a {} its switch does not allow", message.kind());
                 }
             }
+            // Closed is reported as Disconnected.
+            SessionEvent::Link { from, state } if state != LinkState::Closed => {
+                self.emit(ClientEvent::Link { id: from, live: matches!(state, LinkState::Live { .. }) });
+            }
             SessionEvent::Unpaired { .. } | SessionEvent::Status { .. } | SessionEvent::Link { .. } => {}
         }
     }
@@ -1529,16 +1550,18 @@ impl ClientActor {
     }
 
     fn desktops(&self) -> Vec<DesktopState> {
-        let live = |id: &DeviceId| {
-            self.sessions.get(id).is_some_and(|session| matches!(session.link(), LinkState::Live { .. }))
+        let link = |id: &DeviceId| match self.sessions.get(id).map(SessionHandle::link) {
+            Some(LinkState::Live { .. }) => DesktopLink::Live,
+            Some(LinkState::Degraded { .. }) => DesktopLink::Reconnecting,
+            Some(LinkState::Closed) | None => DesktopLink::Offline,
         };
         self.phone
             .desktops()
             .iter()
             .map(|peer| DesktopState {
                 peer: peer.clone(),
-                connected: live(&peer.id),
-                bluetooth: live(&peer.id) && self.on_bluetooth.contains(&peer.id),
+                link: link(&peer.id),
+                bluetooth: link(&peer.id) == DesktopLink::Live && self.on_bluetooth.contains(&peer.id),
             })
             .collect()
     }

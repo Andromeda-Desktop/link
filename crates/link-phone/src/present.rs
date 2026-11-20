@@ -280,6 +280,7 @@ fn describe(event: &ClientEvent) -> Value {
             "resumed": resumed,
         }),
         ClientEvent::Disconnected { id, reason } => json!({ "event": "disconnected", "desktop": id, "reason": reason }),
+        ClientEvent::Link { id, live } => json!({ "event": "link", "desktop": id, "live": live }),
         ClientEvent::Received { from, share } => {
             json!({ "event": "received", "desktop": from, "kind": share.kind.as_str(), "text": share.text })
         }
