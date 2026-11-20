@@ -237,7 +237,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if unchecked {
                 return present::share_unchecked(phone, id, share).await;
             }
-            return present::share(phone, inbox()?, id, share).await;
+            return Box::pin(present::share(phone, inbox()?, id, share)).await;
         }
         Command::NotifyUnchecked { json } => {
             let id = only_desktop(&phone)?;

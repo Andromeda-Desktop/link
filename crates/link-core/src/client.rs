@@ -360,7 +360,7 @@ impl Client {
         self.commands.send(Command::Keep { id: id.clone(), keep: true }).await.map_err(|_| Error::Stopped)?;
         let total: u64 = sources.iter().map(Source::size).sum();
         let sent = match self.session(id.clone()).await {
-            Ok(handle) if handle.connection().on_bluetooth() && total > BLUETOOTH_UPGRADE_ABOVE => {
+            Ok(handle) if handle.on_bluetooth() && total > BLUETOOTH_UPGRADE_ABOVE => {
                 match self.upgrade(id.clone()).await {
                     Ok(()) => self.transfers.send(id.clone(), sources).await,
                     Err(error) if total <= BLUETOOTH_FILE_LIMIT => {
@@ -858,6 +858,7 @@ impl ClientActor {
             events: self.session_events_tx.clone(),
             transfers: self.transfers.clone(),
             heartbeat: desktop.has(HEARTBEAT),
+            path: None,
         };
         let (handle, actor) = session::session(connection, control, Role::Phone, route);
         let (task_id, stable_id) = (id.clone(), handle.stable_id());

@@ -62,6 +62,8 @@ pub struct Route {
     pub transfers: TransferHandle,
     /// The peer's hello carried `HEARTBEAT`.
     pub heartbeat: bool,
+    /// The connection's path when it runs on a `PathSocket`.
+    pub path: Option<crate::path::Route>,
 }
 
 enum Command {
@@ -78,6 +80,7 @@ pub struct SessionHandle {
     connection: Connection,
     tap: Option<Tap>,
     liveness: watch::Receiver<Liveness>,
+    path: Option<crate::path::Route>,
 }
 
 pub struct SessionActor {
@@ -123,6 +126,7 @@ pub fn session(connection: Connection, control: Control, role: Role, route: Rout
         connection: connection.clone(),
         tap: control.tap(),
         liveness: liveness_rx,
+        path: route.path.clone(),
     };
     let (reader, writer) = control.split();
     let limits = (role == Role::Desktop).then(Limits::default);
@@ -206,6 +210,10 @@ impl SessionHandle {
 
     pub fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    pub fn on_bluetooth(&self) -> bool {
+        self.path.as_ref().map_or_else(|| self.connection.on_bluetooth(), crate::path::Route::on_link)
     }
 
     /// The transcript tap of this session's control stream, which bulk stream headers go through too.
@@ -319,6 +327,9 @@ impl Live {
     /// Handles one message from the peer; true when the session is over.
     async fn on_envelope(&mut self, envelope: Envelope) -> Result<bool, Error> {
         let now = Instant::now();
+        if let (Some(path), Some(quic)) = (&self.route.path, self.connection.quic()) {
+            path.follow(quic.remote_address());
+        }
         match envelope.message {
             Message::Heartbeat(Heartbeat { seq, next_ms }) if self.beat.on => {
                 self.writer.send(Message::HeartbeatAck(HeartbeatAck { seq })).await?;
@@ -454,7 +465,7 @@ mod tests {
         let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
         let route = |peer: DeviceId| {
             let (events, rx) = mpsc::channel(64);
-            (Route { peer, events, transfers: transfers.clone(), heartbeat: true }, rx)
+            (Route { peer, events, transfers: transfers.clone(), heartbeat: true, path: None }, rx)
         };
         let (phone_route, mut phone_events) = route(desk_key.spki().device_id());
         let (desktop_route, _desktop_events) = route(phone_key.spki().device_id());

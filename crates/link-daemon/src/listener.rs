@@ -6,6 +6,7 @@ use std::sync::Arc;
 use link_core::control::Control;
 use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
+use link_core::path::Route;
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, LATE_HASH,
@@ -90,7 +91,7 @@ impl Listener {
 
 async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc<Context>) {
     let remote = incoming.remote_address();
-    let (connecting, _route) = match server.accept(incoming) {
+    let (connecting, path) = match server.accept(incoming) {
         Ok(accepted) => accepted,
         Err(error) => return log::info!("{remote}: {error}"),
     };
@@ -113,8 +114,8 @@ async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc
             connection.close(code);
             return;
         }
-        Admission::Session => session(&connection, &peer, &context).await,
-        Admission::Pair(attempt) => pairing(&connection, &peer, &attempt, &context).await,
+        Admission::Session => session(&connection, &peer, Some(path), &context).await,
+        Admission::Pair(attempt) => pairing(&connection, &peer, Some(path), &attempt, &context).await,
     };
     ended(&connection, &peer, result, &context).await;
 }
@@ -131,12 +132,12 @@ async fn handle_stream(fd: OwnedFd, acceptor: StreamAcceptor, context: Arc<Conte
     };
     let connection = Connection::Stream(mux);
     let result = match context.hub.admit(peer.clone()).await {
-        Admission::Session => session(&connection, &peer, &context).await,
+        Admission::Session => session(&connection, &peer, None, &context).await,
         Admission::Reject(code) => {
             log::info!("Bluetooth: {} rejected: {}", peer.device_id(), code.reason());
             return connection.close(code);
         }
-        Admission::Pair(attempt) => pairing(&connection, &peer, &attempt, &context).await,
+        Admission::Pair(attempt) => pairing(&connection, &peer, None, &attempt, &context).await,
     };
     ended(&connection, &peer, result, &context).await;
 }
@@ -153,7 +154,13 @@ async fn ended(connection: &Connection, peer: &Spki, result: Result<(), Error>, 
     }
 }
 
-async fn pairing(connection: &Connection, peer: &Spki, attempt: &Attempt, context: &Context) -> Result<(), Error> {
+async fn pairing(
+    connection: &Connection,
+    peer: &Spki,
+    path: Option<Route>,
+    attempt: &Attempt,
+    context: &Context,
+) -> Result<(), Error> {
     let greeting = async {
         let mut control = Control::accept(connection, None).await?;
         let hello = control.hello_as_server(context.hello()).await?;
@@ -170,7 +177,7 @@ async fn pairing(connection: &Connection, peer: &Spki, attempt: &Attempt, contex
     match pair_as_server(connection, &mut control, &attempt.secrets, &context.own, peer).await {
         Ok(()) => {
             context.hub.paired(peer.clone(), hello.name.clone(), attempt.window).await;
-            serve(connection, peer, control, hello, context).await
+            serve(connection, peer, path, control, hello, context).await
         }
         Err(error) => {
             context.hub.pairing_failed(error.to_string(), attempt.window).await;
@@ -179,16 +186,17 @@ async fn pairing(connection: &Connection, peer: &Spki, attempt: &Attempt, contex
     }
 }
 
-async fn session(connection: &Connection, peer: &Spki, context: &Context) -> Result<(), Error> {
+async fn session(connection: &Connection, peer: &Spki, path: Option<Route>, context: &Context) -> Result<(), Error> {
     let mut control = Control::accept(connection, None).await?;
     let hello = control.hello_as_server(context.hello()).await?;
-    serve(connection, peer, control, hello, context).await
+    serve(connection, peer, path, control, hello, context).await
 }
 
 /// A live session: this connection's task runs its session actor until the peer leaves or the connection idles out.
 async fn serve(
     connection: &Connection,
     peer: &Spki,
+    path: Option<Route>,
     control: Control,
     hello: Hello,
     context: &Context,
@@ -196,6 +204,7 @@ async fn serve(
     let id = peer.device_id();
     let mut route = context.hub.route(id.clone());
     route.heartbeat = hello.addresses.iter().any(|entry| entry == HEARTBEAT);
+    route.path = path;
     let (handle, actor) = start_session(connection.clone(), control, Role::Desktop, route);
     context.hub.connected(id, hello, handle).await;
     actor.run().await

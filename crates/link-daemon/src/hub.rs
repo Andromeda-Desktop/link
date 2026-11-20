@@ -1075,7 +1075,7 @@ impl Hub {
         peer.touch();
         self.save();
         self.media.connected(&session);
-        let on_ip = !session.connection().on_bluetooth();
+        let on_ip = !session.on_bluetooth();
         match session.connection().quic().filter(|_| on_ip) {
             Some(quic) => log::info!("{id}: connected over IP from {}", quic.remote_address()),
             None => log::info!("{id}: connected over Bluetooth"),
@@ -1121,7 +1121,7 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(reply.send(Err(browse::Failure::NotConnected)));
         };
-        if request.bulk() && session.connection().on_bluetooth() {
+        if request.bulk() && session.on_bluetooth() {
             self.ask_hotspot_once(&id, &session).await;
         }
         if request.writes() {
@@ -1413,7 +1413,7 @@ impl Hub {
     /// The Link device a send is for, when its session runs over Bluetooth and the files are worth the hotspot.
     fn needs_hotspot(&self, device: &str, sources: &[Source]) -> Option<DeviceId> {
         let peer = DeviceId::parse(device).ok()?;
-        let on_bluetooth = self.sessions.get(&peer)?.connection().on_bluetooth();
+        let on_bluetooth = self.sessions.get(&peer)?.on_bluetooth();
         (on_bluetooth && total_size(sources) > link_core::stream::BLUETOOTH_UPGRADE_ABOVE).then_some(peer)
     }
 
@@ -1518,7 +1518,7 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(reply.send(Err(Failure::NotConnected)));
         };
-        if session.connection().on_bluetooth() {
+        if session.on_bluetooth() {
             log::info!("{id}: mirroring waits for the phone's hotspot");
             return self.wait_for_hotspot(id, Parked::Mirror(reply)).await;
         }
@@ -1548,7 +1548,7 @@ impl Hub {
         let quic = self
             .sessions
             .get(&id)
-            .filter(|session| !session.connection().on_bluetooth())
+            .filter(|session| !session.on_bluetooth())
             .and_then(|session| session.connection().quic().cloned());
         let refusal = match quic {
             None => Some("remote control needs the same Wi-Fi as the desktop"),
@@ -1597,7 +1597,7 @@ impl Hub {
     /// Joins the phone's Wi-Fi Direct group off the actor, like a hotspot. Without a spare Wi-Fi interface the desktop
     /// leaves its own network for it, so the shell asks first, as for the hotspot.
     async fn join_wifi_direct(&mut self, id: DeviceId, group: Hotspot) {
-        let on_bluetooth = self.sessions.get(&id).is_some_and(|session| session.connection().on_bluetooth());
+        let on_bluetooth = self.sessions.get(&id).is_some_and(SessionHandle::on_bluetooth);
         if !on_bluetooth || self.nearby.contains_key(&id) {
             return log::info!("{id}: ignoring a Wi-Fi Direct group this session does not need");
         }
@@ -1644,7 +1644,7 @@ impl Hub {
     }
 
     async fn join_hotspot(&mut self, id: DeviceId, offered: Hotspot) {
-        let on_bluetooth = self.sessions.get(&id).is_some_and(|session| session.connection().on_bluetooth());
+        let on_bluetooth = self.sessions.get(&id).is_some_and(SessionHandle::on_bluetooth);
         if !on_bluetooth {
             return log::info!("{id}: ignoring a hotspot this session does not need");
         }
@@ -1825,7 +1825,7 @@ impl Hub {
                 let transport = self
                     .sessions
                     .get(&peer.id)
-                    .map_or("", |session| if session.connection().on_bluetooth() { "bluetooth" } else { "wifi" });
+                    .map_or("", |session| if session.on_bluetooth() { "bluetooth" } else { "wifi" });
                 DeviceInfo {
                     id: peer.id.to_string(),
                     last_seen: i64::try_from(peer.last_seen).unwrap_or(0),
@@ -2152,7 +2152,13 @@ impl HubHandle {
 
     /// Where a session delivers what its peer sends.
     pub fn route(&self, peer: DeviceId) -> Route {
-        Route { peer, events: self.session_events.clone(), transfers: self.transfers.clone(), heartbeat: false }
+        Route {
+            peer,
+            events: self.session_events.clone(),
+            transfers: self.transfers.clone(),
+            heartbeat: false,
+            path: None,
+        }
     }
 
     pub async fn desktop_player(&self, player: MediaPlayer) {
