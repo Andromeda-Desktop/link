@@ -9,6 +9,7 @@ use std::os::unix::fs::FileExt as _;
 use futures_util::StreamExt;
 use link_core::Error;
 use link_core::identity::DeviceId;
+use link_core::outbox::Sent;
 use link_core::proto::message::{
     CallAction, CallActionKind, DesktopStatus, InputAction, MAX_CAPABILITIES, MAX_CAPABILITY_LEN, MAX_NAME_LEN,
     MAX_NUMBER_LEN, MAX_SHARE_LEN, MAX_TEXT_BODY, MediaCommand, MediaCommandKind, Message, MirrorAction, MirrorInput,
@@ -183,16 +184,23 @@ impl Link {
         }
     }
 
-    /// Returns once the device acknowledged the share.
+    /// Returns once the device acknowledged the share, or once it waits in the outbox for the device's next session.
     async fn share(&self, device_id: String, kind: String, text: String) -> Result<(), LinkError> {
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
         let kind = ShareKind::parse(&kind).ok_or_else(|| LinkError::Rejected("kind is text or link".to_owned()))?;
-        let share = Share { kind, text };
+        let share = Share { kind, text, item: None };
         share.check().map_err(|rejected| LinkError::Rejected(rejected.to_string()))?;
-        let Some(session) = self.hub.session(id.clone()).await else {
-            return Err(LinkError::NotConnected(format!("{id} is not connected")));
-        };
-        session.share(share).await.map_err(|error| LinkError::Failed(error.to_string()))
+        if !self.snapshots.borrow().devices.iter().any(|device| device.0 == device_id) {
+            return Err(LinkError::Rejected(format!("{id} is not paired")));
+        }
+        match self.hub.share(id.clone(), share).await {
+            Ok(Sent::Delivered) => Ok(()),
+            Ok(Sent::Queued) => {
+                log::info!("{id}: share queued until it connects");
+                Ok(())
+            }
+            Err(error) => Err(LinkError::Failed(error.to_string())),
+        }
     }
 
     /// Offers the files behind the descriptors to a connected device and returns the transfer id at once; the

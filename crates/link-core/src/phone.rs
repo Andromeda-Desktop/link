@@ -2,12 +2,12 @@
 //! the Android app.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
-    Hello, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SYSTEM, SYSTEM_CONTROL, bluetooth_address,
+    Hello, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, bluetooth_address,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -63,6 +63,11 @@ pub struct Phone {
 }
 
 impl Phone {
+    /// Where the store is saved; other phone state lives beside it.
+    pub fn store_path(&self) -> &Path {
+        &self.store_path
+    }
+
     pub fn new(identity: Identity, store_path: PathBuf, name: String, tap: Option<Tap>) -> Result<Self, Error> {
         let store = Store::load(&store_path)?;
         let dialer = Dialer::new(&identity)?;
@@ -286,6 +291,7 @@ impl Phone {
             SYSTEM_CONTROL,
             CLIP_ITEMS,
             CLIP_CLOCK,
+            SHARE_OUTBOX,
             HEARTBEAT,
         ]
         .map(str::to_owned);

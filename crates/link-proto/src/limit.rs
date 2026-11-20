@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn a_flood_is_cut_to_the_burst_then_the_rate() {
         let start = Instant::now();
-        let share = Message::Share(Share { kind: ShareKind::Text, text: "x".to_owned() });
+        let share = Message::Share(Share { kind: ShareKind::Text, text: "x".to_owned(), item: None });
         let mut limits = Limits::default();
         let burst = (0..50).filter(|_| limits.admit(&share, start)).count();
         assert_eq!(burst, 10);
@@ -117,7 +117,7 @@ mod tests {
     fn features_have_their_own_buckets() {
         let now = Instant::now();
         let mut limits = Limits::default();
-        let share = Message::Share(Share { kind: ShareKind::Text, text: "x".to_owned() });
+        let share = Message::Share(Share { kind: ShareKind::Text, text: "x".to_owned(), item: None });
         while limits.admit(&share, now) {}
         assert!(limits.admit(&Message::Unpair, now));
         let status = Message::Status(crate::message::Status {

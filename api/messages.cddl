@@ -2,6 +2,7 @@
 ; Types marked "0-RTT" are idempotent and may be sent in QUIC early data.
 
 envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-msg / share-ack-msg /
+  heartbeat-msg / heartbeat-ack-msg /
   notification-posted-msg / notification-removed-msg / notification-action-msg / notification-dismiss-msg /
   notification-snapshot-msg / notification-pull-msg /
   media-player-msg / media-gone-msg / media-command-msg / ring-msg / ringing-msg / call-msg / call-action-msg /
@@ -41,14 +42,20 @@ unpair-msg = { type: "unpair", id: uint, body: {} }
 ; http or https URL, scheme in any case, with no whitespace or control characters.
 share-msg = { type: "share", id: uint, body: share }
 share = text-share / link-share
-text-share = { kind: "text", "text": tstr .size (1..61440) }
-link-share = { kind: "link", "text": web-link }
+text-share = { kind: "text", "text": tstr .size (1..61440), ? item: uint }
+link-share = { kind: "link", "text": web-link, ? item: uint }
+; item: the sender's random id for the share, the same on every resend; only between peers with feature:share-outbox.
 web-link = sized-link .and link-pattern
 sized-link = tstr .size (8..61440)
 link-pattern = tstr .pcre "^[Hh][Tt][Tt][Pp][Ss]?://[^[:space:][:cntrl:]]+$"
 
 ; Sent when the share was handed to the receiver's surface.
 share-ack-msg = { type: "share-ack", id: uint, body: { of: uint } }  ; of: the share's envelope id
+
+; Either side, only between peers with feature:heartbeat: the sender's next heartbeat is due within next_ms
+; milliseconds; the peer answers each with heartbeat-ack of the same seq.
+heartbeat-msg = { type: "heartbeat", id: uint, body: { seq: uint, next_ms: uint .size 4 } }
+heartbeat-ack-msg = { type: "heartbeat-ack", id: uint, body: { seq: uint } }
 
 ; Files (ARCHITECTURE.md, Files). Either side sends; file ids are unique within an offer, and the offer fits one
 ; frame. The receiver sanitizes each name before using it.

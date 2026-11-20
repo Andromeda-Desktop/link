@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn share(kind: ShareKind, text: &str) -> Share {
-        Share { kind, text: text.to_owned() }
+        Share { kind, text: text.to_owned(), item: None }
     }
 
     /// A share envelope encoded without the sender's checks, as a hostile peer would send it.

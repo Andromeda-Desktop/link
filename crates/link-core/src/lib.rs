@@ -13,6 +13,7 @@ pub mod messages;
 pub mod mirror;
 pub mod mux;
 pub mod net;
+pub mod outbox;
 pub mod pairing;
 pub mod path;
 pub mod phone;

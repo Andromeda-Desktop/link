@@ -69,6 +69,10 @@ pub const CLIP_ITEMS: &str = "feature:clip-items";
 /// peers keep the offer with the larger (`at`, `origin`) whatever their clocks say.
 pub const CLIP_CLOCK: &str = "feature:clip-clock";
 
+/// Both hellos carry this when the peer takes `share`'s `item` and applies each item once; older peers close a
+/// session on the field.
+pub const SHARE_OUTBOX: &str = "feature:share-outbox";
+
 /// A desktop's hello carries this when it takes a mirror's video as one stream per keyframe (`mirror-data`'s `gop`);
 /// phones send older desktops video and sound on one stream.
 pub const MIRROR_STREAMS: &str = "feature:mirror-streams";
@@ -123,6 +127,9 @@ pub enum ShareKind {
 pub struct Share {
     pub kind: ShareKind,
     pub text: String,
+    /// [`SHARE_OUTBOX`]: the sender's random id for this share, the same on every resend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

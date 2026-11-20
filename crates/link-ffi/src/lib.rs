@@ -10,6 +10,7 @@ use std::sync::Arc;
 use link_core::client::{self, Client, ClientEvent};
 use link_core::identity::{DeviceId, Identity};
 use link_core::inbox::Inbox;
+use link_core::outbox::Sent;
 use link_core::phone::{PairTarget, Phone};
 use link_core::proto::CloseCode;
 use link_core::proto::message::{self, Contact, LoggedCall, Message, MessagesRefusal, Share, Text, TransferId};
@@ -182,6 +183,15 @@ impl From<PhoneNotification> for message::NotificationPosted {
             .collect();
         Self { id, app, title, text, icon, actions, alert_once }
     }
+}
+
+/// How [`LinkClient::share`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ShareSent {
+    /// The desktop acknowledged it.
+    Delivered,
+    /// It waits in the outbox for the desktop's next session.
+    Queued,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -1143,13 +1153,17 @@ impl LinkClient {
     }
 
     /// Sends text or a link, connecting first if needed, and returns once the desktop acknowledged it.
-    pub async fn share(&self, desktop_id: String, kind: ShareKind, text: String) -> Result<(), LinkError> {
+    pub async fn share(&self, desktop_id: String, kind: ShareKind, text: String) -> Result<ShareSent, LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
         let kind = match kind {
             ShareKind::Text => message::ShareKind::Text,
             ShareKind::Link => message::ShareKind::Link,
         };
-        self.run(async move { client.share(id, Share { kind, text }).await }).await
+        let sent = self.run(async move { client.share(id, Share { kind, text, item: None }).await }).await?;
+        Ok(match sent {
+            Sent::Delivered => ShareSent::Delivered,
+            Sent::Queued => ShareSent::Queued,
+        })
     }
 
     /// Returns whether the desktop was told; the desktop is forgotten either way.

@@ -229,7 +229,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Share { kind, text, unchecked } => {
             let id = only_desktop(&phone)?;
-            let share = Share { kind, text };
+            let share = Share { kind, text, item: None };
             if unchecked {
                 return present::share_unchecked(phone, id, share).await;
             }

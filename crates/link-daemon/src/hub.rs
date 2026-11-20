@@ -9,13 +9,14 @@ use link_core::discovery::Advertiser;
 use link_core::identity::{DeviceId, Spki};
 use link_core::link_state::LinkState;
 use link_core::net;
+use link_core::outbox::{self, Outbox, OutboxActor, Seen, Sent};
 use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
     MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_RECENT,
-    PhotoRefusal, Ping, RemoteInput, Ringer, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind,
-    SystemResult, Text, TransferId,
+    PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand,
+    SystemCommandKind, SystemResult, Text, TransferId,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -289,6 +290,7 @@ pub struct HubHandle {
     commands: mpsc::Sender<Command>,
     session_events: mpsc::Sender<SessionEvent>,
     transfers: TransferHandle,
+    outbox: Outbox,
 }
 
 struct Window {
@@ -324,6 +326,10 @@ pub struct Hub {
     events: mpsc::Sender<Event>,
     transfers: TransferHandle,
     transfer_events: mpsc::UnboundedReceiver<TransferEvent>,
+    outbox: Outbox,
+    outbox_actor: Option<OutboxActor>,
+    /// Share items already applied, so a resend after a lost ack is applied once.
+    seen: Seen,
     localsend: LocalSendHandle,
     localsend_signals: mpsc::UnboundedReceiver<Signal>,
     /// Which backend each open transfer belongs to, for consent and cancelling.
@@ -406,8 +412,13 @@ impl Hub {
     ) -> (Self, HubHandle, watch::Receiver<Snapshot>, mpsc::Receiver<Event>) {
         let (commands_tx, commands) = mpsc::channel(32);
         let (session_events_tx, session_events) = mpsc::channel(16);
-        let handle =
-            HubHandle { commands: commands_tx, session_events: session_events_tx, transfers: transfers.handle.clone() };
+        let (outbox, outbox_actor) = outbox::outbox(paths.state.join("outbox.json"));
+        let handle = HubHandle {
+            commands: commands_tx,
+            session_events: session_events_tx,
+            transfers: transfers.handle.clone(),
+            outbox: outbox.clone(),
+        };
         let media = Media::new(desktop_media, paths.art.clone());
         let notifications = Mirror::load(paths.notifications.clone());
         let (snapshots, snapshots_rx) = watch::channel(Snapshot::default());
@@ -447,6 +458,9 @@ impl Hub {
             hotspot_asked: HashSet::new(),
             browsing: browse::Browsing::default(),
             features: HashMap::new(),
+            outbox,
+            outbox_actor: Some(outbox_actor),
+            seen: Seen::default(),
             capabilities: None,
             desktop_status: None,
             status_sent: None,
@@ -463,6 +477,9 @@ impl Hub {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
+        if let Some(outbox) = self.outbox_actor.take() {
+            tokio::spawn(outbox.run());
+        }
         if self.store.localsend {
             self.localsend.set_visible(true).await;
         }
@@ -703,12 +720,29 @@ impl Hub {
         Ok(id)
     }
 
+    /// Applies a share once: a phone resends one whose ack was lost.
+    async fn on_share(&mut self, from: DeviceId, share: Share) {
+        if self.seen.first(&from, &share) {
+            self.emit(Event::Received { id: from, share }).await;
+        } else {
+            log::info!("{from}: dropped a share it sent again");
+        }
+    }
+
+    /// A live session gets the phone's queued shares.
+    fn on_link(&mut self, from: &DeviceId, state: LinkState) {
+        if matches!(state, LinkState::Live { .. })
+            && let Some(session) = self.sessions.get(from)
+        {
+            self.outbox.live(from.clone(), session.clone(), self.phone_has(from, SHARE_OUTBOX));
+        }
+        self.publish();
+    }
+
     async fn on_session_event(&mut self, event: SessionEvent) {
         match event {
-            SessionEvent::Received { from, share } => {
-                if self.sessions.contains_key(&from) {
-                    self.emit(Event::Received { id: from, share }).await;
-                }
+            SessionEvent::Received { from, share } if self.sessions.contains_key(&from) => {
+                self.on_share(from, share).await;
             }
             SessionEvent::Status { from, status } if self.sessions.contains_key(&from) => {
                 self.on_status(from, status).await;
@@ -716,12 +750,13 @@ impl Hub {
             SessionEvent::SystemCommand { from, id, command } if self.sessions.contains_key(&from) => {
                 self.on_system_command(from, id, command).await;
             }
-            SessionEvent::Link { .. } => self.publish(),
-            SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
+            SessionEvent::Link { from, state } => self.on_link(&from, state),
+            SessionEvent::Received { .. } | SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
             SessionEvent::Unpaired { from } => {
                 log::info!("{from} unpaired itself");
                 self.sessions.remove(&from);
                 self.store.remove(&from);
+                self.outbox.forget(from.clone());
                 self.messages.forget(&from);
                 self.save();
                 self.refresh();
@@ -1032,6 +1067,7 @@ impl Hub {
         };
         self.transfers.attach(id.clone(), session.clone(), clip).await;
         self.features.insert(id.clone(), features);
+        self.outbox.live(id.clone(), session.clone(), self.phone_has(&id, SHARE_OUTBOX));
         if self.phone_has(&id, MESSAGES) {
             let contacts = self.messages.pull_contacts(id.clone());
             self.send_to(&id, contacts).await;
@@ -1673,6 +1709,7 @@ impl Hub {
             session.close(CloseCode::Unpaired);
         }
         self.store.revoked.push(id.clone());
+        self.outbox.forget(id.clone());
         self.messages.forget(id);
         self.save();
         self.refresh();
@@ -1959,6 +1996,12 @@ impl HubHandle {
             return Err(browse::Failure::NotConnected);
         }
         answer.await.unwrap_or(Err(browse::Failure::NotConnected))
+    }
+
+    /// Queues `share` for the phone; returns once the phone acknowledged it, or when it waits for the phone's next
+    /// session.
+    pub async fn share(&self, id: DeviceId, share: Share) -> Result<Sent, link_core::Error> {
+        self.outbox.share(id, share).await
     }
 
     pub async fn session(&self, id: DeviceId) -> Option<SessionHandle> {

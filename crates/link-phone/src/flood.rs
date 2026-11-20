@@ -43,7 +43,7 @@ pub async fn flood(mut phone: Phone, id: DeviceId, kind: Kind, count: u32) -> an
 
 fn message(kind: Kind, n: u32) -> Message {
     match kind {
-        Kind::Share => Message::Share(Share { kind: ShareKind::Text, text: format!("flood {n}") }),
+        Kind::Share => Message::Share(Share { kind: ShareKind::Text, text: format!("flood {n}"), item: None }),
         Kind::Offer => {
             let mut transfer = TransferId([0; 16]);
             transfer.0[..4].copy_from_slice(&n.to_be_bytes());

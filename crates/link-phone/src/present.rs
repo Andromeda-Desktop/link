@@ -8,6 +8,7 @@ use link_core::Error;
 use link_core::client::{self, Client, ClientEvent};
 use link_core::identity::DeviceId;
 use link_core::inbox::Inbox;
+use link_core::outbox::Sent;
 use link_core::phone::{Phone, Session};
 use link_core::proto::message::{Message, NetworkKind, Share, ShareKind, Status, Storage};
 use link_core::reach::Via;
@@ -267,8 +268,9 @@ async fn share_line(client: &Client, id: &DeviceId, line: &str) -> Value {
         return json!({ "event": "share-failed", "error": "a line is <text|link> <text>" });
     };
     let bytes = text.len();
-    match client.share(id.clone(), Share { kind, text: text.to_owned() }).await {
-        Ok(()) => json!({ "event": "shared", "kind": kind.as_str(), "bytes": bytes }),
+    match client.share(id.clone(), Share { kind, text: text.to_owned(), item: None }).await {
+        Ok(Sent::Delivered) => json!({ "event": "shared", "kind": kind.as_str(), "bytes": bytes }),
+        Ok(Sent::Queued) => json!({ "event": "share-queued", "kind": kind.as_str(), "bytes": bytes }),
         Err(error) => json!({ "event": "share-failed", "kind": kind.as_str(), "error": error.to_string() }),
     }
 }

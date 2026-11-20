@@ -59,6 +59,7 @@ import org.andromeda.link.core.domain.RemoteUnit
 import org.andromeda.link.core.domain.RemoteVideo
 import org.andromeda.link.core.domain.SavedFile
 import org.andromeda.link.core.domain.ScreenShape
+import org.andromeda.link.core.domain.ShareDelivery
 import org.andromeda.link.core.domain.ShareKind
 import org.andromeda.link.core.domain.Sharing
 import org.andromeda.link.core.domain.TransferEvent
@@ -97,6 +98,7 @@ import org.andromeda.link.ffi.NotificationButton as FfiNotificationButton
 import org.andromeda.link.ffi.PhoneNotification as FfiPhoneNotification
 import org.andromeda.link.ffi.PlaybackState as FfiState
 import org.andromeda.link.ffi.ShareKind as FfiShareKind
+import org.andromeda.link.ffi.ShareSent as FfiShareSent
 import org.andromeda.link.ffi.TouchContact as FfiTouchContact
 
 /**
@@ -533,14 +535,19 @@ class LinkRepository(
     /** Succeeds with whether the desktop was told; it is forgotten on this phone either way. */
     suspend fun unpair(id: String): Result<Boolean> = callAndRefresh { it.unpair(id) }
 
-    /** Connects first if needed, and succeeds once the desktop acknowledged the share. */
+    /** Connects first if needed; succeeds once the desktop acknowledged the share, or once it waits in the outbox. */
     suspend fun share(
         desktopId: String,
         kind: ShareKind,
         text: String,
-    ): Result<Unit> =
+    ): Result<ShareDelivery> =
         withMulticast {
             call { it.share(desktopId, kind.toFfi(), text) }
+        }.map {
+            when (it) {
+                FfiShareSent.DELIVERED -> ShareDelivery.Delivered
+                FfiShareSent.QUEUED -> ShareDelivery.Queued
+            }
         }
 
     /**

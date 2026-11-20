@@ -2,6 +2,9 @@ package org.andromeda.link.core.domain
 
 enum class ShareKind { Text, Link }
 
+/** Queued: the share waits on the phone and goes out when the desktop is back. */
+enum class ShareDelivery { Delivered, Queued }
+
 /** Text or a link a desktop sent, already checked by the Rust core. */
 data class IncomingShare(
     val desktopId: String,

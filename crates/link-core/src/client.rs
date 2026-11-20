@@ -11,8 +11,8 @@ use link_proto::message::{
     CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd,
     MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
     NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot,
-    PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share,
-    Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
+    PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL,
+    ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +28,7 @@ use crate::link_state::LinkState;
 use crate::messages::{self, Messages};
 use crate::mirror::MirrorSender;
 use crate::net;
+use crate::outbox::{self, Outbox, OutboxActor, Seen, Sent};
 use crate::phone::{self, PairTarget, Phone};
 use crate::reach::{self, Reached, Via};
 use crate::session::{self, Route, SessionEvent, SessionHandle};
@@ -190,6 +191,7 @@ const UNPAIR_TELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 pub struct Client {
     commands: mpsc::Sender<Command>,
     transfers: TransferHandle,
+    outbox: Outbox,
 }
 
 pub struct ClientActor {
@@ -202,6 +204,10 @@ pub struct ClientActor {
     session_events: mpsc::Receiver<SessionEvent>,
     transfers: TransferHandle,
     transfer_actor: Option<TransferActor>,
+    outbox: Outbox,
+    outbox_actor: Option<OutboxActor>,
+    /// Share items already applied, so a resend after a lost ack is applied once.
+    seen: Seen,
     transfer_events: mpsc::UnboundedReceiver<TransferEvent>,
     present: bool,
     /// Desktops with an open transfer, kept connected like a present phone until it ends.
@@ -269,6 +275,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
     let (events, events_rx) = mpsc::unbounded_channel();
     let (session_events_tx, session_events) = mpsc::channel(16);
     let (transfers, transfer_actor, transfer_events) = transfer::transfers(inbox);
+    let (outbox, outbox_actor) = outbox::outbox(phone.store_path().with_file_name("outbox.json"));
     let actor = ClientActor {
         phone,
         commands,
@@ -279,6 +286,9 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         session_events,
         transfers: transfers.clone(),
         transfer_actor: Some(transfer_actor),
+        outbox: outbox.clone(),
+        outbox_actor: Some(outbox_actor),
+        seen: Seen::default(),
         transfer_events,
         present: false,
         busy: HashSet::new(),
@@ -310,7 +320,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         camera: None,
         notifications: None,
     };
-    (Client { commands: commands_tx, transfers }, actor, events_rx)
+    (Client { commands: commands_tx, transfers, outbox }, actor, events_rx)
 }
 
 impl Client {
@@ -330,10 +340,17 @@ impl Client {
         self.commands.send(Command::SetPresent { present }).await.map_err(|_| Error::Stopped)
     }
 
-    /// Sends `share`, connecting first if needed, and waits for the desktop's ack.
-    pub async fn share(&self, id: DeviceId, share: Share) -> Result<(), Error> {
+    /// Queues `share` for the desktop, connecting first if needed; returns once the desktop acknowledged it, or when
+    /// it waits in the outbox for the desktop's next session.
+    pub async fn share(&self, id: DeviceId, share: Share) -> Result<Sent, Error> {
         share.check()?;
-        self.session(id).await?.share(share).await
+        if !self.desktops().await?.iter().any(|desktop| desktop.peer.id == id) {
+            return Err(Error::UnknownDevice);
+        }
+        if let Err(error) = self.session(id.clone()).await {
+            log::info!("{id}: not connected for a share: {error}");
+        }
+        self.outbox.share(id, share).await
     }
 
     /// Offers files to the desktop, connecting with keep-alive first; the session stays until the transfer ends.
@@ -549,10 +566,13 @@ impl Client {
 impl ClientActor {
     /// Runs until every [`Client`] is dropped, then closes the sessions and waits for the closes to be sent.
     pub async fn run(mut self) {
-        let Some(transfer_actor) = self.transfer_actor.take() else { return };
+        let (Some(transfer_actor), Some(outbox_actor)) = (self.transfer_actor.take(), self.outbox_actor.take()) else {
+            return;
+        };
         tokio::select! {
             () = self.serve() => {}
             () = transfer_actor.run() => log::error!("the transfer actor stopped"),
+            () = outbox_actor.run() => log::error!("the outbox stopped"),
         }
         for handle in self.sessions.values() {
             handle.close(CloseCode::Done);
@@ -623,6 +643,7 @@ impl ClientActor {
             }
             Command::SetPresent { present } => self.set_present(present),
             Command::Forget { id, reply } => {
+                self.outbox.forget(id.clone());
                 self.retries.remove(&id);
                 self.controlled_by.remove(&id);
                 self.status_to.remove(&id);
@@ -848,6 +869,7 @@ impl ClientActor {
             clock: desktop.has(CLIP_CLOCK),
         };
         self.transfers.attach(id.clone(), handle.clone(), clip).await;
+        self.outbox.live(id.clone(), handle.clone(), desktop.has(SHARE_OUTBOX));
         self.retries.remove(&id);
         if via == Via::Bluetooth {
             log::info!("{id}: connected over Bluetooth");
@@ -941,6 +963,7 @@ impl ClientActor {
             if let Err(error) = self.phone.forget(&id) {
                 log::error!("forgetting {id}: {error}");
             }
+            self.outbox.forget(id.clone());
             self.emit(ClientEvent::Unpaired { id });
         } else {
             if matches!(result, Err(Error::Closed(CloseCode::Paused))) {
@@ -990,6 +1013,7 @@ impl ClientActor {
                 if let Err(error) = self.phone.forget(&id) {
                     log::error!("forgetting {id}: {error}");
                 }
+                self.outbox.forget(id.clone());
                 self.retries.remove(&id);
                 return self.emit(ClientEvent::Unpaired { id });
             }
@@ -1491,7 +1515,13 @@ impl ClientActor {
                     self.finish_upgrades(&from, &Err(Error::Hotspot(reason)));
                 }
             }
-            SessionEvent::Received { from, share } => self.emit(ClientEvent::Received { from, share }),
+            SessionEvent::Received { from, share } => {
+                if self.seen.first(&from, &share) {
+                    self.emit(ClientEvent::Received { from, share });
+                } else {
+                    log::info!("{from}: dropped a share it sent again");
+                }
+            }
             SessionEvent::Message {
                 from,
                 message:
@@ -1526,7 +1556,12 @@ impl ClientActor {
             }
             // Closed is reported as Disconnected.
             SessionEvent::Link { from, state } if state != LinkState::Closed => {
-                self.emit(ClientEvent::Link { id: from, live: matches!(state, LinkState::Live { .. }) });
+                let live = matches!(state, LinkState::Live { .. });
+                if live && let Some(handle) = self.sessions.get(&from) {
+                    let items = self.phone.desktops().iter().any(|peer| peer.id == from && peer.has(SHARE_OUTBOX));
+                    self.outbox.live(from.clone(), handle.clone(), items);
+                }
+                self.emit(ClientEvent::Link { id: from, live });
             }
             SessionEvent::Unpaired { .. } | SessionEvent::Status { .. } | SessionEvent::Link { .. } => {}
         }

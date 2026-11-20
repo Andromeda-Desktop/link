@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Link sessions and shares across two network namespaces joined by a veth pair, inside an unprivileged user namespace.
 # Proves: a present phone (keep-alive) shows connected on D-Bus and stays on the same connection through a 5 s black
-# hole; a black hole past the 90 s idle timeout ends the session on both sides, D-Bus Share then fails as not connected, and the phone
-# redials by itself once the path returns; it also redials after a daemon restart; text and links travel both ways
+# hole; a black hole past the 90 s idle timeout ends the session on both sides, D-Bus Share then queues, and the phone
+# redials by itself once the path returns and gets the queued share once; a share queued before the first session
+# arrives when it connects; it also redials after a daemon restart; text and links travel both ways
 # (D-Bus Share to the phone's event output, the phone's shares to the D-Bus Received signal); an oversized text and
 # non-http links are refused by D-Bus and by the phone before sending, and a hostile phone that skips its checks is
 # closed with protocol-error and delivers nothing; stopping the phone shows it disconnected at once. Every control
@@ -89,9 +90,8 @@ phone --transcript "$OUT/transcript.jsonl" pair --code "$CODE" --addr "10.78.0.1
 ID=$(devices | grep -o "'[0-9a-f]\{32\}', 'phone'" | cut -d"'" -f2)
 [[ -n $ID ]] || fail "desktop does not list the phone: $(devices)"
 
-OUTPUT=$(link Share "$ID" text "'nobody is there'" 2>&1) && fail "Share to a disconnected phone succeeded"
-[[ $OUTPUT == *org.andromeda.Link1.Error.NotConnected* ]] || fail "Share while disconnected: $OUTPUT"
-record '{"step":"share-needs-a-session","error":"NotConnected"}'
+link Share "$ID" text "'queued while away'" > /dev/null || fail "Share to a disconnected phone was not queued"
+record '{"step":"share-queued-while-away"}'
 
 dbus-monitor --session "type='signal',interface='org.andromeda.Link1',member='Received'" > "$OUT/signals.txt" 2>&1 &
 wait_for 5 "dbus-monitor did not start" test -s "$OUT/signals.txt"
@@ -104,6 +104,8 @@ RUST_LOG=info nsenter -t "$PHONE_NS" -n -- "$BIN/andromeda-link-phone" --state "
 HOLD=$!
 wait_for 10 "present phone never shown connected: $(devices)" connected
 record '{"step":"present-connected"}'
+wait_for 10 "the queued share never reached the phone" grep -q '"text":"queued while away"' "$OUT/hold.jsonl"
+record '{"step":"queued-share-delivered"}'
 
 link Share "$ID" text "'héllo from the desktop ✓'" > /dev/null || fail "D-Bus Share text"
 link Share "$ID" link "'https://example.org/path?q=1'" > /dev/null || fail "D-Bus Share link"
@@ -138,14 +140,16 @@ link Share "$ID" text "'after a short drop'" > /dev/null || fail "session did no
 record '{"step":"survives-short-drop","seconds":5}'
 
 blackhole
-# The idle timer restarts on the first ping after the last packet: 90 s IDLE_TIMEOUT + 30 s KEEP_ALIVE, plus margin.
-wait_for 130 "desktop still shows the phone connected in a black hole" disconnected
-wait_for 10 "phone never noticed the black hole" eval '[[ $(events disconnected) == 1 ]]'
-OUTPUT=$(link Share "$ID" text "'into the void'" 2>&1) && fail "Share succeeded during the black hole"
-[[ $OUTPUT == *NotConnected* ]] || fail "Share in the black hole: $OUTPUT"
+# D-Bus shows the phone disconnected once its heartbeats are late; the session itself ends on the idle timer, which
+# restarts on the first ping after the last packet: 90 s IDLE_TIMEOUT + 30 s KEEP_ALIVE, plus margin.
+wait_for 10 "desktop still shows the phone connected in a black hole" disconnected
+wait_for 130 "phone never noticed the black hole" eval '[[ $(events disconnected) == 1 ]]'
+link Share "$ID" text "'into the void'" > /dev/null || fail "Share during the black hole was not queued"
 clear_path
 wait_for 40 "phone did not redial after the black hole" eval '[[ $(events connected) == 2 ]]'
 wait_for 5 "desktop does not show the redialled phone" connected
+wait_for 10 "the share queued in the black hole never arrived" grep -q '"text":"into the void"' "$OUT/hold.jsonl"
+[[ $(grep -c '"text":"into the void"' "$OUT/hold.jsonl") == 1 ]] || fail "the queued share arrived more than once"
 record '{"step":"redials-after-long-drop","black_hole_seconds":"30+"}'
 
 kill "$LINKD"; wait "$LINKD" || true
