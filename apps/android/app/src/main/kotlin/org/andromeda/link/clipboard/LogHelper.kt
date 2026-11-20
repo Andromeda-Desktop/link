@@ -12,7 +12,8 @@ import kotlin.system.exitProcess
  * restarts. SELinux keeps apps from connecting to a shell's socket, so the helper writes to Link instead: a
  * `content write` into [LogLineProvider], which only the shell or root may open.
  *
- * Its limits: it writes only to Link's own provider; it sends only Link's clipboard-denial lines ([follow]); its one
+ * Its limits: it writes only to Link's own provider; it sends only copies ([watch]), or where that fails Link's
+ * clipboard-denial lines ([follow]); its one
  * input is mirror input from Link's own provider, which [org.andromeda.link.screen.InputRelay] turns into touch, key
  * and panel-power events and nothing else, so it is no shell; it exits when Link is uninstalled or has not run for
  * [IDLE_MS] ([main]).
@@ -37,7 +38,7 @@ object LogHelper {
         val appId = appId(pkg) ?: exit("$pkg is not installed")
         lock = runCatching { LocalServerSocket(LOCK) }.getOrElse { exit("already running") }
         println("helper for $pkg (uid $appId)")
-        thread(isDaemon = true, name = "logcat") { follow(pkg) }
+        thread(isDaemon = true, name = "clipboard") { if (!watch()) follow(pkg) }
         thread(isDaemon = true, name = "input") {
             while (true) {
                 if (running(pkg)) InputRelay.follow(pkg)
@@ -73,6 +74,23 @@ object LogHelper {
                 now - lastRun > IDLE_MS -> exit("$pkg has not run for ${IDLE_MS / 60000} min")
             }
         }
+    }
+
+    /** Sends each copy from a [ClipWatch] child; false when the child cannot start, so [follow] stands in. */
+    private fun watch(): Boolean {
+        val root = android.os.Process.myUid() == android.os.Process.ROOT_UID
+        val builder =
+            ProcessBuilder("app_process", "/system/bin", ClipWatch::class.java.name, if (root) SYSTEM_UI else SHELL)
+                .redirectError(ProcessBuilder.Redirect.INHERIT)
+        if (root) builder.environment()[ClipWatch.AS_UID] = (appId(SYSTEM_UI) ?: return false).toString()
+        val child = runCatching { builder.start() }.getOrElse { return false }
+        val lines = child.inputStream.bufferedReader()
+        if (runCatching { lines.readLine() }.getOrNull() != ClipLine.READY) {
+            child.destroy()
+            return false
+        }
+        runCatching { lines.forEachLine(::send) }
+        exit("clipboard reader ended")
     }
 
     /** Sends Link's own clipboard-denial lines and nothing else; logcat ending ends the helper. */
@@ -129,4 +147,6 @@ object LogHelper {
     }
 
     private const val PER_USER = 100000
+    private const val SYSTEM_UI = "com.android.systemui"
+    private const val SHELL = "com.android.shell"
 }

@@ -3,12 +3,15 @@ package org.andromeda.link.clipboard
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -16,11 +19,13 @@ import rikka.shizuku.Shizuku
 import java.io.IOException
 
 /**
- * Phone to desktop, automatic, as KDE Connect does it: Android lets only the focused app read the clipboard, but it
- * logs a denial for this app on every copy elsewhere, because this app listens for changes. With [LogAccess] (a
- * sideload-build path, not Play) each denial line brings up a [ClipboardOverlay] for a moment,
- * which reads the clipboard while focused and offers it. The overlay needs "Display over other apps" as well. Runs
- * while [org.andromeda.link.presence.PresenceService] does.
+ * Phone to desktop, automatic. With Shizuku, root or the desktop's adb, [LogHelper] reads each copy itself
+ * ([ClipWatch]) and this offers it at once. Otherwise, as KDE Connect does it: Android lets only the focused app read
+ * the clipboard, but it logs a denial for this app on every copy elsewhere, because this app listens for changes. With
+ * [LogAccess] (a sideload-build path, not Play) each denial line, or a copy the helper cannot carry, brings up a
+ * [ClipboardOverlay] for a moment, which reads the clipboard while focused and offers it. The overlay needs "Display
+ * over other apps" as well. Runs while [org.andromeda.link.presence.PresenceService] does; a reader that ends is
+ * started again after [RETRY_MS], doubling up to [RETRY_MAX_MS].
  */
 class ClipboardWatcher(
     private val context: Context,
@@ -33,6 +38,8 @@ class ClipboardWatcher(
     private var job: Job? = null
     private var process: Process? = null
     private var wanted = false
+
+    @Volatile private var retryMs = RETRY_MS
 
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
@@ -97,7 +104,24 @@ class ClipboardWatcher(
     }
 
     private suspend fun follow() {
+        try {
+            read()
+        } finally {
+            val ended = currentCoroutineContext()[Job]
+            scope.launch(Dispatchers.Main) {
+                delay(retryMs)
+                retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
+                if (wanted && job === ended) {
+                    stop()
+                    start()
+                }
+            }
+        }
+    }
+
+    private suspend fun read() {
         if (!LogAccess.overlay(context)) return
+        LogAccess.startHelper(context)
         // -T 1 starts at the newest line, so only denials from now on count.
         val logcat = LogAccess.logcat("-T", "1", "-v", "brief", "ClipboardService:E", "*:S")
         process = logcat
@@ -105,10 +129,18 @@ class ClipboardWatcher(
         try {
             logcat.inputStream.bufferedReader().useLines { lines ->
                 for (line in lines) {
-                    if (!kotlinx.coroutines.currentCoroutineContext().isActive) break
-                    if (denial in line) {
+                    if (!currentCoroutineContext().isActive) break
+                    val clip = ClipLine.parse(line)
+                    // Link's own copy of a desktop clip; it must stay clearable.
+                    if (clip != null && ClipboardSync.isFromDesktop(clip)) continue
+                    if (clip != null || line == ClipLine.OTHER || denial in line) {
+                        retryMs = RETRY_MS
                         sync.changedLocally()
-                        overlay.read()
+                        if (clip == null) {
+                            overlay.read()
+                        } else {
+                            scope.launch { sync.offer(clip).onFailure { Log.w("link", "Sending clipboard: ${it.message}") } }
+                        }
                     }
                 }
             }
@@ -121,6 +153,9 @@ class ClipboardWatcher(
     }
 
     companion object {
+        private const val RETRY_MS = 5_000L
+        private const val RETRY_MAX_MS = 5 * 60_000L
+
         fun granted(context: Context): Boolean = LogAccess.allowed(context) && LogAccess.overlayAllowed(context)
     }
 }

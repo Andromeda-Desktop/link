@@ -93,17 +93,19 @@ object LogAccess {
     fun helperPossible(): Boolean = helper() || shizuku() || root == true
 
     /**
-     * Starts [LogHelper] through Shizuku or root when it does not run, as the desktop does over adb; it then relays
-     * mirror input. Blocks like [logcat].
+     * Starts [LogHelper] through the picked Shizuku or root when it does not run, as the desktop does over adb; it then
+     * sends copies and relays mirror input. Blocks like [logcat].
      */
     fun startHelper(context: Context) {
         if (helper()) return
+        val pick = method.value
         val command =
             "CLASSPATH=${context.applicationInfo.sourceDir} app_process /system/bin ${LogHelper::class.java.name} " +
                 "${context.packageName} > /dev/null 2>&1 &"
         when {
-            shizuku() -> runCatching { (newProcess.invoke(null, arrayOf("sh", "-c", command), null, null) as Process).waitFor() }
-            hasSu() && rootShell() -> su(command)
+            pick.allows(Method.Shizuku) && shizuku() ->
+                runCatching { (newProcess.invoke(null, arrayOf("sh", "-c", command), null, null) as Process).waitFor() }
+            pick.allows(Method.Root) && hasSu() && rootShell() -> su(command)
         }
     }
 
@@ -118,19 +120,19 @@ object LogAccess {
     /** Blocks while the root manager asks the user the first time. */
     fun logcat(vararg args: String): Process {
         val pick = method.value
+        // The helper runs its own reader and sends only this app's copies or denial lines, whatever args asks for.
+        if (pick != Method.Android && helper()) {
+            val (input, output) = ParcelFileDescriptor.createPipe()
+            val writer = ParcelFileDescriptor.AutoCloseOutputStream(output)
+            helperReaders += writer
+            return HelperProcess(input, writer)
+        }
         if (pick.allows(Method.Shizuku) && shizuku()) {
             return newProcess.invoke(null, arrayOf("logcat", *args), null, null) as Process
         }
         if (pick.allows(Method.Root) && hasSu() && rootShell()) {
             val logcat = (listOf("logcat") + args).joinToString(" ") { "'$it'" }
             return RootProcess(ProcessBuilder("su", "-c", "echo \$\$; exec $logcat").start())
-        }
-        // The helper runs its own logcat and sends only this app's denial lines, whatever args asks for.
-        if (pick.allows(Method.Helper) && helper()) {
-            val (input, output) = ParcelFileDescriptor.createPipe()
-            val writer = ParcelFileDescriptor.AutoCloseOutputStream(output)
-            helperReaders += writer
-            return HelperProcess(input, writer)
         }
         return ProcessBuilder("logcat", *args).start()
     }
