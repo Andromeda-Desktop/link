@@ -10,6 +10,8 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "zvariant 5, through ksni; no ksni on zbus 6 yet" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names 4, through ksni; no ksni on zbus 6 yet" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5, through ksni; no ksni on zbus 6 yet" },
+  # chrono is unmaintained, not vulnerable; only cddl (link-phone's schema check) uses it, in its newest release.
+  { id = "RUSTSEC-2026-0543", reason = "chrono, through cddl 0.10.7; no cddl without it yet" },
 ]
 
 [licenses]
