@@ -19,6 +19,7 @@ pub mod path;
 pub mod phone;
 pub mod reach;
 pub mod session;
+pub mod slot;
 pub mod store;
 pub mod stream;
 pub mod tls;

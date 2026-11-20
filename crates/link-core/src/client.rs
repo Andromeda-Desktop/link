@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd, LATE_HASH,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, HotspotEnd, LATE_HASH,
     MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
     NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot,
     PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL,
@@ -21,7 +21,7 @@ use tokio::time::Instant;
 
 use crate::browse;
 use crate::camera::{self, Camera};
-use crate::hotspot::{self, UPGRADE_TIMEOUT};
+use crate::hotspot::UPGRADE_TIMEOUT;
 use crate::identity::DeviceId;
 use crate::inbox::Inbox;
 use crate::link_state::LinkState;
@@ -32,6 +32,7 @@ use crate::outbox::{self, Outbox, OutboxActor, Seen, Sent};
 use crate::phone::{self, PairTarget, Phone};
 use crate::reach::{self, Reached, Via};
 use crate::session::{self, Route, SessionEvent, SessionHandle};
+use crate::slot::{self, Effect, Kind, Slot};
 use crate::store::{Feature, Grants, Peer, feature_of};
 use crate::stream::{BLUETOOTH_FILE_LIMIT, BLUETOOTH_UPGRADE_ABOVE};
 use crate::tls::ServerPin;
@@ -234,21 +235,15 @@ pub struct ClientActor {
     /// Redials looking for an IP path, off the actor: a desktop that does not answer takes seconds to give up on.
     redials: JoinSet<(DeviceId, Duration, Result<Reached, Error>)>,
     redialing: HashSet<DeviceId>,
-    /// The desktop the phone's hotspot runs for; one at a time.
-    hotspot_for: Option<DeviceId>,
+    /// The phone's group or hotspot, for one desktop at a time.
+    slot: Slot,
     /// Desktops whose live session runs over the phone's hotspot.
     on_hotspot: HashSet<DeviceId>,
-    hotspot_started: JoinSet<(DeviceId, std::io::Result<Hotspot>)>,
-    /// When the hotspot stops unless a transfer starts first.
-    hotspot_idle_at: Option<Instant>,
+    /// Provider starts, each ending once its credentials went to the desktop.
+    starting: JoinSet<(DeviceId, Kind, Result<(), String>)>,
     upgrades: HashMap<DeviceId, Vec<oneshot::Sender<Result<(), Error>>>>,
     /// Desktops whose Bluetooth session already failed to move to a Wi-Fi Direct group.
     wifi_direct_failed: HashSet<DeviceId>,
-    /// Whether the hotspot slot holds a Wi-Fi Direct group rather than the hotspot.
-    slot_is_group: bool,
-    /// While that group is forming: when it gives up for the hotspot.
-    wifi_direct_until: Option<Instant>,
-    wifi_direct_started: JoinSet<(DeviceId, Result<(), String>)>,
     /// Browse and contacts requests being answered, at most [`browse::MAX_IN_FLIGHT`].
     browsing: JoinSet<()>,
     messages: Option<Arc<dyn Messages>>,
@@ -306,15 +301,11 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         probes: JoinSet::new(),
         redials: JoinSet::new(),
         redialing: HashSet::new(),
-        hotspot_for: None,
+        slot: Slot::Idle,
         on_hotspot: HashSet::new(),
-        hotspot_started: JoinSet::new(),
-        hotspot_idle_at: None,
+        starting: JoinSet::new(),
         upgrades: HashMap::new(),
         wifi_direct_failed: HashSet::new(),
-        slot_is_group: false,
-        wifi_direct_until: None,
-        wifi_direct_started: JoinSet::new(),
         browsing: JoinSet::new(),
         messages: None,
         camera: None,
@@ -600,20 +591,16 @@ impl ClientActor {
                 () = sleep_until(next_status) => self.send_status().await,
                 () = sleep_until(self.next_probe) => self.probe(),
                 Some(_) = self.browsing.join_next() => {}
-                () = sleep_until(self.hotspot_idle_at) => self.end_hotspot(None).await,
-                Some(joined) = self.hotspot_started.join_next() => match joined {
-                    Ok((id, started)) => self.hotspot_up(id, started).await,
-                    Err(join) => log::warn!("hotspot task: {join}"),
-                },
-                () = sleep_until(self.wifi_direct_until) => {
-                    self.fall_back_to_hotspot("the Wi-Fi Direct group did not form in time").await;
-                }
-                Some(joined) = self.wifi_direct_started.join_next() => match joined {
-                    Ok((id, Err(reason))) if self.hotspot_for.as_ref() == Some(&id) => {
-                        self.fall_back_to_hotspot(&reason).await;
+                () = sleep_until(self.slot.deadline()) => self.slot_event(slot::Event::Tick).await,
+                Some(started) = self.starting.join_next() => match started {
+                    Ok((id, kind, Err(reason))) => {
+                        log::info!("{id}: no {kind:?}: {reason}");
+                        self.slot_event(slot::Event::Failed { peer: id, kind, reason }).await;
                     }
+                    // Started after the slot moved on, so the stop it got may have run first.
+                    Ok((_, kind, Ok(()))) if self.slot.kind() != Some(kind) => self.stop_provider(kind),
                     Ok(_) => {}
-                    Err(join) => log::warn!("Wi-Fi Direct task: {join}"),
+                    Err(join) => log::warn!("network start task: {join}"),
                 },
                 Some(joined) = self.redials.join_next() => match joined {
                     Ok((id, delay, reached)) => self.redialed(id, delay, reached).await,
@@ -782,9 +769,7 @@ impl ClientActor {
             return;
         }
         if let TransferEvent::Busy { peer, busy } = &event {
-            if self.hotspot_for.as_ref() == Some(peer) {
-                self.hotspot_idle_at = (!*busy).then(|| Instant::now() + hotspot::IDLE);
-            }
+            drop(self.slot.apply(slot::Event::Busy { peer: peer.clone(), busy: *busy }, Instant::now()));
             if *busy {
                 self.busy.insert(peer.clone());
             } else {
@@ -880,18 +865,14 @@ impl ClientActor {
         } else {
             log::info!("{id}: connected at {}", addr.map_or_else(String::new, |addr| addr.to_string()));
             self.on_bluetooth.remove(&id);
-            if via == Via::WifiDirect {
-                self.wifi_direct_until = None;
-            }
             if matches!(via, Via::Hotspot | Via::WifiDirect) {
                 self.on_hotspot.insert(id.clone());
             } else {
                 self.on_hotspot.remove(&id);
             }
             self.finish_upgrades(&id, &Ok(()));
-            if self.hotspot_for.as_ref() == Some(&id) && !self.is_busy(&id) {
-                self.hotspot_idle_at = Some(Instant::now() + hotspot::IDLE);
-            }
+            let busy = self.is_busy(&id);
+            self.slot_event(slot::Event::Adopted { peer: id.clone(), busy }).await;
         }
         if let Some(status) = self.status {
             let (handle, status) = (handle.clone(), self.status_message(&id, status));
@@ -945,9 +926,7 @@ impl ClientActor {
         self.mirroring.remove(&id);
         self.on_bluetooth.remove(&id);
         self.on_hotspot.remove(&id);
-        if self.hotspot_for.as_ref() == Some(&id) {
-            self.stop_hotspot();
-        }
+        self.slot_event(slot::Event::SessionEnded { peer: id.clone() }).await;
         let reason = match &result {
             Ok(()) => "done".to_owned(),
             Err(error) => error.to_string(),
@@ -1095,97 +1074,78 @@ impl ClientActor {
         }
     }
 
-    /// Starts the hotspot for `id`'s Bluetooth session, off the actor; its credentials go out once it is up.
+    /// Starts the group or hotspot for `id`'s Bluetooth session, off the actor; its credentials go out once it is up.
     async fn start_hotspot(&mut self, id: DeviceId) {
         if !self.on_bluetooth.contains(&id) {
             self.finish_upgrades(&id, &Ok(()));
             return;
         }
-        if self.hotspot_for.as_ref() == Some(&id) {
-            return;
-        }
         let needs = |grants: Grants| grants.files || grants.browse || grants.screen;
-        let wanted = self.phone.desktops().iter().any(|peer| peer.id == id && needs(peer.grants));
-        let refusal = match (self.hotspot_for.is_some(), self.phone.hotspot()) {
-            _ if !wanted => Some("its files, browse, and screen switches are off"),
-            (true, _) => Some("the hotspot serves another desktop"),
-            (false, _) if self.try_wifi_direct(&id) => None,
-            (false, None) => Some("this phone cannot start a hotspot"),
-            (false, Some(provider)) => {
-                self.hotspot_for = Some(id.clone());
-                let for_id = id.clone();
-                self.hotspot_started.spawn_blocking(move || (for_id, provider.start()));
-                None
-            }
-        };
-        if let Some(reason) = refusal {
-            self.tell_hotspot_end(&id, Some(reason)).await;
+        if !self.phone.desktops().iter().any(|peer| peer.id == id && needs(peer.grants)) {
+            self.tell_hotspot_end(&id, Some("its files, browse, and screen switches are off")).await;
             self.finish_upgrades(&id, &Err(Error::TooLargeForBluetooth));
+            return;
+        }
+        let joins = self.phone.desktops().iter().any(|peer| peer.id == id && peer.has(WIFI_DIRECT_JOIN));
+        let group = joins && self.phone.wifi_direct().is_some() && !self.wifi_direct_failed.contains(&id);
+        let hotspot = self.phone.hotspot().is_some();
+        self.slot_event(slot::Event::Request { peer: id, group, hotspot }).await;
+    }
+
+    /// Applies `event` to the slot and carries out its effects for the desktop it concerns.
+    async fn slot_event(&mut self, event: slot::Event) {
+        let Some(peer) = event.peer().or(self.slot.peer()).cloned() else { return };
+        let Ok(effects) = self.slot.apply(event, Instant::now()) else { return };
+        for effect in effects {
+            match effect {
+                Effect::Start(kind) => self.start_provider(&peer, kind),
+                Effect::Stop(kind) => {
+                    if kind == Kind::Group && self.slot.kind() == Some(Kind::Hotspot) {
+                        log::info!("{peer}: the Wi-Fi Direct group failed, trying the hotspot");
+                        self.wifi_direct_failed.insert(peer.clone());
+                    }
+                    self.stop_provider(kind);
+                    if self.on_hotspot.contains(&peer)
+                        && let Some(handle) = self.sessions.get(&peer)
+                    {
+                        handle.close(CloseCode::Done);
+                    }
+                }
+                Effect::Tell(reason) => self.tell_hotspot_end(&peer, reason.as_deref()).await,
+                Effect::Fail(reason) => self.finish_upgrades(&peer, &Err(Error::Hotspot(reason))),
+            }
         }
     }
 
-    /// Takes the hotspot slot for a Wi-Fi Direct group with `id`, when both sides can: the phone creates the group as
-    /// its owner and sends its credentials, so neither side negotiates and Android asks the user nothing.
-    fn try_wifi_direct(&mut self, id: &DeviceId) -> bool {
-        let joins = self.phone.desktops().iter().any(|peer| peer.id == *id && peer.has(WIFI_DIRECT_JOIN));
-        let (Some(provider), Some(handle)) = (self.phone.wifi_direct(), self.sessions.get(id).cloned()) else {
-            return false;
-        };
-        if !joins || self.wifi_direct_failed.contains(id) {
-            return false;
-        }
-        log::info!("{id}: creating a Wi-Fi Direct group");
-        self.hotspot_for = Some(id.clone());
-        self.slot_is_group = true;
-        self.wifi_direct_until = Some(Instant::now() + hotspot::WIFI_DIRECT_TIMEOUT);
+    /// Starts `kind` for `id` off the actor, then sends the desktop its credentials. A group is created by the phone as
+    /// its owner, so neither side negotiates and Android asks the user nothing.
+    fn start_provider(&mut self, id: &DeviceId, kind: Kind) {
+        let handle = self.sessions.get(id).cloned();
+        let (group, hotspot) = (self.phone.wifi_direct(), self.phone.hotspot());
         let id = id.clone();
-        self.wifi_direct_started.spawn(async move {
+        self.starting.spawn(async move {
             let started = async {
-                let group = tokio::task::spawn_blocking(move || provider.start()).await.map_err(text)?.map_err(text)?;
-                handle.send(Message::WifiDirect(group)).await.map_err(text)
+                let handle = handle.ok_or_else(|| "the Bluetooth session ended".to_owned())?;
+                let none = || "no provider".to_owned();
+                let network = match kind {
+                    Kind::Group => {
+                        let provider = group.ok_or_else(none)?;
+                        tokio::task::spawn_blocking(move || provider.start()).await
+                    }
+                    Kind::Hotspot => {
+                        let provider = hotspot.ok_or_else(none)?;
+                        tokio::task::spawn_blocking(move || provider.start()).await
+                    }
+                };
+                let network = network.map_err(text)?.map_err(text)?;
+                let message = match kind {
+                    Kind::Group => Message::WifiDirect(network),
+                    Kind::Hotspot => Message::Hotspot(network),
+                };
+                handle.send(message).await.map_err(text)
             };
-            (id, started.await)
+            (id, kind, started.await)
         });
-        true
-    }
-
-    /// The Wi-Fi Direct group failed: the slot goes to the hotspot, and this session does not try a group again.
-    async fn fall_back_to_hotspot(&mut self, reason: &str) {
-        let Some(id) = self.hotspot_for.clone() else { return };
-        if self.wifi_direct_until.take().is_none() {
-            return;
-        }
-        log::info!("{id}: Wi-Fi Direct failed, trying the hotspot: {reason}");
-        self.slot_is_group = false;
-        self.stop_wifi_direct_provider();
-        self.wifi_direct_failed.insert(id.clone());
-        self.hotspot_for = None;
-        self.start_hotspot(id).await;
-    }
-
-    async fn hotspot_up(&mut self, id: DeviceId, started: std::io::Result<Hotspot>) {
-        if self.hotspot_for.as_ref() != Some(&id) {
-            if started.is_ok() {
-                self.stop_hotspot_provider();
-            }
-            return;
-        }
-        let sent = match started {
-            Ok(hotspot) => match self.sessions.get(&id) {
-                Some(handle) => handle.send(Message::Hotspot(hotspot)).await.map_err(|error| error.to_string()),
-                None => Err("the Bluetooth session ended".to_owned()),
-            },
-            Err(error) => {
-                self.hotspot_for = None;
-                Err(error.to_string())
-            }
-        };
-        if let Err(reason) = sent {
-            log::info!("{id}: no hotspot: {reason}");
-            self.stop_hotspot();
-            self.tell_hotspot_end(&id, Some(&reason)).await;
-            self.finish_upgrades(&id, &Err(Error::Hotspot(reason)));
-        }
     }
 
     /// The desktop joined the hotspot; dialling the address it reported moves the session there.
@@ -1195,10 +1155,11 @@ impl ClientActor {
         else {
             return;
         };
-        if self.hotspot_for.as_ref() != Some(&id) {
-            return;
-        }
-        let via = if self.slot_is_group { Via::WifiDirect } else { Via::Hotspot };
+        let via = match self.slot.kind() {
+            Some(Kind::Group) if self.slot.serves(&id) => Via::WifiDirect,
+            Some(Kind::Hotspot) if self.slot.serves(&id) => Via::Hotspot,
+            _ => return,
+        };
         let dialer = self.phone.dialer().clone();
         let session = self.sessions.get(&id).cloned();
         self.probes.spawn(async move {
@@ -1217,14 +1178,6 @@ impl ClientActor {
         });
     }
 
-    /// Nothing moved through the hotspot for [`hotspot::IDLE`], or it failed: the desktop is told, then it stops.
-    async fn end_hotspot(&mut self, reason: Option<&str>) {
-        if let Some(id) = self.hotspot_for.clone() {
-            self.tell_hotspot_end(&id, reason).await;
-        }
-        self.stop_hotspot();
-    }
-
     async fn tell_hotspot_end(&self, id: &DeviceId, reason: Option<&str>) {
         let Some(handle) = self.sessions.get(id) else { return };
         let reason = reason.map(|reason| reason.chars().take(link_proto::message::MAX_REASON_LEN).collect());
@@ -1233,33 +1186,18 @@ impl ClientActor {
         }
     }
 
-    /// Stops the hotspot. A session running over it is closed at once, so the redial falls back to Bluetooth now
-    /// instead of after the idle timeout.
-    fn stop_hotspot(&mut self) {
-        self.hotspot_idle_at = None;
-        self.wifi_direct_until = None;
-        let Some(id) = self.hotspot_for.take() else { return };
-        if std::mem::take(&mut self.slot_is_group) {
-            self.stop_wifi_direct_provider();
-        } else {
-            self.stop_hotspot_provider();
-        }
-        if self.on_hotspot.contains(&id)
-            && let Some(handle) = self.sessions.get(&id)
-        {
-            handle.close(CloseCode::Done);
-        }
-    }
-
-    fn stop_hotspot_provider(&self) {
-        if let Some(provider) = self.phone.hotspot() {
-            drop(tokio::task::spawn_blocking(move || provider.stop()));
-        }
-    }
-
-    fn stop_wifi_direct_provider(&self) {
-        if let Some(provider) = self.phone.wifi_direct() {
-            drop(tokio::task::spawn_blocking(move || provider.stop()));
+    fn stop_provider(&self, kind: Kind) {
+        match kind {
+            Kind::Group => {
+                if let Some(provider) = self.phone.wifi_direct() {
+                    drop(tokio::task::spawn_blocking(move || provider.stop()));
+                }
+            }
+            Kind::Hotspot => {
+                if let Some(provider) = self.phone.hotspot() {
+                    drop(tokio::task::spawn_blocking(move || provider.stop()));
+                }
+            }
         }
     }
 
@@ -1294,9 +1232,7 @@ impl ClientActor {
             }
             return;
         }
-        if self.hotspot_for.as_ref() == Some(from) && self.hotspot_idle_at.is_some() {
-            self.hotspot_idle_at = Some(Instant::now() + hotspot::IDLE);
-        }
+        drop(self.slot.apply(slot::Event::Used { peer: from.clone() }, Instant::now()));
         drop(self.browsing.spawn(browse::answer(self.phone.browse_roots().clone(), handle, request)));
     }
 
@@ -1427,9 +1363,8 @@ impl ClientActor {
         } else {
             self.mirroring.remove(id);
         }
-        if self.hotspot_for.as_ref() == Some(id) {
-            self.hotspot_idle_at = (!self.is_busy(id)).then(|| Instant::now() + hotspot::IDLE);
-        }
+        let busy = self.is_busy(id);
+        drop(self.slot.apply(slot::Event::Busy { peer: id.clone(), busy }, Instant::now()));
     }
 
     /// Whether a lost session to `id` should be redialled.
@@ -1501,19 +1436,14 @@ impl ClientActor {
                     }
                 }
             }
-            SessionEvent::Message { from, message: Message::HotspotEnd(end) }
-                if self.hotspot_for.as_ref() == Some(&from) && self.wifi_direct_until.is_some() =>
-            {
-                self.fall_back_to_hotspot(end.reason.as_deref().unwrap_or("the desktop could not join the group"))
-                    .await;
-            }
             SessionEvent::Message { from, message: Message::HotspotEnd(end) } => {
-                if self.hotspot_for.as_ref() == Some(&from) {
-                    log::info!("{from}: the desktop ended the hotspot: {:?}", end.reason);
-                    self.stop_hotspot();
-                    let reason = end.reason.unwrap_or_else(|| "the desktop left it".to_owned());
-                    self.finish_upgrades(&from, &Err(Error::Hotspot(reason)));
-                }
+                let what = match self.slot.kind() {
+                    Some(Kind::Group) => "Wi-Fi Direct group",
+                    Some(Kind::Hotspot) | None => "hotspot",
+                };
+                log::info!("{from}: the desktop ended the {what}: {:?}", end.reason);
+                let reason = end.reason.unwrap_or_else(|| "the desktop left it".to_owned());
+                self.slot_event(slot::Event::DesktopEnded { peer: from, reason }).await;
             }
             SessionEvent::Received { from, share } => {
                 if self.seen.first(&from, &share) {
