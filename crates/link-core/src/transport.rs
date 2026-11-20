@@ -10,6 +10,7 @@ use rustls::server::AlwaysResolvesServerRawPublicKeys;
 
 use crate::Error;
 use crate::identity::Identity;
+use crate::path::PathSocket;
 use crate::tls::{self, ServerPin};
 
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -55,8 +56,7 @@ pub fn server_endpoint(identity: &Identity, addr: SocketAddr) -> Result<quinn::E
     Ok(punchable_server_endpoint(identity, addr)?.0)
 }
 
-/// A server endpoint and a [`Puncher`] sending from its socket.
-pub fn punchable_server_endpoint(identity: &Identity, addr: SocketAddr) -> Result<(quinn::Endpoint, Puncher), Error> {
+fn server_config(identity: &Identity) -> Result<quinn::ServerConfig, Error> {
     let resolver = AlwaysResolvesServerRawPublicKeys::new(tls::certified_key(identity)?);
     let mut crypto = rustls::ServerConfig::builder_with_provider(tls13_provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
@@ -67,6 +67,23 @@ pub fn punchable_server_endpoint(identity: &Identity, addr: SocketAddr) -> Resul
     let crypto = QuicServerConfig::try_from(crypto).map_err(|_| Error::BadKey)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     config.transport_config(transport_config(Some(KEEP_ALIVE)));
+    Ok(config)
+}
+
+/// A server endpoint on a [`PathSocket`], so phones reach it over UDP and message links alike.
+pub fn path_server_endpoint(identity: &Identity, socket: Arc<PathSocket>) -> Result<quinn::Endpoint, Error> {
+    let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
+    Ok(quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(server_config(identity)?),
+        socket,
+        runtime,
+    )?)
+}
+
+/// A server endpoint and a [`Puncher`] sending from its socket.
+pub fn punchable_server_endpoint(identity: &Identity, addr: SocketAddr) -> Result<(quinn::Endpoint, Puncher), Error> {
+    let config = server_config(identity)?;
     let socket = std::net::UdpSocket::bind(addr)?;
     let puncher = Puncher(Arc::new(socket.try_clone()?));
     let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
@@ -100,6 +117,14 @@ impl Dialer {
         let dual_stack = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0));
         let endpoint =
             quinn::Endpoint::client(dual_stack).or_else(|_| quinn::Endpoint::client(([0, 0, 0, 0], 0).into()))?;
+        Ok(Self { endpoint, config: client_config(identity)? })
+    }
+
+    /// A dialer on a [`PathSocket`], so the phone moves one connection between UDP and message links.
+    pub fn on_path(identity: &Identity, socket: Arc<PathSocket>) -> Result<Self, Error> {
+        let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
+        let endpoint =
+            quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, socket, runtime)?;
         Ok(Self { endpoint, config: client_config(identity)? })
     }
 

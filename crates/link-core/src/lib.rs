@@ -13,6 +13,7 @@ pub mod mirror;
 pub mod mux;
 pub mod net;
 pub mod pairing;
+pub mod path;
 pub mod phone;
 pub mod reach;
 pub mod session;
