@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod hotspot;
 pub mod identity;
 pub mod inbox;
+pub mod link_state;
 pub mod messages;
 pub mod mirror;
 pub mod mux;

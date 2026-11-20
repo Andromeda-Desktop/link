@@ -1517,6 +1517,10 @@ fn unique(ids: impl Iterator<Item = u64>) -> bool {
 /// `ping`; older peers close a session on those types.
 pub const CONTROL: &str = "feature:control";
 
+/// Both hellos carry this when the peer takes `heartbeat` and `heartbeat-ack`; older peers close a session on those
+/// types.
+pub const HEARTBEAT: &str = "feature:heartbeat";
+
 /// A desktop's hello carries this when it takes `presenting`; older desktops close a session on the type.
 pub const PRESENTING: &str = "feature:presenting";
 
@@ -1837,6 +1841,24 @@ pub struct RunCommand {
     pub id: String,
 }
 
+/// Either way, only to a peer whose hello carries [`HEARTBEAT`]: proof the session still moves both ways. The receiver
+/// answers with [`HeartbeatAck`] at once and may treat the sender as gone once `next_ms` plus a grace have passed
+/// without another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Heartbeat {
+    pub seq: u64,
+    /// When the sender's next heartbeat is due, in milliseconds.
+    pub next_ms: u32,
+}
+
+/// Either way: the answer to the [`Heartbeat`] with this `seq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatAck {
+    pub seq: u64,
+}
+
 /// Either way: a ping the user sent, shown as a notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1955,6 +1977,8 @@ pub enum Message {
     Commands(Commands),
     RunCommand(RunCommand),
     Ping(Ping),
+    Heartbeat(Heartbeat),
+    HeartbeatAck(HeartbeatAck),
     Presenting(Presenting),
     Capabilities(Capabilities),
     DesktopStatus(DesktopStatus),
@@ -2043,6 +2067,8 @@ impl Message {
             Self::Commands(_) => "commands",
             Self::RunCommand(_) => "run-command",
             Self::Ping(_) => "ping",
+            Self::Heartbeat(_) => "heartbeat",
+            Self::HeartbeatAck(_) => "heartbeat-ack",
             Self::Presenting(_) => "presenting",
             Self::Capabilities(_) => "capabilities",
             Self::DesktopStatus(_) => "desktop-status",
@@ -2127,6 +2153,8 @@ impl Message {
             Self::Commands(body) => Value::serialized(body),
             Self::RunCommand(body) => Value::serialized(body),
             Self::Ping(body) => Value::serialized(body),
+            Self::Heartbeat(body) => Value::serialized(body),
+            Self::HeartbeatAck(body) => Value::serialized(body),
             Self::Presenting(body) => Value::serialized(body),
             Self::Capabilities(body) => Value::serialized(body),
             Self::DesktopStatus(body) => Value::serialized(body),
@@ -2237,6 +2265,8 @@ impl Message {
             "commands" => Self::Commands(body.deserialized()?),
             "run-command" => Self::RunCommand(body.deserialized()?),
             "ping" => Self::Ping(body.deserialized()?),
+            "heartbeat" => Self::Heartbeat(body.deserialized()?),
+            "heartbeat-ack" => Self::HeartbeatAck(body.deserialized()?),
             "presenting" => Self::Presenting(body.deserialized()?),
             "capabilities" => Self::Capabilities(body.deserialized()?),
             "desktop-status" => Self::DesktopStatus(body.deserialized()?),
@@ -2260,6 +2290,8 @@ impl Message {
             | Self::MirrorRequest
             | Self::MirrorKeyframe
             | Self::ShareAck(_)
+            | Self::Heartbeat(_)
+            | Self::HeartbeatAck(_)
             | Self::Ring(_)
             | Self::Ringing(_)
             | Self::Presenting(_)

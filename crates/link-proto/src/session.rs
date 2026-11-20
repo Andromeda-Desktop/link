@@ -142,6 +142,8 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::Ring(_)
         | Message::Ringing(_)
         | Message::Ping(_)
+        | Message::Heartbeat(_)
+        | Message::HeartbeatAck(_)
         | Message::SystemCommand(_)
         | Message::SystemResult(_) => true,
         _ => false,

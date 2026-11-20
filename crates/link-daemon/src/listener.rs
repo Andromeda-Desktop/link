@@ -8,8 +8,8 @@ use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
-    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_ITEMS, CONTROL, MESSAGES, MIRROR_STREAMS,
-    NOTIFICATION_SYNC, PRESENTING, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL,
+    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_ITEMS, CONTROL, HEARTBEAT, MESSAGES,
+    MIRROR_STREAMS, NOTIFICATION_SYNC, PRESENTING, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL,
     WIFI_DIRECT_JOIN,
 };
 use link_core::proto::session::Role;
@@ -187,7 +187,9 @@ async fn serve(
     context: &Context,
 ) -> Result<(), Error> {
     let id = peer.device_id();
-    let (handle, actor) = start_session(connection.clone(), control, Role::Desktop, context.hub.route(id.clone()));
+    let mut route = context.hub.route(id.clone());
+    route.heartbeat = hello.addresses.iter().any(|entry| entry == HEARTBEAT);
+    let (handle, actor) = start_session(connection.clone(), control, Role::Desktop, route);
     context.hub.connected(id, hello, handle).await;
     actor.run().await
 }
@@ -218,6 +220,7 @@ impl Context {
                 CLIP_ITEMS,
                 MIRROR_STREAMS,
                 SCREEN_SHAPE,
+                HEARTBEAT,
             ]
             .map(str::to_owned),
         );

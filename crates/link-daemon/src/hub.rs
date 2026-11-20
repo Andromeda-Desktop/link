@@ -713,7 +713,7 @@ impl Hub {
             SessionEvent::SystemCommand { from, id, command } if self.sessions.contains_key(&from) => {
                 self.on_system_command(from, id, command).await;
             }
-            SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
+            SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } | SessionEvent::Link { .. } => {}
             SessionEvent::Unpaired { from } => {
                 log::info!("{from} unpaired itself");
                 self.sessions.remove(&from);
@@ -2033,7 +2033,7 @@ impl HubHandle {
 
     /// Where a session delivers what its peer sends.
     pub fn route(&self, peer: DeviceId) -> Route {
-        Route { peer, events: self.session_events.clone(), transfers: self.transfers.clone() }
+        Route { peer, events: self.session_events.clone(), transfers: self.transfers.clone(), heartbeat: false }
     }
 
     pub async fn desktop_player(&self, player: MediaPlayer) {

@@ -7,14 +7,17 @@ use std::pin::pin;
 use link_proto::CloseCode;
 use link_proto::limit::Limits;
 use link_proto::message::{
-    Envelope, HotspotEnd, Message, OfferReply, RefuseReason, Share, ShareAck, Status, SystemCommand,
+    Envelope, Heartbeat, HeartbeatAck, HotspotEnd, Message, OfferReply, RefuseReason, Share, ShareAck, Status,
+    SystemCommand,
 };
 use link_proto::session::{Inbound, Role, SessionState};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use crate::Error;
 use crate::control::{Control, ControlReader, ControlWriter, STEP_TIMEOUT, Tap};
 use crate::identity::DeviceId;
+use crate::link_state::{ACTIVE_EVERY, ACTIVE_FOR, IDLE_EVERY, LinkEvent, LinkState, Liveness};
 use crate::transfer::TransferHandle;
 use crate::wire::Connection;
 
@@ -45,6 +48,11 @@ pub enum SessionEvent {
         from: DeviceId,
         status: Status,
     },
+    /// The session turned live or degraded; [`SessionHandle::link`] has the state at any time.
+    Link {
+        from: DeviceId,
+        state: LinkState,
+    },
 }
 
 /// Where a session delivers what its peer sends.
@@ -52,12 +60,15 @@ pub struct Route {
     pub peer: DeviceId,
     pub events: mpsc::Sender<SessionEvent>,
     pub transfers: TransferHandle,
+    /// The peer's hello carried `HEARTBEAT`.
+    pub heartbeat: bool,
 }
 
 enum Command {
     Share { share: Share, reply: oneshot::Sender<Result<(), Error>> },
     Unpair { reply: oneshot::Sender<Result<(), Error>> },
     Send { message: Message, reply: oneshot::Sender<Result<u64, Error>> },
+    Wake,
 }
 
 /// Reaches a running session. Cheap to clone; every clone stops working when the session ends.
@@ -66,6 +77,7 @@ pub struct SessionHandle {
     commands: mpsc::Sender<Command>,
     connection: Connection,
     tap: Option<Tap>,
+    liveness: watch::Receiver<Liveness>,
 }
 
 pub struct SessionActor {
@@ -82,15 +94,50 @@ struct Live {
     limits: Option<Limits>,
     route: Route,
     waiting: HashMap<u64, oneshot::Sender<Result<(), Error>>>,
+    beat: Beat,
+}
+
+/// The heartbeat side of a session: the phone sends, both sides answer and track the peer's promise.
+struct Beat {
+    liveness: watch::Sender<Liveness>,
+    /// Heartbeats are on: the peer has the feature.
+    on: bool,
+    /// This side sends heartbeats: the phone.
+    sends: bool,
+    seq: u64,
+    /// Our heartbeats not yet answered, by seq.
+    sent: HashMap<u64, Instant>,
+    due: Instant,
+    active_until: Instant,
+    /// Whether the last [`SessionEvent::Link`] said live.
+    reported_live: bool,
 }
 
 /// Spawns nothing: the caller runs the actor in a task it owns and keeps the handle.
 pub fn session(connection: Connection, control: Control, role: Role, route: Route) -> (SessionHandle, SessionActor) {
     let (commands_tx, commands) = mpsc::channel(32);
-    let handle = SessionHandle { commands: commands_tx, connection: connection.clone(), tap: control.tap() };
+    let now = Instant::now();
+    let (liveness, liveness_rx) = watch::channel(Liveness::new(now, route.heartbeat));
+    let handle = SessionHandle {
+        commands: commands_tx,
+        connection: connection.clone(),
+        tap: control.tap(),
+        liveness: liveness_rx,
+    };
     let (reader, writer) = control.split();
     let limits = (role == Role::Desktop).then(Limits::default);
-    let live = Live { connection, writer, state: SessionState::new(role), limits, route, waiting: HashMap::new() };
+    let beat = Beat {
+        liveness,
+        on: route.heartbeat,
+        sends: route.heartbeat && role == Role::Phone,
+        seq: 0,
+        sent: HashMap::new(),
+        due: now,
+        active_until: now + ACTIVE_FOR,
+        reported_live: true,
+    };
+    let live =
+        Live { connection, writer, state: SessionState::new(role), limits, route, waiting: HashMap::new(), beat };
     (handle, SessionActor { reader, commands, live })
 }
 
@@ -140,6 +187,19 @@ impl SessionHandle {
         self.connection.is_live()
     }
 
+    /// The session's liveness now; what every "connected" display reads.
+    pub fn link(&self) -> LinkState {
+        if !self.connection.is_live() {
+            return LinkState::Closed;
+        }
+        self.liveness.borrow().view(Instant::now())
+    }
+
+    /// Something on this side wants a fresh answer soon (the app came to the front): heartbeats go active at once.
+    pub fn wake(&self) {
+        drop(self.commands.try_send(Command::Wake));
+    }
+
     pub fn stable_id(&self) -> usize {
         self.connection.stable_id()
     }
@@ -161,31 +221,123 @@ impl SessionActor {
         let (inbox_tx, mut inbox) = mpsc::channel(8);
         let mut reading = pin!(reader.pump(inbox_tx));
         let connection = live.connection.clone();
-        loop {
-            tokio::select! {
-                ended = &mut reading => return ended.and(Err(Error::StreamEnded)),
-                Some(envelope) = inbox.recv() => {
-                    if live.on_envelope(envelope).await? {
-                        live.connection.close(CloseCode::Done);
-                        return Ok(());
+        let result = async {
+            loop {
+                let timer = live.beat.wake_at().map_or(far_future(), Instant::into_std);
+                tokio::select! {
+                    ended = &mut reading => return ended.and(Err(Error::StreamEnded)),
+                    Some(envelope) = inbox.recv() => {
+                        if live.on_envelope(envelope).await? {
+                            live.connection.close(CloseCode::Done);
+                            return Ok(());
+                        }
                     }
-                }
-                Some(command) = commands.recv() => live.on_command(command).await?,
-                stream = connection.accept_uni() => {
-                    if !live.route.transfers.stream(live.route.peer.clone(), stream?) {
-                        return Err(Error::Flooded);
+                    Some(command) = commands.recv() => live.on_command(command).await?,
+                    stream = connection.accept_uni() => {
+                        if !live.route.transfers.stream(live.route.peer.clone(), stream?) {
+                            return Err(Error::Flooded);
+                        }
                     }
+                    () = tokio::time::sleep_until(timer.into()) => live.on_timer().await?,
                 }
             }
         }
+        .await;
+        live.beat.apply(LinkEvent::Close, Instant::now());
+        result
+    }
+}
+
+fn far_future() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(86_400)
+}
+
+impl Beat {
+    fn interval(&self, now: Instant) -> std::time::Duration {
+        if now < self.active_until { ACTIVE_EVERY } else { IDLE_EVERY }
+    }
+
+    /// The next time the actor must look: a heartbeat to send, or the peer's promise running out.
+    fn wake_at(&self) -> Option<Instant> {
+        let deadline = self.liveness.borrow().deadline().filter(|_| self.reported_live);
+        let beat = self.sends.then_some(self.due);
+        deadline.into_iter().chain(beat).min()
+    }
+
+    /// Traffic other than heartbeats: stay active, and probe at once when coming back from idle.
+    fn touch(&mut self, now: Instant) {
+        if self.sends && now >= self.active_until {
+            self.due = now;
+        }
+        self.active_until = now + ACTIVE_FOR;
+    }
+
+    fn apply(&mut self, event: LinkEvent, now: Instant) {
+        self.liveness.send_modify(|liveness| {
+            if liveness.apply(event, now).is_err() {
+                log::warn!("liveness: {event:?} rejected");
+            }
+        });
+    }
+
+    /// The live/degraded change since the last report, if any.
+    fn changed(&mut self, now: Instant) -> Option<LinkState> {
+        let state = self.liveness.borrow().view(now);
+        let live = matches!(state, LinkState::Live { .. });
+        (live != self.reported_live).then(|| {
+            self.reported_live = live;
+            state
+        })
     }
 }
 
 impl Live {
+    /// Sends a heartbeat when one is due, and reports a peer whose promise ran out.
+    async fn on_timer(&mut self) -> Result<(), Error> {
+        let now = Instant::now();
+        if self.beat.sends && now >= self.beat.due {
+            let next = self.beat.interval(now);
+            self.beat.seq += 1;
+            let seq = self.beat.seq;
+            let next_ms = u32::try_from(next.as_millis()).unwrap_or(u32::MAX);
+            self.writer.send(Message::Heartbeat(Heartbeat { seq, next_ms })).await?;
+            self.beat.sent.retain(|_, at| now.saturating_duration_since(*at) < IDLE_EVERY * 2);
+            self.beat.sent.insert(seq, now);
+            self.beat.due = now + next;
+        }
+        self.report(now).await;
+        Ok(())
+    }
+
+    async fn report(&mut self, now: Instant) {
+        if let Some(state) = self.beat.changed(now) {
+            log::info!("{}: link {state:?}", self.route.peer);
+            self.emit(SessionEvent::Link { from: self.route.peer.clone(), state }).await;
+        }
+    }
+
     /// Handles one message from the peer; true when the session is over.
     async fn on_envelope(&mut self, envelope: Envelope) -> Result<bool, Error> {
+        let now = Instant::now();
+        match envelope.message {
+            Message::Heartbeat(Heartbeat { seq, next_ms }) if self.beat.on => {
+                self.writer.send(Message::HeartbeatAck(HeartbeatAck { seq })).await?;
+                self.beat.apply(LinkEvent::Heard { next: std::time::Duration::from_millis(next_ms.into()) }, now);
+                self.report(now).await;
+                return Ok(false);
+            }
+            Message::HeartbeatAck(HeartbeatAck { seq }) if self.beat.on => {
+                if let Some(sent) = self.beat.sent.remove(&seq) {
+                    let next = self.beat.due.saturating_duration_since(now);
+                    self.beat.apply(LinkEvent::Acked { sent, next }, now);
+                    self.report(now).await;
+                }
+                return Ok(false);
+            }
+            _ => self.beat.touch(now),
+        }
         let peer = &self.route.peer;
-        let now = std::time::Instant::now();
+        let now = now.into_std();
         if let Some(limits) = &mut self.limits
             && !limits.admit(&envelope.message, now)
         {
@@ -234,7 +386,9 @@ impl Live {
     }
 
     async fn on_command(&mut self, command: Command) -> Result<(), Error> {
+        self.beat.touch(Instant::now());
         match command {
+            Command::Wake => {}
             Command::Share { share, reply } => {
                 let id = self.writer.send(Message::Share(share)).await?;
                 self.state.sent_share(id);
@@ -256,5 +410,94 @@ impl Live {
         if self.route.events.send(event).await.is_err() {
             log::debug!("{}: nobody receives session events", self.route.peer);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use link_proto::VERSION;
+    use link_proto::message::{HEARTBEAT, Hello};
+
+    use super::*;
+    use crate::identity::Identity;
+    use crate::inbox::Inbox;
+    use crate::link_state::GRACE;
+    use crate::stream::{StreamAcceptor, StreamDialer};
+
+    type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn hello(name: &str) -> Hello {
+        Hello { version: VERSION, name: name.to_owned(), addresses: vec![HEARTBEAT.to_owned()] }
+    }
+
+    /// A phone and a desktop session over the Bluetooth stream; the desktop's actor stops being polled while `freeze`
+    /// is true, as a stuck peer whose transport stays open.
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_peer_turns_the_link_degraded_and_back() -> Result {
+        let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
+        let (phone_io, desktop_io) = tokio::io::duplex(1 << 16);
+        let acceptor = StreamAcceptor::new(&desk_key)?;
+        let dialer = StreamDialer::new(&phone_key)?;
+        let (on_desktop, on_phone) =
+            tokio::join!(acceptor.accept(desktop_io), dialer.connect(phone_io, desk_key.spki().fingerprint(), None));
+        let (desktop_conn, phone_conn) = (Connection::Stream(on_desktop?.0), Connection::Stream(on_phone?.0));
+        let (mut phone_control, mut desktop_control) =
+            tokio::try_join!(Control::open(&phone_conn, None), Control::accept(&desktop_conn, None))?;
+        tokio::try_join!(
+            phone_control.hello_as_client(hello("phone")),
+            desktop_control.hello_as_server(hello("desk"))
+        )?;
+
+        let dir = std::env::temp_dir().join(format!("link-session-test-{}", std::process::id()));
+        let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
+        let route = |peer: DeviceId| {
+            let (events, rx) = mpsc::channel(64);
+            (Route { peer, events, transfers: transfers.clone(), heartbeat: true }, rx)
+        };
+        let (phone_route, mut phone_events) = route(desk_key.spki().device_id());
+        let (desktop_route, _desktop_events) = route(phone_key.spki().device_id());
+        let (phone, phone_actor) = session(phone_conn, phone_control, Role::Phone, phone_route);
+        let (desktop, desktop_actor) = session(desktop_conn, desktop_control, Role::Desktop, desktop_route);
+        tokio::spawn(phone_actor.run());
+        let (freeze, frozen) = watch::channel(false);
+        tokio::spawn(async move {
+            let mut run = pin!(desktop_actor.run());
+            let mut frozen = frozen;
+            loop {
+                if *frozen.borrow() {
+                    drop(frozen.changed().await);
+                    continue;
+                }
+                tokio::select! {
+                    _ = &mut run => return,
+                    _ = frozen.changed() => {}
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        assert!(matches!(phone.link(), LinkState::Live { rtt: Some(_) }), "phone: {:?}", phone.link());
+        assert!(matches!(desktop.link(), LinkState::Live { .. }), "desktop: {:?}", desktop.link());
+
+        freeze.send(true)?;
+        tokio::time::sleep(ACTIVE_EVERY + GRACE + Duration::from_millis(1100)).await;
+        assert!(matches!(phone.link(), LinkState::Degraded { .. }), "phone: {:?}", phone.link());
+        assert!(matches!(desktop.link(), LinkState::Degraded { .. }), "desktop: {:?}", desktop.link());
+        let mut reported = Vec::new();
+        while let Ok(event) = phone_events.try_recv() {
+            if let SessionEvent::Link { state, .. } = event {
+                reported.push(state);
+            }
+        }
+        assert!(matches!(reported.last(), Some(LinkState::Degraded { .. })), "phone reported {reported:?}");
+
+        freeze.send(false)?;
+        tokio::time::sleep(ACTIVE_EVERY * 2).await;
+        assert!(matches!(phone.link(), LinkState::Live { .. }), "phone after: {:?}", phone.link());
+        assert!(matches!(desktop.link(), LinkState::Live { .. }), "desktop after: {:?}", desktop.link());
+        drop(std::fs::remove_dir_all(&dir));
+        Ok(())
     }
 }

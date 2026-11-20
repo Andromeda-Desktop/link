@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_ITEMS, Call, FsRefusal, Hotspot, HotspotEnd, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT,
-    MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop, NOTIFICATION_SYNC, NetworkKind,
-    NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch,
-    SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand,
-    SystemResult, TransferId, WIFI_DIRECT_JOIN,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, Hotspot, HotspotEnd, MAX_PUNCH_ADDRESSES,
+    MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop, NOTIFICATION_SYNC,
+    NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, PRESENTING,
+    PhotoRefusal, Punch, SCREEN_SHAPE, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status,
+    SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -24,6 +24,7 @@ use crate::camera::{self, Camera};
 use crate::hotspot::{self, UPGRADE_TIMEOUT};
 use crate::identity::DeviceId;
 use crate::inbox::Inbox;
+use crate::link_state::LinkState;
 use crate::messages::{self, Messages};
 use crate::mirror::MirrorSender;
 use crate::net;
@@ -814,8 +815,12 @@ impl ClientActor {
     async fn adopt(&mut self, session: phone::Session) -> SessionHandle {
         let phone::Session { connection, control, desktop, addr, via, resumed } = session;
         let id = desktop.id.clone();
-        let route =
-            Route { peer: id.clone(), events: self.session_events_tx.clone(), transfers: self.transfers.clone() };
+        let route = Route {
+            peer: id.clone(),
+            events: self.session_events_tx.clone(),
+            transfers: self.transfers.clone(),
+            heartbeat: desktop.has(HEARTBEAT),
+        };
         let (handle, actor) = session::session(connection, control, Role::Phone, route);
         let (task_id, stable_id) = (id.clone(), handle.stable_id());
         self.running.spawn(async move { Ended { id: task_id, stable_id, result: actor.run().await } });
@@ -1498,7 +1503,7 @@ impl ClientActor {
                     log::info!("{from}: dropped a {} its switch does not allow", message.kind());
                 }
             }
-            SessionEvent::Unpaired { .. } | SessionEvent::Status { .. } => {}
+            SessionEvent::Unpaired { .. } | SessionEvent::Status { .. } | SessionEvent::Link { .. } => {}
         }
     }
 
@@ -1524,7 +1529,9 @@ impl ClientActor {
     }
 
     fn desktops(&self) -> Vec<DesktopState> {
-        let live = |id: &DeviceId| self.sessions.get(id).is_some_and(SessionHandle::is_live);
+        let live = |id: &DeviceId| {
+            self.sessions.get(id).is_some_and(|session| matches!(session.link(), LinkState::Live { .. }))
+        };
         self.phone
             .desktops()
             .iter()
