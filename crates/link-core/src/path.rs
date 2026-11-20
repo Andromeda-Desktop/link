@@ -105,6 +105,11 @@ impl fmt::Debug for PathSocket {
     }
 }
 
+/// Route key: quinn hands a dual-stack socket IPv4 peers as IPv4-mapped IPv6 addresses.
+fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -125,6 +130,11 @@ impl PathSocket {
     /// Adds a link whose packets quinn sees as coming from `peer`. Runs a reader and a writer task on the current
     /// runtime until the link ends.
     pub fn add_link(&self, link: impl MessageLink, peer: SocketAddr) -> LinkId {
+        // A dual-stack socket reports IPv4 peers as IPv4-mapped, and a quinn client drops packets from any other form.
+        let peer = match (peer, self.udp.local_addr()) {
+            (SocketAddr::V4(v4), Ok(SocketAddr::V6(_))) => SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()),
+            _ => peer,
+        };
         let link = Arc::new(link);
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE);
         let slot = Arc::new(Slot { tx, writable: Mutex::default() });
@@ -166,6 +176,7 @@ impl PathSocket {
     /// Sends to `to` over `via`, or over UDP with `None`.
     pub fn route(&self, to: SocketAddr, via: Option<LinkId>) {
         let mut routes = lock(&self.shared.routes);
+        let to = canonical(to);
         match via {
             Some(link) => routes.insert(to, link),
             None => routes.remove(&to),
@@ -196,7 +207,7 @@ impl AsyncUdpSocket for PathSocket {
     }
 
     fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
-        let route = lock(&self.shared.routes).get(&transmit.destination).copied();
+        let route = lock(&self.shared.routes).get(&canonical(transmit.destination)).copied();
         if let Some(id) = route
             && let Some(slot) = self.shared.slot(id)
         {
@@ -289,7 +300,8 @@ mod tests {
     #[tokio::test]
     async fn a_live_stream_survives_moves_between_udp_and_a_link() -> Result {
         let server_socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
-        let phone_socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
+        // Dual-stack like the app's socket: quinn hands it IPv4 peers as IPv4-mapped IPv6 addresses.
+        let phone_socket = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
         let server_addr = server_socket.local_addr()?;
         let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
         let link_addr: SocketAddr = "10.255.255.1:1".parse()?;
@@ -330,7 +342,7 @@ mod tests {
         let (got, seen_link, last) = receiver.await??;
         assert_eq!(got, TOTAL);
         assert!(seen_link, "the desktop never saw the connection on the link");
-        assert_eq!(last, phone_socket.local_addr()?, "the connection did not move back to UDP");
+        assert_eq!(last.port(), phone_socket.local_addr()?.port(), "the connection did not move back to UDP");
         Ok(())
     }
 }
