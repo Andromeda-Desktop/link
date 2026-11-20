@@ -40,8 +40,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
+import org.andromeda.link.clipboard.ClipEvents
+import org.andromeda.link.clipboard.ClipEventsScreen
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.clipboard.LogAccess.Method
+import org.andromeda.link.clipboard.title
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.onboarding.Grant
 import org.andromeda.link.ui.kit.BackKey
@@ -62,7 +65,7 @@ import org.andromeda.link.ui.theme.Tok
 import org.andromeda.link.ui.theme.rememberAppTheme
 import org.andromeda.link.ui.theme.setAppTheme
 
-private enum class SettingsPage { Main, Advanced }
+private enum class SettingsPage { Main, Advanced, Clipboard }
 
 /** The app's own settings: desktops, permissions, general, appearance, about; Advanced holds the rarely changed rest. */
 @Composable
@@ -89,7 +92,7 @@ fun SettingsScreen(
     val clearsSynced by viewModel.clearsSynced.collectAsStateWithLifecycle()
     val sendsScreenshots by viewModel.sendsScreenshots.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf(SettingsPage.Main) }
-    BackHandler(page == SettingsPage.Advanced) { page = SettingsPage.Main }
+    BackHandler(page != SettingsPage.Main) { page = if (page == SettingsPage.Clipboard) SettingsPage.Advanced else SettingsPage.Main }
     val logMethod by LogAccess.method.collectAsStateWithLifecycle()
     var methods by remember { mutableStateOf(logMethods(context)) }
     var logs by remember { mutableStateOf(false) }
@@ -98,6 +101,10 @@ fun SettingsScreen(
         logs = context.checkSelfPermission(Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
         methods = logMethods(context)
         onPauseOrDispose {}
+    }
+    if (page == SettingsPage.Clipboard) {
+        ClipEventsScreen({ page = SettingsPage.Advanced }, modifier)
+        return
     }
     Box(modifier) {
         Screen(
@@ -136,6 +143,7 @@ fun SettingsScreen(
                             logs,
                             methods.inUse,
                             { onMethodSheet(true) },
+                            { page = SettingsPage.Clipboard },
                             viewModel::setFullContentWhileLocked,
                             viewModel::setSendsScreenshots,
                             viewModel::setClearsSynced,
@@ -289,6 +297,7 @@ private fun Advanced(
     logs: Boolean,
     method: Method?,
     onMethod: () -> Unit,
+    onClipEvents: () -> Unit,
     onFullContent: (Boolean) -> Unit,
     onSendScreenshots: (Boolean) -> Unit,
     onClearSync: (Boolean) -> Unit,
@@ -361,6 +370,15 @@ private fun Advanced(
         ValueRow(stringResource(R.string.settings_log), icon = Icons.Log, subtitle = stringResource(R.string.settings_log_hint)) {
             Pill(stringResource(R.string.settings_export), { scope.launch { shareLog(context) } })
         }
+        Separator()
+        val clipMode by ClipEvents.mode.collectAsStateWithLifecycle()
+        ValueRow(
+            stringResource(R.string.clip_log),
+            icon = Icons.Clip,
+            subtitle = stringResource(clipMode.title()),
+            chevron = Icons.Chev,
+            onClick = onClipEvents,
+        )
     }
 }
 
