@@ -33,7 +33,7 @@ pub fn run_path_spike(desktop: String, l2cap_fd: i32, report: String) -> String 
         .enable_all()
         .build()
         .map_err(Into::into)
-        .and_then(|runtime| runtime.block_on(spike(&desktop, fd, &mut out)));
+        .and_then(|runtime| runtime.block_on(spike(&desktop, fd, &mut out, &report)));
     if let Err(error) = result {
         let _ = writeln!(out, "failed: {error}");
     }
@@ -63,12 +63,13 @@ impl std::fmt::Write for Report {
 }
 
 #[expect(clippy::too_many_lines, reason = "one linear measurement script")]
-async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report) -> Result {
+async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &str) -> Result {
     // Prefixes: `plain:` dials from quinn's own UDP socket (the baseline for PathSocket); `cubic:` and `newreno:`
-    // replace BBR; `win:` raises the stream and connection windows to 8 and 32 MiB.
+    // replace BBR; `win:` raises the stream and connection windows to 8 and 32 MiB; `nogso:` turns off UDP GSO.
     let mut desktop = desktop;
     let mut take = |prefix: &str| desktop.strip_prefix(prefix).map(|rest| desktop = rest).is_some();
     let (plain, cubic, newreno, win) = (take("plain:"), take("cubic:"), take("newreno:"), take("win:"));
+    let nogso = take("nogso:");
     let desktop: SocketAddr = desktop.parse()?;
     let socket = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
     let link = fd.map(|fd| FdLink::new(fd).map(|link| socket.add_link(link, desktop))).transpose()?;
@@ -79,6 +80,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report) -> Result {
         Dialer::on_path(&Identity::generate()?, socket.clone())?
     };
     let phone = phone.tuned(|config| {
+        config.enable_segmentation_offload(!nogso);
         if cubic {
             config.congestion_controller_factory(Arc::new(quinn::congestion::CubicConfig::default()));
         }
@@ -101,9 +103,10 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report) -> Result {
     };
     writeln!(
         out,
-        "socket: {}, {cc}, windows {}",
+        "socket: {}, {cc}, windows {}, gso {}",
         if plain { "quinn udp" } else { "path" },
-        if win { "8/32 MiB" } else { "default" }
+        if win { "8/32 MiB" } else { "default" },
+        !nogso
     )?;
 
     let start = Instant::now();
@@ -121,6 +124,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report) -> Result {
         (Err(elapsed), None) => return Err(elapsed.into()),
     };
     writeln!(out, "connected in {:?} on {}", start.elapsed(), if on_link { "l2cap" } else { "wifi" })?;
+    sample_stats(connection.clone(), format!("{report}.stats"));
     let (mut ping_send, mut ping_recv) = connection.open_bi().await?;
     ping_send.set_priority(10)?;
     let mut ping = async || -> Result<Duration> {
@@ -183,6 +187,40 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report) -> Result {
     connection.close(0u32.into(), b"done");
     phone.finish().await;
     Ok(())
+}
+
+/// Appends the connection stats to `file` every second from an OS thread, so a blocked runtime still reports.
+fn sample_stats(connection: quinn::Connection, file: String) {
+    std::thread::spawn(move || {
+        let Ok(mut file) = std::fs::File::create(file) else { return };
+        let start = Instant::now();
+        while connection.close_reason().is_none() {
+            let s = connection.stats();
+            let line = format!(
+                "{:7.2} rtt {:?} cwnd {} lost {} sent {} congestion {} | tx dgrams {} bytes {} ios {} | rx dgrams {} bytes {} | tx stream {} ack {} | rx ack {} max_data {} max_stream_data {} blocked {}/{}\n",
+                start.elapsed().as_secs_f64(),
+                s.path.rtt,
+                s.path.cwnd,
+                s.path.lost_packets,
+                s.path.sent_packets,
+                s.path.congestion_events,
+                s.udp_tx.datagrams,
+                s.udp_tx.bytes,
+                s.udp_tx.ios,
+                s.udp_rx.datagrams,
+                s.udp_rx.bytes,
+                s.frame_tx.stream,
+                s.frame_tx.acks,
+                s.frame_rx.acks,
+                s.frame_rx.max_data,
+                s.frame_rx.max_stream_data,
+                s.frame_tx.data_blocked,
+                s.frame_tx.stream_data_blocked,
+            );
+            let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
 }
 
 fn path(on_link: bool) -> &'static str {

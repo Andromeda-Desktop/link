@@ -80,6 +80,28 @@ async fn main() -> Result {
 async fn serve(incoming: quinn::Incoming) -> Result {
     let connection = incoming.await?;
     println!("connected from {}", connection.remote_address());
+    let sample = connection.clone();
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        while sample.close_reason().is_none() {
+            let s = sample.stats();
+            println!(
+                "{:6.2} rtt {:?} cwnd {} lost {} | tx dgrams {} ios {} | rx dgrams {} bytes {} | tx ack {} max_stream_data {} | rx stream {}",
+                start.elapsed().as_secs_f64(),
+                s.path.rtt,
+                s.path.cwnd,
+                s.path.lost_packets,
+                s.udp_tx.datagrams,
+                s.udp_tx.ios,
+                s.udp_rx.datagrams,
+                s.udp_rx.bytes,
+                s.frame_tx.acks,
+                s.frame_tx.max_stream_data,
+                s.frame_rx.stream,
+            );
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
     let watch = connection.clone();
     tokio::spawn(async move {
         let mut path = watch.remote_address();
