@@ -2066,6 +2066,7 @@ dependencies = [
  "link-core",
  "log",
  "quinn",
+ "quinn-proto",
  "thiserror 2.0.21",
  "tokio",
  "uniffi",

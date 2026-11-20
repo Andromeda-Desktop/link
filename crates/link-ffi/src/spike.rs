@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use link_core::identity::Identity;
@@ -18,6 +19,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 const PINGS: usize = 50;
 const BULK: Duration = Duration::from_secs(8);
 const PING_EVERY: Duration = Duration::from_millis(50);
+/// `cap:` window on a link: the Android Bluetooth stack queues ~250 KB itself, so the sender must hold back.
+const LINK_WINDOW: u64 = 12 << 10;
 
 /// Runs the spike against `desktop` (`ip:port`), over `l2cap_fd` too when it is not negative (one end of a
 /// `SOCK_SEQPACKET` pair bridged to an L2CAP channel, which this takes over). Each report line is also appended to
@@ -70,6 +73,8 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     let mut take = |prefix: &str| desktop.strip_prefix(prefix).map(|rest| desktop = rest).is_some();
     let (plain, cubic, newreno, win) = (take("plain:"), take("cubic:"), take("newreno:"), take("win:"));
     let nogso = take("nogso:");
+    let cap = take("cap:");
+    let on_link_flag = Arc::new(AtomicBool::new(false));
     let desktop: SocketAddr = desktop.parse()?;
     let socket = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
     let link = fd.map(|fd| FdLink::new(fd).map(|link| socket.add_link(link, desktop))).transpose()?;
@@ -81,12 +86,18 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     };
     let phone = phone.tuned(|config| {
         config.enable_segmentation_offload(!nogso);
-        if cubic {
-            config.congestion_controller_factory(Arc::new(quinn::congestion::CubicConfig::default()));
-        }
-        if newreno {
-            config.congestion_controller_factory(Arc::new(quinn::congestion::NewRenoConfig::default()));
-        }
+        let inner: Arc<dyn quinn::congestion::ControllerFactory + Send + Sync> = if cubic {
+            Arc::new(quinn::congestion::CubicConfig::default())
+        } else if newreno {
+            Arc::new(quinn::congestion::NewRenoConfig::default())
+        } else {
+            Arc::new(quinn::congestion::BbrConfig::default())
+        };
+        config.congestion_controller_factory(if cap {
+            Arc::new(CappedFactory { inner, on_link: on_link_flag.clone() })
+        } else {
+            inner
+        });
         if win {
             config
                 .stream_receive_window((8u32 << 20).into())
@@ -103,8 +114,9 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     };
     writeln!(
         out,
-        "socket: {}, {cc}, windows {}, gso {}",
+        "socket: {}, {cc}{}, windows {}, gso {}",
         if plain { "quinn udp" } else { "path" },
+        if cap { " capped on link" } else { "" },
         if win { "8/32 MiB" } else { "default" },
         !nogso
     )?;
@@ -115,6 +127,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
         (Ok(Ok(dialed)), _) => (dialed.connection, false),
         (_, Some(link)) => {
             socket.route(desktop, Some(link));
+            on_link_flag.store(true, Ordering::Relaxed);
             let start = Instant::now();
             let dialed = phone.dial(desktop, ServerPin::Any).await?;
             writeln!(out, "wifi dial failed; l2cap dial {:?}", start.elapsed())?;
@@ -143,6 +156,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
         if round > 0 {
             on_link = !on_link;
             socket.route(desktop, on_link.then_some(link).flatten());
+            on_link_flag.store(on_link, Ordering::Relaxed);
             writeln!(out, "switch to {}: first ping {:?}", path(on_link), ping().await?)?;
         }
         let mut idle = Vec::with_capacity(PINGS);
@@ -221,6 +235,54 @@ fn sample_stats(connection: quinn::Connection, file: String) {
             std::thread::sleep(Duration::from_secs(1));
         }
     });
+}
+
+/// Caps the inner controller's window while the connection runs over a link.
+struct CappedFactory {
+    inner: Arc<dyn quinn::congestion::ControllerFactory + Send + Sync>,
+    on_link: Arc<AtomicBool>,
+}
+
+impl quinn::congestion::ControllerFactory for CappedFactory {
+    fn build(self: Arc<Self>, now: Instant, mtu: u16) -> Box<dyn quinn::congestion::Controller> {
+        Box::new(Capped { inner: self.inner.clone().build(now, mtu), on_link: self.on_link.clone() })
+    }
+}
+
+struct Capped {
+    inner: Box<dyn quinn::congestion::Controller>,
+    on_link: Arc<AtomicBool>,
+}
+
+impl quinn::congestion::Controller for Capped {
+    fn on_sent(&mut self, now: Instant, bytes: u64, last: u64) {
+        self.inner.on_sent(now, bytes, last);
+    }
+    fn on_ack(&mut self, now: Instant, sent: Instant, bytes: u64, app_limited: bool, rtt: &quinn_proto::RttEstimator) {
+        self.inner.on_ack(now, sent, bytes, app_limited, rtt);
+    }
+    fn on_end_acks(&mut self, now: Instant, in_flight: u64, app_limited: bool, largest: Option<u64>) {
+        self.inner.on_end_acks(now, in_flight, app_limited, largest);
+    }
+    fn on_congestion_event(&mut self, now: Instant, sent: Instant, persistent: bool, lost: u64) {
+        self.inner.on_congestion_event(now, sent, persistent, lost);
+    }
+    fn on_mtu_update(&mut self, mtu: u16) {
+        self.inner.on_mtu_update(mtu);
+    }
+    fn window(&self) -> u64 {
+        let window = self.inner.window();
+        if self.on_link.load(Ordering::Relaxed) { window.min(LINK_WINDOW) } else { window }
+    }
+    fn clone_box(&self) -> Box<dyn quinn::congestion::Controller> {
+        Box::new(Self { inner: self.inner.clone_box(), on_link: self.on_link.clone() })
+    }
+    fn initial_window(&self) -> u64 {
+        self.inner.initial_window()
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
 }
 
 fn path(on_link: bool) -> &'static str {

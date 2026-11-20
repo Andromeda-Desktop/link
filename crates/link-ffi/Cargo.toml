@@ -13,6 +13,7 @@ name = "link_ffi"
 [dependencies]
 link-core.workspace = true
 quinn.workspace = true
+quinn-proto.workspace = true
 log.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
