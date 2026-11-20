@@ -1,7 +1,10 @@
 package org.andromeda.link.core.data
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pManager
@@ -12,6 +15,7 @@ import org.andromeda.link.ffi.HotspotCredentials
 import org.andromeda.link.ffi.PhoneWifiDirect
 import java.security.SecureRandom
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 /**
@@ -65,28 +69,48 @@ class WifiDirectGroup(
         return false
     }
 
-    /** The group once Android reports it up with this phone as its owner. */
+    /** The group once Android reports it up with this phone as its owner, read again on each connection change. */
     private fun group(
         manager: WifiP2pManager,
         channel: WifiP2pManager.Channel,
     ): WifiP2pGroup? {
-        val deadline = SystemClock.elapsedRealtime() + FORM_TIMEOUT_MS
-        while (SystemClock.elapsedRealtime() < deadline) {
-            val answered = CountDownLatch(1)
-            var group: WifiP2pGroup? = null
-            try {
-                manager.requestGroupInfo(channel) {
-                    group = it
-                    answered.countDown()
-                }
-            } catch (error: SecurityException) {
-                return null.also { Log.w(TAG, "Wi-Fi Direct: ${error.message}") }
+        val changed = Semaphore(0)
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    context: Context,
+                    intent: Intent,
+                ) = changed.release()
             }
-            answered.await(ANSWER_TIMEOUT_S, TimeUnit.SECONDS)
-            group?.takeIf { it.isGroupOwner && it.networkName != null }?.let { return it }
-            SystemClock.sleep(POLL_MS)
+        val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+        // A protected system broadcast: only Android sends it, so the receiver needs no export flag.
+        context.registerReceiver(receiver, filter)
+        try {
+            val deadline = SystemClock.elapsedRealtime() + FORM_TIMEOUT_MS
+            do {
+                owned(manager, channel)?.let { return it }
+                val left = deadline - SystemClock.elapsedRealtime()
+            } while (left > 0 && changed.tryAcquire(left, TimeUnit.MILLISECONDS))
+            return null
+        } catch (error: SecurityException) {
+            return null.also { Log.w(TAG, "Wi-Fi Direct: ${error.message}") }
+        } finally {
+            context.unregisterReceiver(receiver)
         }
-        return null
+    }
+
+    private fun owned(
+        manager: WifiP2pManager,
+        channel: WifiP2pManager.Channel,
+    ): WifiP2pGroup? {
+        val answered = CountDownLatch(1)
+        var group: WifiP2pGroup? = null
+        manager.requestGroupInfo(channel) {
+            group = it
+            answered.countDown()
+        }
+        answered.await(ANSWER_TIMEOUT_S, TimeUnit.SECONDS)
+        return group?.takeIf { it.isGroupOwner && it.networkName != null }
     }
 
     /** Runs a [WifiP2pManager] action and waits for it: null on success, else Android's failure reason. */
@@ -138,7 +162,6 @@ class WifiDirectGroup(
         const val PASSPHRASE_LENGTH = 16
         const val ANSWER_TIMEOUT_S = 5L
         const val FORM_TIMEOUT_MS = 10_000L
-        const val POLL_MS = 300L
         const val ATTEMPTS = 5
         const val RETRY_MS = 1_000L
         const val ERROR_TIMEOUT = -1

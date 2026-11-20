@@ -6,7 +6,8 @@ a wrong passphrase would; FAIL_FLAG-group does the same for a group. While FAIL_
 up in scans only after 20 s and its join stays activating, so the desktop's join outlasts the phone's wait. The Wi-Fi
 device is idle unless FAIL_FLAG-wifi-busy exists, when it has a connection of its own (on an interface with no radio
 behind it, so no second interface can be added). It lists an access point only for an SSID a scan asked for, as iwd
-joins only what its last scan saw.
+joins only what its last scan saw. Like NetworkManager, it sends PropertiesChanged for an active connection's State
+and for LastScan when a scan ends, SCAN_S after it was asked for.
 
 Usage: nm_mock.py LOG JOIN_CMD LEAVE_CMD FAIL_FLAG
 """
@@ -21,6 +22,7 @@ from gi.repository import Gio, GLib
 NM = "org.freedesktop.NetworkManager"
 ROOT = "/org/freedesktop/NetworkManager"
 ACTIVATING, ACTIVATED, DEACTIVATED = 1, 2, 4
+SCAN_S = 0.5
 XML = f"""
 <node>
   <interface name="{NM}">
@@ -57,6 +59,7 @@ XML = f"""
     <method name="GetAllAccessPoints">
       <arg direction="out" type="ao" name="access_points"/>
     </method>
+    <property name="LastScan" type="x" access="read"/>
   </interface>
   <interface name="{NM}.AccessPoint">
     <property name="Ssid" type="ay" access="read"/>
@@ -69,12 +72,22 @@ def main() -> int:
     log_path, join_cmd, leave_cmd, fail_flag = sys.argv[1:5]
     info = Gio.DBusNodeInfo.new_for_xml(XML)
     bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
-    state = {"count": 0, "active": {}, "scanned": None}
+    state = {"count": 0, "active": {}, "scanned": None, "last_scan": -1, "scanning": False}
     wifi, access_point = f"{ROOT}/Devices/2", f"{ROOT}/AccessPoint/1"
 
     def log(entry):
         with open(log_path, "a") as out:
             out.write(json.dumps({**entry, "t": round(time.time(), 3)}) + "\n")
+
+    def changed(path, interface, name, value):
+        bus.emit_signal(None, path, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                        GLib.Variant("(sa{sv}as)", (interface, {name: value}, [])))
+
+    def scan_done():
+        state["scanning"] = False
+        state["last_scan"] = int(time.monotonic() * 1000)
+        changed(wifi, f"{NM}.Device.Wireless", "LastScan", GLib.Variant("x", state["last_scan"]))
+        return GLib.SOURCE_REMOVE
 
     def active_property(path):
         def get(_conn, _sender, _path, _iface, name):
@@ -120,7 +133,9 @@ def main() -> int:
             log({"call": "deactivate", "active": active})
             if state["active"].get(active) == ACTIVATED:
                 subprocess.run(leave_cmd, shell=True, check=False)
-            state["active"][active] = DEACTIVATED
+            if state["active"].get(active) != DEACTIVATED:
+                state["active"][active] = DEACTIVATED
+                changed(active, f"{NM}.Connection.Active", "State", GLib.Variant("u", DEACTIVATED))
             invocation.return_value(None)
         elif method == "RequestScan":
             ssids = params.unpack()[0].get("ssids", [])
@@ -128,6 +143,9 @@ def main() -> int:
             if scanned != state["scanned"]:
                 state["scanned"], state["scanned_at"] = scanned, time.time()
             log({"call": "request-scan", "ssid": state["scanned"].decode() if state["scanned"] else None})
+            if not state["scanning"]:
+                state["scanning"] = True
+                GLib.timeout_add(int(SCAN_S * 1000), scan_done)
             invocation.return_value(None)
         elif method == "GetAllAccessPoints":
             scanned = state["scanned"]
@@ -143,6 +161,8 @@ def main() -> int:
             return GLib.Variant("u", 2)
         if name == "Interface":
             return GLib.Variant("s", "mockwlan0")
+        if name == "LastScan":
+            return GLib.Variant("x", state["last_scan"])
         busy = os.path.exists(fail_flag + "-wifi-busy")
         return GLib.Variant("o", f"{ROOT}/ActiveConnection/home" if busy else "/")
 

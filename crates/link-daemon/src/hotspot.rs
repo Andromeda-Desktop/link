@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use zbus::{OwnedObjectPath, OwnedVariant, Variant};
+use futures_util::StreamExt;
+use zbus::message::Type;
+use zbus::{MatchRule, MessageStream, OwnedObjectPath, OwnedVariant, Variant};
 
 pub const NM: &str = "org.freedesktop.NetworkManager";
 pub const NM_PATH: &str = "/org/freedesktop/NetworkManager";
@@ -110,37 +112,66 @@ async fn abandon(
     }
 }
 
-/// The access point for `ssid` on `device`, rescanning until a scan shows it.
+/// The access point for `ssid` on `device`, rescanning each time a scan ends without it.
 async fn scanned(bus: &zbus::Connection, device: &OwnedObjectPath, ssid: &str) -> Result<OwnedObjectPath, String> {
-    let wireless = zbus::Proxy::new(bus, NM, device.as_str(), WIRELESS).await.map_err(text)?;
+    let mut signals = signals(bus, device).await?;
+    let wireless = proxy(bus, device, WIRELESS).await?;
+    let request = async || {
+        let options: HashMap<&str, Variant<'_>> =
+            HashMap::from([("ssids", Variant::from(vec![ssid.as_bytes().to_vec()]))]);
+        // A scan already running answers with an error; its end asks again.
+        if let Err(error) = wireless.call::<_, _, ()>("RequestScan", &(options,)).await {
+            log::debug!("requesting a Wi-Fi scan: {error}");
+        }
+    };
+    let last_scan = async || wireless.get_property::<i64>("LastScan").await.ok();
     let find = async {
+        let mut asked_at = last_scan().await;
+        request().await;
         loop {
-            let options: HashMap<&str, Variant<'_>> =
-                HashMap::from([("ssids", Variant::from(vec![ssid.as_bytes().to_vec()]))]);
-            // A scan already running answers with an error; the next round asks again.
-            if let Err(error) = wireless.call::<_, _, ()>("RequestScan", &(options,)).await {
-                log::debug!("requesting a Wi-Fi scan: {error}");
-            }
-            for _ in 0..6 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let points: Vec<OwnedObjectPath> = wireless.call("GetAllAccessPoints", &()).await.map_err(text)?;
-                for path in points {
-                    // Access points come and go while a scan runs; one gone since the listing is skipped.
-                    let Ok(point) =
-                        zbus::Proxy::new(bus, NM, path.as_str(), "org.freedesktop.NetworkManager.AccessPoint").await
-                    else {
-                        continue;
-                    };
-                    if point.get_property::<Vec<u8>>("Ssid").await.is_ok_and(|seen| seen == ssid.as_bytes()) {
-                        return Ok::<_, String>(path);
-                    }
+            let points: Vec<OwnedObjectPath> = wireless.call("GetAllAccessPoints", &()).await.map_err(text)?;
+            for path in points {
+                // Access points come and go while a scan runs; one gone since the listing is skipped.
+                let Ok(point) = proxy(bus, &path, "org.freedesktop.NetworkManager.AccessPoint").await else { continue };
+                if point.get_property::<Vec<u8>>("Ssid").await.is_ok_and(|seen| seen == ssid.as_bytes()) {
+                    return Ok::<_, String>(path);
                 }
+            }
+            next(&mut signals).await?;
+            let scanned_at = last_scan().await;
+            if scanned_at != asked_at {
+                asked_at = scanned_at;
+                request().await;
             }
         }
     };
     tokio::time::timeout(SCAN_TIMEOUT, find)
         .await
         .map_err(|_| "the hotspot never showed up in a Wi-Fi scan".to_owned())?
+}
+
+/// The signals `NetworkManager` sends about `path` and the objects under it. A wait subscribes before it reads, then
+/// reads again after each signal, so it misses no change.
+pub async fn signals(bus: &zbus::Connection, path: &str) -> Result<MessageStream, String> {
+    let rule = MatchRule::builder().msg_type(Type::Signal).path_namespace(path).build().map_err(text)?;
+    MessageStream::for_match_rule(rule, bus, None).await.map_err(text)
+}
+
+pub async fn next(signals: &mut MessageStream) -> Result<(), String> {
+    signals.next().await.map(|_| ()).ok_or_else(|| "the system bus closed".to_owned())
+}
+
+/// A proxy that reads every property from `NetworkManager`: a cached one may not have applied the signal a wait
+/// woke on yet.
+pub async fn proxy(bus: &zbus::Connection, path: &str, interface: &str) -> Result<zbus::Proxy<'static>, String> {
+    zbus::proxy::Builder::new(bus)
+        .destination(NM)
+        .path(path.to_owned())
+        .interface(interface.to_owned())
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .map_err(text)
 }
 
 pub async fn wifi_device(bus: &zbus::Connection, manager: &zbus::Proxy<'_>) -> Result<OwnedObjectPath, String> {
@@ -157,15 +188,14 @@ pub async fn wifi_device(bus: &zbus::Connection, manager: &zbus::Proxy<'_>) -> R
 
 /// Waits for `active` to come up and reads the address the desktop got on it.
 async fn activated(bus: &zbus::Connection, active: OwnedObjectPath) -> Result<Joined, String> {
-    let connection = zbus::Proxy::new(bus, NM, active.as_str(), "org.freedesktop.NetworkManager.Connection.Active")
-        .await
-        .map_err(text)?;
+    let mut signals = signals(bus, &active).await?;
+    let connection = proxy(bus, &active, "org.freedesktop.NetworkManager.Connection.Active").await?;
     let activated = async {
         loop {
             match connection.get_property::<u32>("State").await.map_err(text)? {
                 ACTIVATED => return Ok(()),
                 DEACTIVATED => return Err("NetworkManager could not join it".to_owned()),
-                _ => tokio::time::sleep(Duration::from_millis(250)).await,
+                _ => next(&mut signals).await?,
             }
         }
     };

@@ -3,7 +3,7 @@
 //! with a prompt on the phone. The desktop keeps its own Wi-Fi when its Wi-Fi device is idle or when the card runs a
 //! second managed interface; otherwise the hub asks the user before leaving it, as for the hotspot.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use zbus::OwnedObjectPath;
 
@@ -110,17 +110,19 @@ async fn managed(
     manager: &zbus::Proxy<'_>,
     interface: &str,
 ) -> Result<OwnedObjectPath, String> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Ok(path) = manager.call::<_, _, OwnedObjectPath>("GetDeviceByIpIface", &(interface,)).await {
-            let device = zbus::Proxy::new(bus, NM, path.as_str(), DEVICE).await.map_err(text)?;
-            if device.get_property::<u32>("State").await.is_ok_and(|state| state >= READY) {
-                return Ok(path);
+    let mut signals = hotspot::signals(bus, NM_PATH).await?;
+    let ready = async {
+        loop {
+            if let Ok(path) = manager.call::<_, _, OwnedObjectPath>("GetDeviceByIpIface", &(interface,)).await {
+                let device = hotspot::proxy(bus, &path, DEVICE).await?;
+                if device.get_property::<u32>("State").await.is_ok_and(|state| state >= READY) {
+                    return Ok(path);
+                }
             }
+            hotspot::next(&mut signals).await?;
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    Err(format!("NetworkManager did not take {interface}"))
+    };
+    tokio::time::timeout(READY_TIMEOUT, ready).await.map_err(|_| format!("NetworkManager did not take {interface}"))?
 }
 
 /// Whether `iw phy <phy> info` lists a combination of two managed interfaces on two channels.
