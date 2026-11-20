@@ -28,11 +28,9 @@ fn main() {
             }
         }
     }
-    for weight in ["regular", "medium", "semibold", "bold"] {
-        let name = format!("source_sans_3_{weight}.ttf");
-        println!("cargo::rerun-if-changed={FONTS}/{name}");
-        resources = resources.file(QResourceFile::new(format!("{FONTS}/{name}")).alias(format!("qml/fonts/{name}")));
-    }
+    let font = "inter_variable.ttf";
+    println!("cargo::rerun-if-changed={FONTS}/{font}");
+    resources = resources.file(QResourceFile::new(format!("{FONTS}/{font}")).alias(format!("qml/fonts/{font}")));
     CxxQtBuilder::new_qml_module(QmlModule::new("org.andromeda.Link").qml_files(qml))
         .qt_module("Quick")
         .qt_module("Multimedia")

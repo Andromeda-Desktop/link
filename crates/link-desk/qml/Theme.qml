@@ -21,7 +21,7 @@ QtObject {
     readonly property color wash: Qt.alpha(t1, 0.07)
     readonly property color hover: Qt.alpha(t1, 0.04)
 
-    readonly property string family: "Source Sans 3"
+    readonly property string family: "Inter Variable"
     readonly property var tabular: ({ "tnum": 1 })
 
     readonly property int gutter: 24

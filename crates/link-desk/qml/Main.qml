@@ -49,10 +49,7 @@ ApplicationWindow {
     palette.dark: Theme.t3
 
     // Relative to this file; the backend must ship these fonts when it loads QML from resources.
-    FontLoader { source: "fonts/source_sans_3_regular.ttf" }
-    FontLoader { source: "fonts/source_sans_3_medium.ttf" }
-    FontLoader { source: "fonts/source_sans_3_semibold.ttf" }
-    FontLoader { source: "fonts/source_sans_3_bold.ttf" }
+    FontLoader { source: "fonts/inter_variable.ttf" }
 
     Connections {
         target: window.link
