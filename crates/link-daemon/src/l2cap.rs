@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use bluer::l2cap::{SeqPacket, Socket, SocketAddr as L2capAddr};
 use bluer::{Address, AddressType};
-use link_core::path::{FdLink, Hop, MessageLink, PathSocket, link_address};
-use link_core::stream::L2CAP_PSM;
+use link_core::bluetooth::L2CAP_PSM;
+use link_core::path::{FdLink, MessageLink, PathSocket};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
@@ -58,10 +58,9 @@ pub async fn start(socket: Arc<PathSocket>, radio: bool) {
     log::info!("Bluetooth LE: listening on PSM {L2CAP_PSM:#x}");
     tokio::spawn(async move {
         let _bus = bus;
-        let mut peers = Peers(0);
         while let Ok((link, from)) = listener.accept().await {
             log::info!("Bluetooth LE link from {}", from.addr);
-            peers.adopt(&socket, L2cap(link));
+            socket.accept_link(L2cap(link));
         }
         log::warn!("Bluetooth LE: the listener stopped");
     });
@@ -72,18 +71,6 @@ fn listen() -> io::Result<bluer::l2cap::SeqPacketListener> {
     l2cap.bind(L2capAddr::new(Address::any(), AddressType::LePublic, L2CAP_PSM))?;
     l2cap.set_recv_mtu(MTU)?;
     l2cap.listen(BACKLOG.unsigned_abs())
-}
-
-/// Counts links, to give each its own address.
-struct Peers(u16);
-
-impl Peers {
-    fn adopt(&mut self, socket: &Arc<PathSocket>, link: impl MessageLink) {
-        self.0 = self.0.wrapping_add(1);
-        let peer = link_address(self.0);
-        let id = socket.add_link(link, peer);
-        socket.route_to(peer).set(Hop::Link(id));
-    }
 }
 
 async fn advertise() -> zbus::Result<zbus::Connection> {
@@ -124,7 +111,6 @@ fn test_listen(path: &Path, socket: Arc<PathSocket>) -> io::Result<()> {
     #[allow(deprecated)]
     let listener = AsyncFd::new(listener)?;
     tokio::spawn(async move {
-        let mut peers = Peers(0);
         loop {
             let accepted = listener
                 .async_io(Interest::READABLE, |fd| {
@@ -134,7 +120,7 @@ fn test_listen(path: &Path, socket: Arc<PathSocket>) -> io::Result<()> {
             match accepted.and_then(FdLink::new) {
                 Ok(link) => {
                     log::info!("Bluetooth LE link from the test socket");
-                    peers.adopt(&socket, link);
+                    socket.accept_link(link);
                 }
                 Err(error) => return log::error!("the test L2CAP socket: {error}"),
             }

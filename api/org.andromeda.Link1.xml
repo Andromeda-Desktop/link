@@ -175,7 +175,7 @@
       <arg name="enabled" type="b" direction="in"/>
     </method>
     <!-- feature: a name from link-core's Feature (clipboard, files, notifications, media, ring, calls, browse, screen,
-         messages, input, commands, system). -->
+         messages, input, commands, system, dnd-sync, nearby). -->
     <method name="SetGrant">
       <arg name="device_id" type="s" direction="in"/>
       <arg name="feature" type="s" direction="in"/>

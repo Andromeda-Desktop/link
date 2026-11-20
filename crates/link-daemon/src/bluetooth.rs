@@ -1,5 +1,5 @@
 //! Link over Bluetooth, desktop side: an RFCOMM profile registered with `BlueZ`, whose connections arrive as
-//! descriptors for the listener to run like QUIC connections. See "Bluetooth" in `ARCHITECTURE.md`.
+//! descriptors the listener adds as links of the QUIC endpoint. See "Bluetooth" in `ARCHITECTURE.md`.
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ const SERVICE_RECORD: &str = r#"<?xml version="1.0" encoding="UTF-8" ?>
 </record>"#;
 #[cfg(target_os = "linux")]
 const ADAPTER: &str = "/org/bluez/hci0";
-/// E2E only: a Unix socket stands in for RFCOMM, so the stream path runs without radios.
+/// E2E only: a Unix socket stands in for RFCOMM, so the RFCOMM path runs without radios.
 const TEST_SOCKET: &str = "ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET";
 const TEST_ADDRESS: &str = "00:00:00:00:00:01";
 /// Connections waiting for the listener; more are refused.

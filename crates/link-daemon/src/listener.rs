@@ -1,12 +1,11 @@
 //! Accepts QUIC and Bluetooth connections and runs each one as a pairing attempt or a session, as the hub admits it.
 
-use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use link_core::control::Control;
 use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
-use link_core::path::Route;
+use link_core::path::{Route, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, LATE_HASH,
@@ -16,7 +15,6 @@ use link_core::proto::message::{
 use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
 use link_core::session::session as start_session;
-use link_core::stream::{FdStream, StreamAcceptor};
 use link_core::transport::{CONNECT_TIMEOUT, PathServer};
 use link_core::wire::Connection;
 use link_core::{Error, close_code_for, net, tls};
@@ -30,7 +28,6 @@ pub struct Listener {
     server: Arc<PathServer>,
     /// Held whole: the RFCOMM profile lives as long as its system bus connection inside.
     bluetooth: Bluetooth,
-    acceptor: StreamAcceptor,
     context: Arc<Context>,
 }
 
@@ -48,17 +45,10 @@ struct Context {
 }
 
 impl Listener {
-    pub fn new(
-        server: Arc<PathServer>,
-        bluetooth: Bluetooth,
-        acceptor: StreamAcceptor,
-        hub: HubHandle,
-        own: Spki,
-        name: String,
-    ) -> Self {
+    pub fn new(server: Arc<PathServer>, bluetooth: Bluetooth, hub: HubHandle, own: Spki, name: String) -> Self {
         let port = server.endpoint.local_addr().map_or(0, |addr| addr.port());
         let context = Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone() });
-        Self { server, bluetooth, acceptor, context }
+        Self { server, bluetooth, context }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -76,9 +66,11 @@ impl Listener {
                         connections.spawn(handle(incoming, self.server.clone(), self.context.clone()));
                     }
                 }
-                Some(fd) = self.bluetooth.incoming.recv() => {
-                    connections.spawn(handle_stream(fd, self.acceptor.clone(), self.context.clone()));
-                }
+                // An RFCOMM link: its QUIC connection arrives on the endpoint like any other.
+                Some(fd) = self.bluetooth.incoming.recv() => match StreamLink::new(fd) {
+                    Ok(link) => log::info!("Bluetooth RFCOMM link {}", self.server.socket.accept_link(link)),
+                    Err(error) => log::info!("Bluetooth: {error}"),
+                },
                 Some(joined) = connections.join_next() => {
                     if let Err(join) = joined {
                         log::error!("connection task: {join}");
@@ -114,28 +106,6 @@ async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc
         }
         Admission::Session => session(&connection, &peer, Some(path), &context).await,
         Admission::Pair(attempt) => pairing(&connection, &peer, Some(path), &attempt, &context).await,
-    };
-    ended(&connection, &peer, result, &context).await;
-}
-
-/// A Bluetooth connection: the TLS handshake over the stream, then a session as over QUIC.
-async fn handle_stream(fd: OwnedFd, acceptor: StreamAcceptor, context: Arc<Context>) {
-    let accepted = match FdStream::new(fd) {
-        Ok(stream) => acceptor.accept(stream).await,
-        Err(error) => Err(error.into()),
-    };
-    let (mux, peer) = match accepted {
-        Ok(accepted) => accepted,
-        Err(error) => return log::info!("Bluetooth: handshake failed: {error}"),
-    };
-    let connection = Connection::Stream(mux);
-    let result = match context.hub.admit(peer.clone()).await {
-        Admission::Session => session(&connection, &peer, None, &context).await,
-        Admission::Reject(code) => {
-            log::info!("Bluetooth: {} rejected: {}", peer.device_id(), code.reason());
-            return connection.close(code);
-        }
-        Admission::Pair(attempt) => pairing(&connection, &peer, None, &attempt, &context).await,
     };
     ended(&connection, &peer, result, &context).await;
 }

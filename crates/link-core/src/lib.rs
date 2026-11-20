@@ -1,5 +1,6 @@
 //! The Link engine shared by `andromeda-linkd`, the headless phone, and the Android app. See `ARCHITECTURE.md`.
 
+pub mod bluetooth;
 pub mod browse;
 pub mod camera;
 pub mod client;
@@ -11,7 +12,6 @@ pub mod inbox;
 pub mod link_state;
 pub mod messages;
 pub mod mirror;
-pub mod mux;
 pub mod net;
 pub mod outbox;
 pub mod pairing;
@@ -21,7 +21,6 @@ pub mod reach;
 pub mod session;
 pub mod slot;
 pub mod store;
-pub mod stream;
 pub mod tls;
 pub mod transfer;
 pub mod transport;
@@ -101,8 +100,6 @@ pub enum Error {
     Flooded,
     #[error(transparent)]
     ClipRefused(#[from] link_proto::clip::ClipRefused),
-    #[error(transparent)]
-    Mux(#[from] link_proto::mux::MuxError),
     #[error("too large to send over Bluetooth")]
     TooLargeForBluetooth,
     #[error("hotspot: {0}")]

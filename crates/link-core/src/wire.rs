@@ -1,5 +1,5 @@
-//! A session's connection over either transport: QUIC on an IP path, or [`crate::mux`] over TLS on a byte stream
-//! (Bluetooth). Only what the session, the transfers, and the pairing handshake use.
+//! A session's QUIC connection, over UDP or a Bluetooth link. Only what the session, the transfers, and the pairing
+//! handshake use.
 
 use std::ops::Deref;
 
@@ -7,236 +7,125 @@ use link_proto::CloseCode;
 use link_proto::pairing::{EXPORTER_LABEL, EXPORTER_LEN};
 
 use crate::Error;
-use crate::mux::{Closed, MuxConnection, MuxRecv, MuxSend, StreamError};
 
 #[derive(Clone, Debug)]
-pub enum Connection {
-    Quic(quinn::Connection),
-    Stream(MuxConnection),
-}
+pub struct Connection(quinn::Connection);
 
 impl Connection {
     /// Keying material from the handshake, which pairing binds its transcript to; the same label over either path.
     pub fn exporter(&self) -> Result<[u8; EXPORTER_LEN], Error> {
-        match self {
-            Self::Quic(quic) => {
-                let mut out = [0; EXPORTER_LEN];
-                quic.export_keying_material(&mut out, EXPORTER_LABEL, &[]).map_err(|_| Error::BadKey)?;
-                Ok(out)
-            }
-            Self::Stream(mux) => mux.exporter().ok_or(Error::BadKey),
-        }
+        let mut out = [0; EXPORTER_LEN];
+        self.0.export_keying_material(&mut out, EXPORTER_LABEL, &[]).map_err(|_| Error::BadKey)?;
+        Ok(out)
     }
 }
 
-pub enum SendStream {
-    Quic(quinn::SendStream),
-    Stream(MuxSend),
-}
+pub struct SendStream(quinn::SendStream);
 
-pub enum RecvStream {
-    Quic(quinn::RecvStream),
-    Stream(MuxRecv),
-}
+pub struct RecvStream(quinn::RecvStream);
 
-/// Bytes read from a stream, borrowed from quinn's buffer on QUIC.
-pub enum Chunk {
-    Quic(quinn::Chunk),
-    Stream(Vec<u8>),
-}
+/// Bytes read from a stream, borrowed from quinn's buffer.
+pub struct Chunk(quinn::Chunk);
 
 impl Deref for Chunk {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        match self {
-            Self::Quic(chunk) => &chunk.bytes,
-            Self::Stream(bytes) => bytes,
-        }
+        &self.0.bytes
     }
 }
 
 impl From<quinn::Connection> for Connection {
     fn from(connection: quinn::Connection) -> Self {
-        Self::Quic(connection)
+        Self(connection)
     }
 }
 
 impl Connection {
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        Ok(match self {
-            Self::Quic(connection) => {
-                let (send, recv) = connection.open_bi().await?;
-                (SendStream::Quic(send), RecvStream::Quic(recv))
-            }
-            Self::Stream(connection) => {
-                let (send, recv) = connection.open_bi()?;
-                (SendStream::Stream(send), RecvStream::Stream(recv))
-            }
-        })
+        let (send, recv) = self.0.open_bi().await?;
+        Ok((SendStream(send), RecvStream(recv)))
     }
 
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), Error> {
-        Ok(match self {
-            Self::Quic(connection) => {
-                let (send, recv) = connection.accept_bi().await?;
-                (SendStream::Quic(send), RecvStream::Quic(recv))
-            }
-            Self::Stream(connection) => {
-                let (send, recv) = connection.accept_bi().await?;
-                (SendStream::Stream(send), RecvStream::Stream(recv))
-            }
-        })
+        let (send, recv) = self.0.accept_bi().await?;
+        Ok((SendStream(send), RecvStream(recv)))
     }
 
     pub async fn open_uni(&self) -> Result<SendStream, Error> {
-        Ok(match self {
-            Self::Quic(connection) => SendStream::Quic(connection.open_uni().await?),
-            Self::Stream(connection) => SendStream::Stream(connection.open_uni()?),
-        })
+        Ok(SendStream(self.0.open_uni().await?))
     }
 
     pub async fn accept_uni(&self) -> Result<RecvStream, Error> {
-        Ok(match self {
-            Self::Quic(connection) => RecvStream::Quic(connection.accept_uni().await?),
-            Self::Stream(connection) => RecvStream::Stream(connection.accept_uni().await?),
-        })
+        Ok(RecvStream(self.0.accept_uni().await?))
     }
 
     /// Closes with a protocol close code.
     pub fn close(&self, code: CloseCode) {
-        match self {
-            Self::Quic(connection) => connection.close(quinn::VarInt::from_u32(code as u32), code.reason().as_bytes()),
-            Self::Stream(connection) => connection.close(code as u32, code.reason()),
-        }
+        self.0.close(quinn::VarInt::from_u32(code as u32), code.reason().as_bytes());
     }
 
     pub fn is_live(&self) -> bool {
-        match self {
-            Self::Quic(connection) => connection.close_reason().is_none(),
-            Self::Stream(connection) => connection.close_reason().is_none(),
-        }
+        self.0.close_reason().is_none()
     }
 
     /// Waits for the end and says how it came.
     pub async fn closed(&self) -> Error {
-        match self {
-            Self::Quic(connection) => connection.closed().await.into(),
-            Self::Stream(connection) => connection.closed().await.into(),
-        }
+        self.0.closed().await.into()
     }
 
     pub fn stable_id(&self) -> usize {
-        match self {
-            Self::Quic(connection) => connection.stable_id(),
-            Self::Stream(connection) => connection.stable_id(),
-        }
+        self.0.stable_id()
     }
 
-    /// The QUIC connection, for what only it has: the TLS exporter pairing binds to, and the peer's address.
-    /// Whether this runs over Bluetooth: the RFCOMM stream, or QUIC over an LE link, which quinn sees at a link
-    /// address.
+    /// Whether this runs over a Bluetooth link, which quinn sees at a link address.
     pub fn on_bluetooth(&self) -> bool {
-        match self {
-            Self::Quic(connection) => crate::path::is_link_address(connection.remote_address()),
-            Self::Stream(_) => true,
-        }
+        crate::path::is_link_address(self.0.remote_address())
     }
 
-    pub fn quic(&self) -> Option<&quinn::Connection> {
-        match self {
-            Self::Quic(connection) => Some(connection),
-            Self::Stream(_) => None,
-        }
+    /// The QUIC connection, for what only it has, such as the peer's address.
+    pub fn quic(&self) -> &quinn::Connection {
+        &self.0
     }
 }
 
 impl SendStream {
     pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        match self {
-            Self::Quic(stream) => Ok(stream.write_all(bytes).await?),
-            Self::Stream(stream) => Ok(stream.write_all(bytes).await?),
-        }
+        Ok(self.0.write_all(bytes).await?)
     }
 
     pub fn finish(&mut self) -> Result<(), Error> {
-        match self {
-            Self::Quic(stream) => Ok(stream.finish()?),
-            Self::Stream(stream) => Ok(stream.finish()?),
-        }
+        Ok(self.0.finish()?)
     }
 
     /// Waits until the peer stops the stream and returns its code; None once the stream is done or the connection
     /// ends.
     pub async fn stopped(&mut self) -> Option<u32> {
-        match self {
-            Self::Quic(stream) => {
-                stream.stopped().await.ok().flatten().and_then(|code| u32::try_from(code.into_inner()).ok())
-            }
-            Self::Stream(stream) => stream.stopped().await,
-        }
+        self.0.stopped().await.ok().flatten().and_then(|code| u32::try_from(code.into_inner()).ok())
     }
 
-    /// Queued data of higher priority goes first; Bluetooth's streams have none.
+    /// Queued data of higher priority goes first.
     pub fn set_priority(&self, priority: i32) {
-        if let Self::Quic(stream) = self {
-            drop(stream.set_priority(priority));
-        }
+        drop(self.0.set_priority(priority));
     }
 
     /// Abandons the stream with `code`; an already finished stream stays as it is.
     pub fn reset(&mut self, code: u32) {
-        match self {
-            Self::Quic(stream) => drop(stream.reset(quinn::VarInt::from_u32(code))),
-            Self::Stream(stream) => drop(stream.reset(code)),
-        }
+        drop(self.0.reset(quinn::VarInt::from_u32(code)));
     }
 }
 
 impl RecvStream {
     pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
-        match self {
-            Self::Quic(stream) => Ok(stream.read_exact(buf).await?),
-            Self::Stream(stream) => Ok(stream.read_exact(buf).await?),
-        }
+        Ok(self.0.read_exact(buf).await?)
     }
 
     /// Up to `max` bytes in order, or None at the end of the stream.
     pub async fn read_chunk(&mut self, max: usize) -> Result<Option<Chunk>, Error> {
-        match self {
-            Self::Quic(stream) => {
-                Ok(stream.read_chunk(max, true).await.map_err(|_| Error::StreamEnded)?.map(Chunk::Quic))
-            }
-            Self::Stream(stream) => Ok(stream.read_chunk(max).await?.map(Chunk::Stream)),
-        }
+        Ok(self.0.read_chunk(max, true).await.map_err(|_| Error::StreamEnded)?.map(Chunk))
     }
 
     pub fn stop(&mut self, code: u32) {
-        match self {
-            Self::Quic(stream) => drop(stream.stop(quinn::VarInt::from_u32(code))),
-            Self::Stream(stream) => stream.stop(code),
-        }
-    }
-}
-
-impl From<Closed> for Error {
-    fn from(closed: Closed) -> Self {
-        match closed {
-            Closed::Local => Self::NotConnected,
-            Closed::Peer { code, reason } => CloseCode::from_u64(code.into())
-                .map_or_else(|| Self::Io(std::io::Error::other(format!("closed with {code}: {reason}"))), Self::Closed),
-            Closed::TimedOut => Self::Timeout,
-            Closed::Violation(error) => Self::Mux(error),
-            Closed::Lost(why) => Self::Io(std::io::Error::other(why)),
-        }
-    }
-}
-
-impl From<StreamError> for Error {
-    fn from(error: StreamError) -> Self {
-        match error {
-            StreamError::ConnectionLost(closed) => closed.into(),
-            StreamError::Stopped(_) | StreamError::Reset(_) | StreamError::Finished => Self::StreamEnded,
-        }
+        drop(self.0.stop(quinn::VarInt::from_u32(code)));
     }
 }

@@ -751,13 +751,13 @@ pub trait BluetoothLink: Send + Sync {
 
 struct Opener(Arc<dyn BluetoothLink>);
 
-impl link_core::stream::BluetoothOpener for Opener {
+impl link_core::bluetooth::BluetoothOpener for Opener {
     fn open(&self, address: &str, pair: bool) -> std::io::Result<OwnedFd> {
         adopt(self.0.open(address.to_owned(), pair))
     }
 
     fn open_l2cap(&self, address: &str) -> std::io::Result<OwnedFd> {
-        adopt(self.0.open_l2cap(address.to_owned(), link_core::stream::L2CAP_PSM))
+        adopt(self.0.open_l2cap(address.to_owned(), link_core::bluetooth::L2CAP_PSM))
     }
 }
 

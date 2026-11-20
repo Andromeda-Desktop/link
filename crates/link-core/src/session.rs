@@ -48,6 +48,11 @@ pub enum SessionEvent {
         from: DeviceId,
         status: Status,
     },
+    /// The peer moved the connection between Bluetooth and IP.
+    Path {
+        from: DeviceId,
+        on_bluetooth: bool,
+    },
     /// The session turned live or degraded; [`SessionHandle::link`] has the state at any time.
     Link {
         from: DeviceId,
@@ -332,8 +337,11 @@ impl Live {
     /// Handles one message from the peer; true when the session is over.
     async fn on_envelope(&mut self, envelope: Envelope) -> Result<bool, Error> {
         let now = Instant::now();
-        if let (Some(path), Some(quic)) = (&self.route.path, self.connection.quic()) {
-            path.follow_connection(quic);
+        if let Some(path) = &self.route.path
+            && path.follow_connection(self.connection.quic())
+        {
+            let on_bluetooth = path.on_link();
+            self.emit(SessionEvent::Path { from: self.route.peer.clone(), on_bluetooth }).await;
         }
         match envelope.message {
             Message::Heartbeat(Heartbeat { seq, next_ms }) if self.beat.on => {
@@ -440,7 +448,6 @@ mod tests {
     use crate::identity::Identity;
     use crate::inbox::Inbox;
     use crate::link_state::GRACE;
-    use crate::stream::{StreamAcceptor, StreamDialer};
 
     type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -448,23 +455,28 @@ mod tests {
         Hello { version: VERSION, name: name.to_owned(), addresses: vec![HEARTBEAT.to_owned()] }
     }
 
-    /// A phone and a desktop session over the Bluetooth stream; the desktop's actor stops being polled while `freeze`
+    /// A phone and a desktop session over QUIC; the desktop's actor stops being polled while `freeze`
     /// is true, as a stuck peer whose transport stays open.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_stuck_peer_turns_the_link_degraded_and_back() -> Result {
         let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
-        let (phone_io, desktop_io) = tokio::io::duplex(1 << 16);
-        let acceptor = StreamAcceptor::new(&desk_key)?;
-        let dialer = StreamDialer::new(&phone_key)?;
-        let (on_desktop, on_phone) =
-            tokio::join!(acceptor.accept(desktop_io), dialer.connect(phone_io, desk_key.spki().fingerprint(), None));
-        let (desktop_conn, phone_conn) = (Connection::Stream(on_desktop?.0), Connection::Stream(on_phone?.0));
-        let (mut phone_control, mut desktop_control) =
-            tokio::try_join!(Control::open(&phone_conn, None), Control::accept(&desktop_conn, None))?;
-        tokio::try_join!(
-            phone_control.hello_as_client(hello("phone")),
-            desktop_control.hello_as_server(hello("desk"))
+        let (phone_conn, desktop_conn) = crate::transport::connected(&phone_key, &desk_key).await?;
+        let (phone_conn, desktop_conn) = (Connection::from(phone_conn), Connection::from(desktop_conn));
+        // QUIC announces a stream with its first bytes, so the desktop accepts the control stream only after the hello.
+        let (phone_control, desktop_control) = tokio::try_join!(
+            async {
+                let mut control = Control::open(&phone_conn, None).await?;
+                control.hello_as_client(hello("phone")).await?;
+                Ok::<_, Error>(control)
+            },
+            async {
+                let mut control = Control::accept(&desktop_conn, None).await?;
+                control.hello_as_server(hello("desk")).await?;
+                Ok(control)
+            }
         )?;
+        // After the handshake: the paused clock would run its timeout out while packets cross the real socket.
+        tokio::time::pause();
 
         let dir = std::env::temp_dir().join(format!("link-session-test-{}", std::process::id()));
         let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);

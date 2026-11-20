@@ -1,5 +1,5 @@
-//! One QUIC endpoint over UDP and message links (Bluetooth L2CAP, a `SOCK_SEQPACKET` descriptor). A link carries one
-//! QUIC packet per message. quinn sees each link as a peer address: the server sees a link's own address, so a phone
+//! One QUIC endpoint over UDP and message links (Bluetooth L2CAP, a `SOCK_SEQPACKET` descriptor; RFCOMM, a byte
+//! stream that frames each packet). A link carries one QUIC packet per message. quinn sees each link as a peer address: the server sees a link's own address, so a phone
 //! that moves between UDP and a link migrates the same connection; the phone routes the desktop's address over the
 //! link it picks and reports the link's packets as coming from that address.
 
@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker, ready};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use quinn::congestion::{Controller, ControllerFactory};
 use quinn::udp::{RecvMeta, Transmit};
@@ -30,6 +30,9 @@ const QUEUE: usize = 64;
 /// once, and any controller fills it (rtt 2-2.7 s); 12 KiB kept a loaded ping p95 at 123-126 ms on the test phone
 /// with bulk unchanged at ~1 Mbit/s.
 pub const LINK_WINDOW: u64 = 12 << 10;
+/// How long an accepted link may carry no connection: a phone dials at once, and a handshake takes at most
+/// `CONNECT_TIMEOUT` (5 s).
+pub const UNUSED_LINK: Duration = Duration::from_secs(10);
 /// Inbound packets from all links waiting for the endpoint.
 const INBOUND: usize = 256;
 /// The largest packet a link may deliver; QUIC packets stay far below it.
@@ -67,6 +70,65 @@ impl MessageLink for FdLink {
     }
 }
 
+/// A byte-stream descriptor (`BlueZ`'s RFCOMM socket, one end of a platform's stream socket pair): each message is a
+/// big-endian u16 length, then that many bytes. One task sends and one receives, so frames never interleave.
+pub struct StreamLink(AsyncFd<OwnedFd>);
+
+impl StreamLink {
+    pub fn new(fd: OwnedFd) -> io::Result<Self> {
+        rustix::io::ioctl_fionbio(&fd, true)?;
+        // Sound for OwnedFd, whose descriptor never changes; `register` would need unsafe, which the workspace forbids.
+        #[allow(deprecated)]
+        Ok(Self(AsyncFd::new(fd)?))
+    }
+
+    /// Fills `buf` whole; false when the peer closed before its first byte.
+    async fn read_exact(&self, buf: &mut [u8]) -> io::Result<bool> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let rest = buf.get_mut(filled..).unwrap_or_default();
+            let read = self
+                .0
+                .async_io(Interest::READABLE, |fd| rustix::io::read(fd.as_fd(), &mut *rest).map_err(io::Error::from))
+                .await?;
+            if read == 0 {
+                return if filled == 0 { Ok(false) } else { Err(io::ErrorKind::UnexpectedEof.into()) };
+            }
+            filled += read;
+        }
+        Ok(true)
+    }
+}
+
+impl MessageLink for StreamLink {
+    async fn send(&self, packet: &[u8]) -> io::Result<()> {
+        let len = u16::try_from(packet.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let frame = [&len.to_be_bytes()[..], packet].concat();
+        let mut sent = 0;
+        while let Some(rest) = frame.get(sent..).filter(|rest| !rest.is_empty()) {
+            sent += self
+                .0
+                .async_io(Interest::WRITABLE, |fd| rustix::io::write(fd.as_fd(), rest).map_err(io::Error::from))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut len = [0; 2];
+        if !self.read_exact(&mut len).await? {
+            return Ok(0);
+        }
+        let len = usize::from(u16::from_be_bytes(len));
+        let packet = buf.get_mut(..len).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        // A zero-length frame would read as the peer closing.
+        if len == 0 || !self.read_exact(packet).await? {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(len)
+    }
+}
+
 struct Slot {
     /// One packet per message, counted against `QUEUE`.
     tx: mpsc::Sender<Vec<u8>>,
@@ -76,6 +138,8 @@ struct Slot {
     ended: watch::Sender<()>,
     /// The address the link's packets arrive from.
     addr: SocketAddr,
+    /// A connection is tied to the link.
+    tied: AtomicBool,
 }
 
 /// Where a route sends.
@@ -123,6 +187,7 @@ struct Shared {
     links: Mutex<Vec<Option<Arc<Slot>>>>,
     routes: Mutex<Routes>,
     next_virtual: AtomicU16,
+    next_link: AtomicU16,
 }
 
 impl Shared {
@@ -222,8 +287,13 @@ impl PathSocket {
         let peer = self.native(peer);
         let link = Arc::new(link);
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE);
-        let slot =
-            Arc::new(Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()), addr: canonical(peer) });
+        let slot = Arc::new(Slot {
+            tx,
+            writable: Mutex::default(),
+            ended: watch::Sender::new(()),
+            addr: canonical(peer),
+            tied: AtomicBool::new(false),
+        });
         let ended = slot.ended.subscribe();
         let id = {
             let mut links = lock(&self.shared.links);
@@ -261,6 +331,23 @@ impl PathSocket {
                     }
                     Err(error) => return shared.drop_link(id, &error),
                 }
+            }
+        });
+        id
+    }
+
+    /// Adds a link a peer opened, at a link address of its own that quinn sees the peer's packets come from. A link
+    /// that no connection is tied to within [`UNUSED_LINK`] ends, so a peer cannot hold one open with garbage.
+    pub fn accept_link(self: &Arc<Self>, link: impl MessageLink) -> LinkId {
+        let peer = link_address(self.shared.next_link.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
+        let id = self.add_link(link, peer);
+        self.route_to(peer).set(Hop::Link(id));
+        let shared = Arc::downgrade(&self.shared);
+        tokio::spawn(async move {
+            tokio::time::sleep(UNUSED_LINK).await;
+            let Some(shared) = shared.upgrade() else { return };
+            if shared.slot(id).is_some_and(|slot| !slot.tied.load(Ordering::Relaxed)) {
+                shared.drop_link(id, &io::Error::other("no connection came over it"));
             }
         });
         id
@@ -310,6 +397,9 @@ impl PathSocket {
     /// Ties link `id` and `connection`, the one connection it carries: the link ends with the connection, and the
     /// connection with the link while no other route reaches its peer.
     pub fn tie(self: &Arc<Self>, id: LinkId, connection: quinn::Connection) {
+        if let Some(slot) = self.shared.slot(id) {
+            slot.tied.store(true, Ordering::Relaxed);
+        }
         let (socket, link_closed) = (self.clone(), self.link_closed(id));
         tokio::spawn(async move {
             tokio::select! {
@@ -406,21 +496,26 @@ impl Route {
 
     /// A server's view: the peer moved the connection to `remote`, and quinn followed. Tells the controller whether
     /// that is a link.
-    pub fn follow(&self, remote: SocketAddr) {
+    /// True when the route moved between UDP and a link.
+    pub fn follow(&self, remote: SocketAddr) -> bool {
         let on_link = self.socket.link_to(remote).is_some();
-        if self.state.on_link.swap(on_link, Ordering::Relaxed) != on_link {
+        let moved = self.state.on_link.swap(on_link, Ordering::Relaxed) != on_link;
+        if moved {
             self.state.changes.fetch_add(1, Ordering::Relaxed);
         }
+        moved
     }
 
     /// [`Route::follow`] for a server's `connection`, which also ends with a link it moved onto, and that link with it.
-    pub fn follow_connection(&self, connection: &quinn::Connection) {
+    pub fn follow_connection(&self, connection: &quinn::Connection) -> bool {
         let remote = connection.remote_address();
-        self.follow(remote);
-        let Some(link) = self.socket.link_to(remote) else { return };
-        if lock(&self.state.tied).replace(link) != Some(link) {
+        let moved = self.follow(remote);
+        if let Some(link) = self.socket.link_to(remote)
+            && lock(&self.state.tied).replace(link) != Some(link)
+        {
             self.socket.tie(link, connection.clone());
         }
+        moved
     }
 
     /// Whether the connection runs over a link now.
@@ -799,12 +894,84 @@ mod tests {
         Ok(())
     }
 
+    /// QUIC runs over a byte-stream link (RFCOMM) as over a message one.
+    #[tokio::test]
+    async fn a_stream_runs_whole_over_a_byte_stream_link() -> Result {
+        let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
+        let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
+        let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
+        server.socket.accept_link(StreamLink::new(desk_end)?);
+        let phone_link = phone.add_link(StreamLink::new(phone_end)?, link_address(1));
+
+        let received = tokio::spawn(async move {
+            let incoming = server.endpoint.accept().await.ok_or("no connection")?;
+            let (connecting, _route) = server.accept(incoming)?;
+            let connection = connecting.await?;
+            let mut recv = connection.accept_uni().await?;
+            let mut got = 0;
+            while let Some(chunk) = recv.read_chunk(CHUNK, true).await? {
+                assert!(chunk.bytes.iter().enumerate().all(|(i, b)| *b == byte(got + i)), "corrupt at {got}");
+                got += chunk.bytes.len();
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(got)
+        });
+        let identity = Identity::generate()?;
+        let dialed = Dialer::on_path(&identity, phone.clone())?.dial_hop(Hop::Link(phone_link), ServerPin::Any).await?;
+        let mut send = dialed.connection.open_uni().await?;
+        for at in (0..TOTAL / 4).step_by(CHUNK) {
+            send.write_all(&(at..at + CHUNK).map(byte).collect::<Vec<u8>>()).await?;
+        }
+        send.finish()?;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(20), received).await???, TOTAL / 4);
+        Ok(())
+    }
+
+    /// A frame that arrives in pieces, its length too, is still one message.
+    #[tokio::test]
+    async fn a_byte_stream_link_joins_a_frame_that_arrives_in_pieces() -> Result {
+        let (ours, theirs) = socketpair(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
+        let link = StreamLink::new(theirs)?;
+        let packet: Vec<u8> = (0..1000).map(byte).collect();
+        let frame = [&1000u16.to_be_bytes()[..], &packet].concat();
+        let mut buf = vec![0; MAX_PACKET];
+        let write = async {
+            for piece in [&frame[..1], &frame[1..500], &frame[500..]] {
+                tokio::task::yield_now().await;
+                rustix::io::write(&ours, piece)?;
+            }
+            Ok::<_, io::Error>(())
+        };
+        let (len, written) = tokio::join!(link.recv(&mut buf), write);
+        written?;
+        assert_eq!(buf.get(..len?), Some(&packet[..]));
+        Ok(())
+    }
+
+    /// An accepted link that no connection comes over ends.
+    #[tokio::test(start_paused = true)]
+    async fn an_accepted_link_without_a_connection_ends() -> Result {
+        let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
+        let (_peer, ours) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
+        let id = socket.accept_link(FdLink::new(ours)?);
+        tokio::time::sleep(UNUSED_LINK / 2).await;
+        assert!(socket.has_link(id), "the link ended before its peer had time to dial");
+        tokio::time::timeout(UNUSED_LINK, socket.link_closed(id)).await?;
+        assert!(!socket.has_link(id));
+        Ok(())
+    }
+
     /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
     #[tokio::test]
     async fn a_batch_that_does_not_fit_waits_whole() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
         let (tx, _rx) = mpsc::channel(QUEUE);
-        let slot = Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()), addr: link_address(1) };
+        let slot = Slot {
+            tx,
+            writable: Mutex::default(),
+            ended: watch::Sender::new(()),
+            addr: link_address(1),
+            tied: AtomicBool::new(false),
+        };
         for _ in 0..QUEUE - 2 {
             slot.tx.try_send(vec![0])?;
         }

@@ -15,17 +15,17 @@ use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
 use ring::rand::{SecureRandom, SystemRandom};
 
+use crate::bluetooth::BluetoothOpener;
 use crate::browse::Roots;
 use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, Hop, LinkId, PathSocket, Route, link_address};
+use crate::path::{FdLink, Hop, LinkId, MessageLink, PathSocket, Route, StreamLink, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::store::{Feature, Peer, Store};
-use crate::stream::{BluetoothOpener, FdStream, StreamDialer};
 use crate::tls::{self, ServerPin};
-use crate::transport::{Dialed, Dialer, PHONE_KEEP_ALIVE};
+use crate::transport::{Dialed, Dialer};
 use crate::uri::PairingUri;
 use crate::wire::Connection;
 use crate::{Error, discovery};
@@ -63,7 +63,6 @@ pub struct Phone {
     socket: Arc<PathSocket>,
     /// Links added to `socket`, to give each its own address.
     links: u16,
-    stream_dialer: StreamDialer,
     bluetooth: Option<Arc<dyn BluetoothOpener>>,
     hotspot: Option<Arc<dyn HotspotProvider>>,
     wifi_direct: Option<Arc<dyn WifiDirectProvider>>,
@@ -85,7 +84,6 @@ impl Phone {
         let socket = PathSocket::new(udp)?;
         let dialer = Dialer::on_path(&identity, socket.clone())?;
         let present_dialer = dialer.present();
-        let stream_dialer = StreamDialer::new(&identity)?;
         Ok(Self {
             identity,
             store,
@@ -95,7 +93,6 @@ impl Phone {
             present_dialer,
             socket,
             links: 0,
-            stream_dialer,
             bluetooth: None,
             hotspot: None,
             wifi_direct: None,
@@ -192,8 +189,9 @@ impl Phone {
                         return Err(Error::PairUnreached { ip, bluetooth: bluetooth.to_string() });
                     }
                 };
-                let (mux, server) = self.stream_dialer.connect(FdStream::new(fd)?, fingerprint, None).await?;
-                (Connection::Stream(mux), server, None, None)
+                let dialed = self.dial_link(StreamLink::new(fd)?, fingerprint).await?;
+                let server = tls::peer_spki(dialed.connection.peer_identity())?;
+                (Connection::from(dialed.connection), server, None, dialed.route)
             }
         };
         let mut control = Control::open(&connection, self.tap.clone()).await?;
@@ -270,7 +268,7 @@ impl Phone {
     }
 
     /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi. QUIC over an LE L2CAP
-    /// channel where the phone and desktop have one, else the RFCOMM stream.
+    /// channel where the phone and desktop have one, else over RFCOMM.
     pub async fn connect_bluetooth(&mut self, peer: &Peer) -> Result<Session, Error> {
         let (Some(address), Some(opener)) = (peer.bluetooth.clone(), self.bluetooth.clone()) else {
             return Err(Error::Unreachable);
@@ -278,7 +276,7 @@ impl Phone {
         let le = (address.clone(), opener.clone());
         let l2cap = tokio::task::spawn_blocking(move || le.1.open_l2cap(&le.0)).await.map_err(|_| Error::Stopped)?;
         let tried = match l2cap {
-            Ok(fd) => self.connect_link(peer, fd).await,
+            Ok(fd) => self.connect_link(peer, FdLink::new(fd)?).await,
             Err(error) => Err(error.into()),
         };
         match tried {
@@ -287,33 +285,27 @@ impl Phone {
         }
         let fd =
             tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
-        let keep_alive = self.present.then_some(PHONE_KEEP_ALIVE);
-        let (mux, desktop) =
-            self.stream_dialer.connect(FdStream::new(fd)?, peer.spki()?.fingerprint(), keep_alive).await?;
-        if desktop.device_id() != peer.id {
-            return Err(Error::BadKey);
-        }
-        let connection = Connection::Stream(mux);
-        let mut control = Control::open(&connection, self.tap.clone()).await?;
-        let hello = control.hello_as_client(self.hello()).await?;
-        let desktop = self.remember(&desktop, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: false, route: None })
+        self.connect_link(peer, StreamLink::new(fd)?).await
     }
 
-    /// The usual QUIC session, over `fd`, an LE L2CAP channel to the desktop.
-    async fn connect_link(&mut self, peer: &Peer, fd: OwnedFd) -> Result<Session, Error> {
+    /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.
+    async fn dial_link(&mut self, link: impl MessageLink, fingerprint: [u8; 32]) -> Result<Dialed, Error> {
         self.links = self.links.wrapping_add(1);
-        let to = link_address(self.links);
-        let link = self.socket.add_link(FdLink::new(fd)?, to);
-        let dialed = match self.dialer().dial_hop(Hop::Link(link), ServerPin::Key(peer.spki()?.fingerprint())).await {
-            Ok(dialed) => dialed,
+        let link = self.socket.add_link(link, link_address(self.links));
+        match self.dialer().dial_hop(Hop::Link(link), ServerPin::Key(fingerprint)).await {
+            Ok(dialed) => {
+                self.socket.tie(link, dialed.connection.clone());
+                Ok(dialed)
+            }
             Err(error) => {
                 self.socket.close_link(link);
-                return Err(error);
+                Err(error)
             }
-        };
-        self.socket.tie(link, dialed.connection.clone());
-        let Dialed { connection, resumed, route } = dialed;
+        }
+    }
+
+    async fn connect_link(&mut self, peer: &Peer, link: impl MessageLink) -> Result<Session, Error> {
+        let Dialed { connection, resumed, route } = self.dial_link(link, peer.spki()?.fingerprint()).await?;
         let connection = Connection::from(connection);
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;

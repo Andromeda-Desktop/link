@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
+use crate::bluetooth::{BLUETOOTH_FILE_LIMIT, BLUETOOTH_UPGRADE_ABOVE};
 use crate::browse;
 use crate::camera::{self, Camera};
 use crate::hotspot::{self, UPGRADE_TIMEOUT};
@@ -36,7 +37,6 @@ use crate::reach::{self, Reached, Via};
 use crate::session::{self, Route, SessionEvent, SessionHandle};
 use crate::slot::{self, Effect, Kind, Slot};
 use crate::store::{Feature, Grants, Peer, feature_of};
-use crate::stream::{BLUETOOTH_FILE_LIMIT, BLUETOOTH_UPGRADE_ABOVE};
 use crate::tls::ServerPin;
 use crate::transfer::{self, ClipPeer, LocalClip, Source, TransferActor, TransferEvent, TransferHandle};
 use crate::transport::Dialer;
@@ -933,7 +933,7 @@ impl ClientActor {
         }
     }
 
-    /// Whether `id`'s live session runs over Bluetooth: RFCOMM, or QUIC routed over a link.
+    /// Whether `id`'s live session runs over Bluetooth: QUIC routed over an L2CAP or RFCOMM link.
     fn on_bluetooth(&self, id: &DeviceId) -> bool {
         self.sessions.get(id).is_some_and(SessionHandle::on_bluetooth)
     }
@@ -943,7 +943,7 @@ impl ClientActor {
             .sessions
             .get(&id)
             .filter(|handle| handle.stable_id() == stable_id)
-            .and_then(|handle| handle.connection().quic().cloned())
+            .map(|handle| handle.connection().quic().clone())
         else {
             return;
         };
@@ -1161,8 +1161,8 @@ impl ClientActor {
         }
     }
 
-    /// Moves a Bluetooth session to the IP path a probe found: a QUIC session moves its route and keeps its streams;
-    /// an RFCOMM one gives way to a new session, and the desktop closes the older one.
+    /// Moves a Bluetooth session to the IP path a probe found: a session with a route moves it and keeps its streams;
+    /// one without gives way to a new session, and the desktop closes the older one.
     async fn probed(&mut self, id: DeviceId, reached: Result<Reached, Error>) {
         self.probing.remove(&id);
         let Ok(reached) = reached else { return };
@@ -1624,7 +1624,10 @@ impl ClientActor {
                 }
                 self.emit(ClientEvent::Link { id: from, live });
             }
-            SessionEvent::Unpaired { .. } | SessionEvent::Status { .. } | SessionEvent::Link { .. } => {}
+            SessionEvent::Unpaired { .. }
+            | SessionEvent::Status { .. }
+            | SessionEvent::Link { .. }
+            | SessionEvent::Path { .. } => {}
         }
     }
 

@@ -38,7 +38,6 @@ use anyhow::Context;
 use link_core::identity::Identity;
 use link_core::inbox::Inbox;
 use link_core::store::Store;
-use link_core::stream::StreamAcceptor;
 use link_core::transfer;
 use link_core::transport::PathServer;
 use tokio::signal::unix::{SignalKind, signal};
@@ -103,8 +102,7 @@ async fn run() -> anyhow::Result<()> {
         quick_share_watches: qs_watches,
         name: name.clone(),
     };
-    let acceptor = StreamAcceptor::new(&identity)?;
-    let listener = listener::Listener::new(server, bluetooth, acceptor, handle.clone(), identity.spki().clone(), name);
+    let listener = listener::Listener::new(server, bluetooth, handle.clone(), identity.spki().clone(), name);
     let mut terminate = signal(SignalKind::terminate())?;
     #[cfg(not(target_os = "linux"))]
     let replaced = std::future::pending::<()>;

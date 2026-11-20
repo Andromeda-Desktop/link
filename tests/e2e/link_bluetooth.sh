@@ -122,6 +122,8 @@ grep '"event":"connected"' "$OUT/hold.jsonl" | grep -q '"via":"bluetooth"' || fa
 if [[ ${LINK_BT:-l2cap} == l2cap ]]; then
   grep -q "trying RFCOMM" "$OUT/hold.log" && fail "hold fell back to RFCOMM: $(grep 'trying RFCOMM' "$OUT/hold.log")"
   grep -q "Bluetooth LE link from the test socket" "$OUT/linkd.log" || fail "the daemon took no L2CAP link"
+else
+  grep -q "Bluetooth RFCOMM link" "$OUT/linkd.log" || fail "the daemon took no RFCOMM link"
 fi
 wait_for 5 "D-Bus does not show the Bluetooth phone connected: $(devices)" connected
 record '{"step":"held-over-bluetooth"}'
@@ -205,6 +207,7 @@ OUTPUT=$(in_phone "$BIN/andromeda-link-phone" --state "$RUNTIME/stranger" --name
 devices | grep -q stranger && fail "the desktop lists the stranger"
 record '{"step":"unpaired-key-refused"}'
 
+DROPPED=$(grep -c "path link [0-9]*: " "$OUT/linkd.log" || true)
 python3 - "$RFCOMM" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -212,10 +215,9 @@ s.connect(sys.argv[1])
 s.sendall(b"\x16\x03\x01\xff\xff" + b"not a handshake" * 100)
 s.close()
 PY
-sleep 1
+wait_for 5 "the daemon kept the link that sent garbage" eval '[[ $(grep -c "path link [0-9]*: " "$OUT/linkd.log") -gt $DROPPED ]]'
 link CancelPairing > /dev/null || fail "the daemon stopped answering after garbage on the Bluetooth socket"
-grep -q "Bluetooth: handshake failed" "$OUT/linkd.log" || fail "the daemon did not log the failed handshake"
-record '{"step":"garbage-handshake-survived"}'
+record '{"step":"garbage-link-dropped"}'
 
 CHECK=$("$BIN/andromeda-link-phone" check-transcript "$ROOT/api/messages.cddl" "$OUT/transcript.jsonl") \
   || fail "transcript violates the schema"

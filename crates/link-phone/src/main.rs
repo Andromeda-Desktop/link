@@ -269,7 +269,7 @@ struct SocketOpener {
     l2cap: Option<PathBuf>,
 }
 
-impl link_core::stream::BluetoothOpener for SocketOpener {
+impl link_core::bluetooth::BluetoothOpener for SocketOpener {
     fn open(&self, _address: &str, _pair: bool) -> std::io::Result<std::os::fd::OwnedFd> {
         Ok(std::os::unix::net::UnixStream::connect(&self.rfcomm)?.into())
     }

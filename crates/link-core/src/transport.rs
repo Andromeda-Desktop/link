@@ -17,11 +17,11 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The desktop's PING interval; `ARCHITECTURE.md` (Session) says why a third of [`IDLE_TIMEOUT`].
 pub const KEEP_ALIVE: Duration = Duration::from_secs(30);
-/// A present phone's PING interval: a third of the 30 s idle timeout of older desktops and of the Bluetooth mux.
+/// A present phone's PING interval: a third of the 30 s idle timeout of older desktops.
 pub const PHONE_KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// Bulk streams a peer may open at once: a transfer streams four files, the rest is room for other transfers.
 const MAX_BULK_STREAMS: u8 = 8;
-const STREAM_WINDOW: u32 = 8 << 20;
+pub(crate) const STREAM_WINDOW: u32 = 8 << 20;
 const CONNECTION_WINDOW: u32 = 32 << 20;
 
 /// A connection the phone dialled, handshake complete. `resumed` is set when the desktop accepted the TLS session
@@ -253,4 +253,21 @@ fn client_config(identity: &Identity) -> Result<quinn::ClientConfig, Error> {
     crypto.resumption = Resumption::store(Arc::new(ClientSessionMemoryCache::new(32)));
     let crypto = QuicClientConfig::try_from(crypto).map_err(|_| Error::BadKey)?;
     Ok(quinn::ClientConfig::new(Arc::new(crypto)))
+}
+
+/// A phone connection to a desktop over loopback UDP: (phone side, desktop side). The phone's 1 MiB send window
+/// makes a write past the desktop's flow-control window wait.
+#[cfg(test)]
+pub(crate) async fn connected(
+    phone: &Identity,
+    desktop: &Identity,
+) -> Result<(quinn::Connection, quinn::Connection), Error> {
+    let server = server_endpoint(desktop, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let pin = ServerPin::Key(desktop.spki().fingerprint());
+    let accept = async { Ok::<_, Error>(server.accept().await.ok_or(Error::NotConnected)?.await?) };
+    let dialer = Dialer::new(phone)?.tuned(|t| {
+        t.send_window(1 << 20);
+    });
+    let (phone_side, desktop_side) = tokio::join!(dialer.dial(server.local_addr()?, pin), accept);
+    Ok((phone_side?.connection, desktop_side?))
 }

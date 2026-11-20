@@ -368,7 +368,8 @@ mod tests {
 
     use super::*;
     use crate::control::read_frame;
-    use crate::mux::MuxConnection;
+    use crate::identity::Identity;
+    use crate::transport::{STREAM_WINDOW, connected};
 
     fn unit(pts_us: u64, flags: u8) -> Unit {
         Unit { pts_us, flags, data: pts_us.to_be_bytes().to_vec() }
@@ -388,11 +389,14 @@ mod tests {
         Ok((recv, header))
     }
 
+    async fn pair() -> Result<(Connection, Connection), Error> {
+        let (phone, desktop) = connected(&Identity::generate()?, &Identity::generate()?).await?;
+        Ok((phone.into(), desktop.into()))
+    }
+
     #[tokio::test]
     async fn the_newest_video_stream_wins_and_older_or_reset_ones_end_nothing() -> Result<(), Error> {
-        let (phone, desktop) = tokio::io::duplex(1 << 16);
-        let phone = Connection::Stream(MuxConnection::new(phone, true, None));
-        let desktop = Connection::Stream(MuxConnection::new(desktop, false, None));
+        let (phone, desktop) = pair().await?;
         let mut main = open(&phone, None).await?;
         let (recv, header) = accept(&desktop).await?;
         let (mut receiver, parts) = MirrorReceiver::new(recv, &header);
@@ -425,21 +429,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_keyframe_resets_the_stream_whose_write_flow_control_holds() -> Result<(), Error> {
-        let (phone, desktop) = tokio::io::duplex(1 << 16);
-        let phone = Connection::Stream(MuxConnection::new(phone, true, None));
-        let desktop = Connection::Stream(MuxConnection::new(desktop, false, None));
+        let (phone, desktop) = pair().await?;
         let sender = MirrorSender::start(phone, None, 16, 16, true).await?;
         let _main = accept(&desktop).await?;
         sender.send(&unit(1, MIRROR_KEYFRAME)).await?;
         let (mut old, _) = accept(&desktop).await?;
 
-        // The desktop reads no further, so the stream's credit window runs out under this unit.
-        let backlog = Unit { pts_us: 2, flags: 0, data: vec![0; 2 * link_proto::mux::WINDOW as usize] };
+        // The desktop reads no further, so the unit that crosses its stream flow-control window waits.
+        let backlog = Unit { pts_us: 2, flags: 0, data: vec![0; MAX_MIRROR_UNIT] };
+        for _ in 1..STREAM_WINDOW as usize / MAX_MIRROR_UNIT {
+            sender.send(&backlog).await?;
+        }
         let mut blocked = std::pin::pin!(sender.send(&backlog));
-        tokio::select! {
-            biased;
-            _ = &mut blocked => return Err(Error::Unexpected("the backlog was queued at once")),
-            () = std::future::ready(()) => {}
+        if tokio::time::timeout(Duration::from_millis(500), &mut blocked).await.is_ok() {
+            return Err(Error::Unexpected("the backlog went past the flow-control window"));
         }
         let keyframe = unit(3, MIRROR_KEYFRAME);
         let sent =

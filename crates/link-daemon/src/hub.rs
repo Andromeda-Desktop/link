@@ -778,6 +778,7 @@ impl Hub {
                 self.on_system_command(from, id, command).await;
             }
             SessionEvent::Link { from, state } => self.on_link(&from, state),
+            SessionEvent::Path { from, on_bluetooth } => self.moved(&from, on_bluetooth).await,
             SessionEvent::Received { .. } | SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
             SessionEvent::Unpaired { from } => {
                 log::info!("{from} unpaired itself");
@@ -1076,9 +1077,10 @@ impl Hub {
         self.save();
         self.media.connected(&session);
         let on_ip = !session.on_bluetooth();
-        match session.connection().quic().filter(|_| on_ip) {
-            Some(quic) => log::info!("{id}: connected over IP from {}", quic.remote_address()),
-            None => log::info!("{id}: connected over Bluetooth"),
+        if on_ip {
+            log::info!("{id}: connected over IP from {}", session.connection().quic().remote_address());
+        } else {
+            log::info!("{id}: connected over Bluetooth");
         }
         if let Some(older) = self.sessions.insert(id.clone(), session.clone()) {
             older.close(CloseCode::Done);
@@ -1109,11 +1111,20 @@ impl Hub {
         self.send_commands(&id).await;
         self.send_capabilities(&id).await;
         self.send_desktop_status(&id).await;
-        if on_ip {
-            self.send_waiting(&id).await;
+        self.moved(&id, !on_ip).await;
+    }
+
+    /// A session that reached IP takes the sends waiting for it; one back on Bluetooth means the phone's hotspot is
+    /// gone, even if its hotspot-end was lost with an old session.
+    async fn moved(&mut self, id: &DeviceId, on_bluetooth: bool) {
+        if !self.sessions.contains_key(id) {
+            return;
+        }
+        log::info!("{id}: the session is on {}", if on_bluetooth { "Bluetooth" } else { "IP" });
+        if on_bluetooth {
+            self.leave_hotspot(id).await;
         } else {
-            // Back on Bluetooth: the phone's hotspot is gone even if its hotspot-end was lost with the old session.
-            self.leave_hotspot(&id).await;
+            self.send_waiting(id).await;
         }
     }
 
@@ -1414,7 +1425,7 @@ impl Hub {
     fn needs_hotspot(&self, device: &str, sources: &[Source]) -> Option<DeviceId> {
         let peer = DeviceId::parse(device).ok()?;
         let on_bluetooth = self.sessions.get(&peer)?.on_bluetooth();
-        (on_bluetooth && total_size(sources) > link_core::stream::BLUETOOTH_UPGRADE_ABOVE).then_some(peer)
+        (on_bluetooth && total_size(sources) > link_core::bluetooth::BLUETOOTH_UPGRADE_ABOVE).then_some(peer)
     }
 
     /// Asks the phone for its hotspot and parks the work until the session moves there.
@@ -1481,7 +1492,7 @@ impl Hub {
             Parked::Mirror(reply) => return drop(reply.send(Err(crate::mirror::Failure::NeedsWifi))),
             Parked::Send { sources, reply } => (sources, reply),
         };
-        if total_size(&sources) > link_core::stream::BLUETOOTH_FILE_LIMIT {
+        if total_size(&sources) > link_core::bluetooth::BLUETOOTH_FILE_LIMIT {
             return drop(reply.send(Err(error)));
         }
         log::info!("{peer}: sending over Bluetooth: {error}");
@@ -1491,6 +1502,10 @@ impl Hub {
 
     /// A session ended; what hung on it goes only if no newer session replaced it.
     async fn disconnected(&mut self, id: DeviceId, stable_id: usize) {
+        // A session queues its last events, such as a share it acked just before the phone left, before it ends.
+        while let Ok(event) = self.session_events.try_recv() {
+            self.on_session_event(event).await;
+        }
         self.transfers.detach(id.clone(), stable_id).await;
         if self.sessions.get(&id).is_some_and(|live| live.stable_id() == stable_id) {
             self.sessions.remove(&id);
@@ -1549,7 +1564,7 @@ impl Hub {
             .sessions
             .get(&id)
             .filter(|session| !session.on_bluetooth())
-            .and_then(|session| session.connection().quic().cloned());
+            .map(|session| session.connection().quic().clone());
         let refusal = match quic {
             None => Some("remote control needs the same Wi-Fi as the desktop"),
             Some(quic) if net::is_overlay(quic.remote_address().ip()) => {

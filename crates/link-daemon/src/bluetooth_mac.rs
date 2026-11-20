@@ -327,10 +327,9 @@ unsafe extern "C-unwind" fn readable(_descriptor: *mut CFFileDescriptor, _flags:
     pump.forward();
 }
 
-/// Every stream's credit window plus room for control frames: 10 x 256 KiB.
+/// Two congestion windows of a link, so the pump always has the next window to hand the radio.
 #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap, reason = "constants far below 2^31")]
-const PIPE_BUFFER: libc::c_int =
-    ((link_core::proto::mux::MAX_PEER_STREAMS as u32 + 1) * link_core::proto::mux::WINDOW) as libc::c_int;
+const PIPE_BUFFER: libc::c_int = (2 * link_core::path::LINK_WINDOW) as libc::c_int;
 
 fn hold_windows(ours: &UnixStream, theirs: &UnixStream) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
