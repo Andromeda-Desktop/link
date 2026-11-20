@@ -17,7 +17,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 # Received files, from Link phones, Quick Share, and LocalSend, land here and nowhere else in home.
 ReadWritePaths=-%h/Downloads
-PrivateTmp=yes
+# No PrivateTmp: browsers publish MPRIS artwork as files in /tmp, which ProtectSystem=strict keeps read-only.
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
