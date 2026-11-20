@@ -41,9 +41,14 @@ def main() -> int:
     bus = Gio.bus_get_sync(Gio.BusType.SESSION)
     device_id, device_name = connected_device(bus)
     loop = GLib.MainLoop()
-    state = {"id": None, "status": None, "early": {}}
+    state = {"id": None, "status": None, "early": {}, "first": None}
 
     def on_signal(_conn, _sender, _path, _iface, member, params):
+        if member == "TransferProgress":
+            # The first progress is the first byte on the wire, after the phone accepted.
+            if state["first"] is None and params.unpack()[1] > 0:
+                state["first"] = time.monotonic()
+            return
         if member != "TransferFinished":
             return
         transfer, status = params.unpack()[:2]
@@ -53,7 +58,8 @@ def main() -> int:
             state["status"] = status
             loop.quit()
 
-    bus.signal_subscribe(NAME, IFACE, "TransferFinished", PATH, None, Gio.DBusSignalFlags.NONE, on_signal)
+    for signal in ("TransferFinished", "TransferProgress"):
+        bus.signal_subscribe(NAME, IFACE, signal, PATH, None, Gio.DBusSignalFlags.NONE, on_signal)
     with tempfile.NamedTemporaryFile(prefix="link-speed-", suffix=".bin") as blob:
         for _ in range(mib):
             blob.write(os.urandom(1 << 20))
@@ -70,11 +76,14 @@ def main() -> int:
         if state["status"] is None:
             GLib.timeout_add_seconds(1800, loop.quit)
             loop.run()
-        seconds = time.monotonic() - started
+        ended = time.monotonic()
+        seconds = ended - started
+        wire = ended - state["first"] if state["first"] else None
     result = {
         "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "label": label, "device": device_name, "path": path,
         "path_after": session_path(device_id), "bytes": mib << 20, "status": state["status"],
         "seconds": round(seconds, 2), "mib_per_s": round(mib / seconds, 2),
+        "wire_seconds": round(wire, 2) if wire else None, "wire_mib_per_s": round(mib / wire, 2) if wire else None,
     }
     OUT.mkdir(parents=True, exist_ok=True)
     with open(OUT / "results.jsonl", "a") as out:

@@ -226,7 +226,7 @@ impl Record {
 
 impl Part {
     /// Opens an existing part, cut to `offset`, and re-hashes what it holds: a digest context cannot be saved.
-    pub async fn open(path: &Path, offset: u64) -> Result<Self, Error> {
+    pub fn open(path: &Path, offset: u64) -> Result<Self, Error> {
         let flags = rustix::fs::OFlags::NOFOLLOW.bits();
         let file = OpenOptions::new().read(true).write(true).custom_flags(flags.cast_signed()).open(path)?;
         file.set_len(offset)?;
@@ -241,7 +241,6 @@ impl Part {
             }
             hasher.update(&buf[..read]);
             at += read as u64;
-            tokio::task::yield_now().await;
         }
         Ok(Self { file, hasher, offset })
     }

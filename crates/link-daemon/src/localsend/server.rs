@@ -124,7 +124,7 @@ async fn write_part<R: AsyncRead + Unpin>(
     handle: &LocalSendHandle,
     session: &str,
 ) -> Received {
-    let Ok(mut part) = Part::open(part, 0).await else { return Received::Failed };
+    let Ok(mut part) = Part::open(part, 0) else { return Received::Failed };
     let mut budget = Budget::new(size);
     let mut buf = vec![0; CHUNK];
     let mut reported = 0;

@@ -311,7 +311,10 @@ mod tests {
 
         let desktop = Identity::generate()?;
         let server = path_server_endpoint(&desktop, server_socket.clone())?;
-        let dialer = Dialer::on_path(&Identity::generate()?, phone_socket.clone())?;
+        // A small send window keeps writes waiting on the wire, so the moves below happen with the stream in flight.
+        let dialer = Dialer::on_path(&Identity::generate()?, phone_socket.clone())?.tuned(|t| {
+            t.send_window(1 << 20);
+        });
         let pin = ServerPin::Key(desktop.spki().fingerprint());
 
         let receiver = tokio::spawn(async move {

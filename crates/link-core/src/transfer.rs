@@ -40,6 +40,8 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 pub const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_OPEN_PER_PEER: usize = 8;
 const CHUNK: usize = 256 * 1024;
+/// Disk reads and writes go in batches of this size to the blocking pool, off the thread that drives QUIC.
+const BATCH: usize = 1 << 20;
 const SYNC_EVERY: u64 = 8 << 20;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 const PROTOCOL_ERROR: u32 = CloseCode::ProtocolError as u32;
@@ -685,7 +687,7 @@ impl TransferActor {
             last_progress: None,
         };
         self.outgoing.insert(id, out);
-        self.tasks.spawn(async move { TaskEnd::Hashed { id, hashes: hash_all(&to_hash).await } });
+        self.tasks.spawn(async move { TaskEnd::Hashed { id, hashes: blocking(move || hash_all(&to_hash)).await } });
         self.update_busy(peer);
         Ok(id)
     }
@@ -1082,10 +1084,11 @@ impl Drop for Outbound {
     }
 }
 
+/// Sends the file from the header's offset; the next batch is read while the current one is written to the stream.
 async fn send_file(
     session: &SessionHandle,
     header: FileData,
-    file: &File,
+    file: &Arc<File>,
     size: u64,
     ticker: &Ticker,
 ) -> Result<(), Error> {
@@ -1093,20 +1096,60 @@ async fn send_file(
     let stream = session.connection().open_uni().await?;
     let mut out = Outbound { stream, finished: false };
     write_frame(&mut out.stream, Message::FileData(header), session.tap()).await?;
-    let mut buf = vec![0; CHUNK];
-    while offset < size {
-        let want = usize::try_from(size - offset).map_or(CHUNK, |left| left.min(CHUNK));
-        let read = file.read_at(&mut buf[..want], offset)?;
-        if read == 0 {
-            return Err(Error::Io(std::io::Error::other("the file shrank while it was sent")));
-        }
-        out.stream.write_all(&buf[..read]).await?;
-        offset += read as u64;
+    let mut next = (offset < size).then(|| read_batch(file.clone(), offset, size, Vec::new()));
+    while let Some(reading) = next.take() {
+        let buf = reading.await.map_err(joined)??;
+        offset += buf.len() as u64;
+        let spare = if offset < size { Vec::with_capacity(BATCH) } else { Vec::new() };
+        next = (offset < size).then(|| read_batch(file.clone(), offset, size, spare));
+        out.stream.write_all(&buf).await?;
         ticker.progress(offset);
     }
     out.stream.finish()?;
     out.finished = true;
     Ok(())
+}
+
+fn read_batch(
+    file: Arc<File>,
+    offset: u64,
+    size: u64,
+    mut buf: Vec<u8>,
+) -> tokio::task::JoinHandle<Result<Vec<u8>, Error>> {
+    tokio::task::spawn_blocking(move || {
+        let want = usize::try_from(size - offset).map_or(BATCH, |left| left.min(BATCH));
+        buf.resize(want, 0);
+        let mut filled = 0;
+        while filled < want {
+            let read = file.read_at(&mut buf[filled..], offset + filled as u64)?;
+            if read == 0 {
+                return Err(Error::Io(std::io::Error::other("the file shrank while it was sent")));
+            }
+            filled += read;
+        }
+        Ok(buf)
+    })
+}
+
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, Error> + Send + 'static) -> Result<T, Error> {
+    tokio::task::spawn_blocking(work).await.map_err(joined)?
+}
+
+fn joined(error: tokio::task::JoinError) -> Error {
+    Error::Io(std::io::Error::other(error))
+}
+
+/// Writes `batch` to the part off the runtime thread, and syncs when `sync` is set or [`SYNC_EVERY`] bytes passed since
+/// `synced`; returns the part, the emptied batch and the durable offset. An aborted receive leaves a running write to
+/// finish: it writes the sender's own bytes at their own offsets, so a resumed part gets the same content there.
+async fn flush(mut part: Part, mut batch: Vec<u8>, synced: u64, sync: bool) -> Result<(Part, Vec<u8>, u64), Error> {
+    blocking(move || {
+        part.write(&batch)?;
+        batch.clear();
+        let synced = if sync || part.offset() - synced >= SYNC_EVERY { part.sync()? } else { synced };
+        Ok((part, batch, synced))
+    })
+    .await
 }
 
 async fn receive(
@@ -1116,7 +1159,8 @@ async fn receive(
     expected: &[u8],
     ticker: &Ticker,
 ) -> Received {
-    let mut part = match Part::open(part, budget.offset()).await {
+    let (path, offset) = (part.to_path_buf(), budget.offset());
+    let mut part = match blocking(move || Part::open(&path, offset)).await {
         Ok(part) => part,
         Err(error) => {
             recv.stop(PROTOCOL_ERROR);
@@ -1124,54 +1168,61 @@ async fn receive(
         }
     };
     let mut synced = part.offset();
+    let mut batch = Vec::with_capacity(BATCH);
     loop {
         let chunk = match recv.read_chunk(CHUNK).await {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
-            Err(_) => return Received::Paused { durable: part.sync().unwrap_or(synced) },
+            Err(_) => {
+                let durable = flush(part, batch, synced, true).await.map_or(synced, |(_, _, durable)| durable);
+                return Received::Paused { durable };
+            }
         };
         if let Err(overrun) = budget.take(chunk.len()) {
             recv.stop(PROTOCOL_ERROR);
             return Received::Overrun(overrun);
         }
-        if let Err(error) = part.write(&chunk) {
-            recv.stop(PROTOCOL_ERROR);
-            return Received::Failed(error);
+        batch.extend_from_slice(&chunk);
+        if batch.len() < BATCH {
+            continue;
         }
-        if part.offset() - synced >= SYNC_EVERY {
-            match part.sync() {
-                Ok(offset) => synced = offset,
-                Err(error) => return Received::Failed(error),
+        let before = synced;
+        (part, batch, synced) = match flush(part, batch, synced, false).await {
+            Ok(flushed) => flushed,
+            Err(error) => {
+                recv.stop(PROTOCOL_ERROR);
+                return Received::Failed(error);
             }
-            ticker.durable(synced).await;
-        } else {
+        };
+        if synced == before {
             ticker.progress(part.offset());
+        } else {
+            ticker.durable(synced).await;
         }
     }
     if let Err(overrun) = budget.finish() {
         return Received::Overrun(overrun);
     }
-    if let Err(error) = part.sync() {
-        return Received::Failed(error);
+    match flush(part, batch, synced, true).await {
+        Ok((part, _, _)) => Received::Complete { verified: part.digest() == expected },
+        Err(error) => Received::Failed(error),
     }
-    Received::Complete { verified: part.digest() == expected }
 }
 
-async fn hash_all(files: &[(Arc<File>, u64)]) -> Result<Vec<Vec<u8>>, Error> {
+fn hash_all(files: &[(Arc<File>, u64)]) -> Result<Vec<Vec<u8>>, Error> {
     let mut hashes = Vec::with_capacity(files.len());
-    let mut buf = vec![0; CHUNK];
+    let mut buf = vec![0; BATCH];
     for (file, size) in files {
         let mut context = digest::Context::new(&digest::SHA256);
         let mut offset = 0;
         while offset < *size {
-            let want = usize::try_from(size - offset).map_or(CHUNK, |left| left.min(CHUNK));
+            let want = usize::try_from(size - offset).map_or(BATCH, |left| left.min(BATCH));
             let read = file.read_at(&mut buf[..want], offset)?;
             if read == 0 {
                 return Err(Error::Io(std::io::Error::other("the file shrank while it was hashed")));
             }
             context.update(&buf[..read]);
             offset += read as u64;
-            tokio::task::yield_now().await;
         }
         hashes.push(context.finish().as_ref().to_vec());
     }
