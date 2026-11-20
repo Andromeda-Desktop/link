@@ -1,4 +1,4 @@
-# Toggles "Stay connected" in Settings and returns to Home.
+# Toggles "Keep the link open" in Settings and returns to Home.
 appId: org.andromeda.link
 ---
 - launchApp:
@@ -6,7 +6,6 @@ appId: org.andromeda.link
     permissions: { notifications: allow }
     stopApp: false
 - tapOn: "Settings"
-# The switch row under the "Stay connected" heading.
 - scrollUntilVisible:
     element: "Keep the link open"
 - tapOn:

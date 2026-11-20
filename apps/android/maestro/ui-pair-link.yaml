@@ -15,6 +15,12 @@ appId: org.andromeda.link
 - tapOn:
     text: "Don.t allow"
     optional: true
+# Pairing opens Setup while a grant is missing (a real phone, unlike the emulator, may not take every adb grant).
+- repeat:
+    while:
+      visible: "Not now"
+    commands:
+      - tapOn: "Not now"
 - extendedWaitUntil:
     visible: "Connected, Wi-Fi"
     timeout: 20000

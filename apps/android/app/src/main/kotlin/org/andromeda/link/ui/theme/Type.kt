@@ -32,6 +32,7 @@ data class PhoneType(
     val title2: TextStyle = phone(Tok.Type.title2),
     val title1: TextStyle = phone(Tok.Type.title1),
     val large: TextStyle = phone(Tok.Type.large),
+    val mono: TextStyle = phone(Tok.Type.mono).copy(fontFamily = FontFamily.Monospace),
 )
 
 /** Old role names over [PhoneType]; each screen moves to [LinkTheme.phoneType] when it is rebuilt. */

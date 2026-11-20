@@ -517,5 +517,13 @@ object Tok {
         val followZoomWide = 1.6f
         val followBand = 0.6f
         val maxZoom = 5.0f
+        val heroGlyph = 80.0f
+        val heroSymbol = 40.0f
+        val orb = 120.0f
+        val orbRing = 0.08f
+        val orbTint = 0.22f
+        val codeCell = 64.0f
+        val finderCorner = 44.0f
+        val finderInset = 0.22f
     }
 }

@@ -3,7 +3,7 @@ appId: org.andromeda.link
 ---
 - launchApp:
     # An explicit list: by default Maestro grants every permission, READ_LOGS too, which kills the app.
-    permissions: { notifications: allow }
+    permissions: { notifications: allow, camera: allow, bluetooth: allow }
     stopApp: true
 - extendedWaitUntil:
     visible: "Scan your desktop"
@@ -11,10 +11,10 @@ appId: org.andromeda.link
 - takeScreenshot: ${OUT}/${THEME}-home-empty
 - tapOn: "Scan QR code"
 - extendedWaitUntil:
-    visible: "Type the 6-digit code instead"
+    visible: "Type the 6-digit code"
     timeout: 10000
 - takeScreenshot: ${OUT}/${THEME}-pairing-scan
-- tapOn: "Type the 6-digit code instead"
+- tapOn: "Type the 6-digit code"
 - extendedWaitUntil:
     visible: "Type the code"
     timeout: 10000

@@ -8,7 +8,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,23 +16,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -48,7 +43,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -61,24 +60,27 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
-import org.andromeda.link.ui.components.DashboardCard
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.components.Readout
 import org.andromeda.link.ui.components.Screen
-import org.andromeda.link.ui.components.StopTrack
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.GroupCard
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Separator
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
+import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Size
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
 
 private data class Page(
     val grant: Grant,
     val title: Int,
     val body: Int,
     val icon: ImageVector,
+    val points: List<Int>,
+    /** What Android shows when the user allows it. */
+    val foot: Int,
 )
 
 private val PAGES =
@@ -87,15 +89,66 @@ private val PAGES =
             Grant.NotificationAccess,
             R.string.onboarding_notifications_title,
             R.string.onboarding_notifications_body,
-            Icons.Filled.Notifications,
+            Icons.Bell,
+            listOf(R.string.onboarding_notifications_p1, R.string.onboarding_notifications_p2),
+            R.string.onboarding_foot_notifications,
         ),
-        Page(Grant.DoNotDisturb, R.string.onboarding_dnd_title, R.string.onboarding_dnd_body, Icons.Filled.Warning),
-        Page(Grant.PostNotifications, R.string.onboarding_post_title, R.string.onboarding_post_body, Icons.Filled.Notifications),
-        Page(Grant.Battery, R.string.onboarding_battery_title, R.string.onboarding_battery_body, Icons.Filled.Favorite),
-        Page(Grant.Calls, R.string.onboarding_calls_title, R.string.onboarding_calls_body, Icons.Filled.Call),
-        Page(Grant.Bluetooth, R.string.onboarding_bluetooth_title, R.string.onboarding_bluetooth_body, Icons.Filled.Share),
-        Page(Grant.Texts, R.string.onboarding_texts_title, R.string.onboarding_texts_body, Icons.Filled.Email),
-        Page(Grant.AutoClipboard, R.string.onboarding_clipboard_title, R.string.onboarding_clipboard_body, Icons.Filled.Edit),
+        Page(
+            Grant.DoNotDisturb,
+            R.string.onboarding_dnd_title,
+            R.string.onboarding_dnd_body,
+            Icons.Dnd,
+            listOf(R.string.onboarding_dnd_p1, R.string.onboarding_dnd_p2),
+            R.string.onboarding_foot_dnd,
+        ),
+        Page(
+            Grant.PostNotifications,
+            R.string.onboarding_post_title,
+            R.string.onboarding_post_body,
+            Icons.Bell,
+            emptyList(),
+            R.string.onboarding_foot_ask,
+        ),
+        Page(
+            Grant.Battery,
+            R.string.onboarding_battery_title,
+            R.string.onboarding_battery_body,
+            Icons.Battery,
+            listOf(R.string.onboarding_battery_p1),
+            R.string.onboarding_foot_battery,
+        ),
+        Page(
+            Grant.Calls,
+            R.string.onboarding_calls_title,
+            R.string.onboarding_calls_body,
+            Icons.Call,
+            listOf(R.string.onboarding_calls_p1, R.string.onboarding_calls_p2),
+            R.string.onboarding_foot_ask,
+        ),
+        Page(
+            Grant.Bluetooth,
+            R.string.onboarding_bluetooth_title,
+            R.string.onboarding_bluetooth_body,
+            Icons.Bt,
+            listOf(R.string.onboarding_bluetooth_p1, R.string.onboarding_bluetooth_p2),
+            R.string.onboarding_foot_ask,
+        ),
+        Page(
+            Grant.Texts,
+            R.string.onboarding_texts_title,
+            R.string.onboarding_texts_body,
+            Icons.Msg,
+            listOf(R.string.onboarding_texts_p1, R.string.onboarding_texts_p2),
+            R.string.onboarding_foot_ask,
+        ),
+        Page(
+            Grant.AutoClipboard,
+            R.string.onboarding_clipboard_title,
+            R.string.onboarding_clipboard_body,
+            Icons.Clip,
+            emptyList(),
+            R.string.onboarding_foot_clipboard,
+        ),
     )
 
 /** A short paged flow through the grants, each explained before Android's own screen asks. */
@@ -120,6 +173,13 @@ fun OnboardingScreen(
     }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.refresh() }
     val last = pager.currentPage == PAGES.lastIndex
+    // The scroll runs in the screen's scope: an effect keyed on currentPage would cancel it halfway, where currentPage
+    // changes, and leave the pager between two pages. It counts from the settled page, so a tap during a scroll does not
+    // skip one.
+    val next = {
+        val from = pager.settledPage
+        if (from == PAGES.lastIndex) onDone() else scope.launch { pager.animateScrollToPage(from + 1) }
+    }
     // A grant given on its page moves on by itself, once the user has seen it turn granted.
     val currentGranted = PAGES[pager.currentPage].grant in state.granted
     var seenUngranted by remember(pager.currentPage) { mutableStateOf(!currentGranted) }
@@ -128,52 +188,98 @@ fun OnboardingScreen(
             seenUngranted = true
         } else if (seenUngranted && !last) {
             delay(ADVANCE_MS)
-            pager.animateScrollToPage(pager.currentPage + 1)
+            if (!pager.isScrollInProgress) next()
         }
     }
     Box(modifier) {
-        Screen(title = stringResource(R.string.setup_title), onBack = onDone) {
-            StopTrack(
-                PAGES.size,
-                pager.currentPage,
-                { PAGES[it].grant in state.granted },
-                { scope.launch { pager.animateScrollToPage(it) } },
-                Modifier.padding(horizontal = Space.s8),
-            )
+        Screen(null, background = LinkTheme.scheme.solidRegular) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = Tok.Space.p16.dp, end = Tok.Space.p4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Steps(pager.currentPage, Modifier.weight(1f))
+                Box(
+                    Modifier
+                        .height(Tok.Phone.hit.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button) { next() }
+                        .padding(horizontal = Tok.Space.p12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        stringResource(R.string.onboarding_not_now),
+                        LinkTheme.phoneType.body.copy(fontWeight = FontWeight.SemiBold),
+                        color = LinkTheme.scheme.accentText,
+                        maxLines = 1,
+                    )
+                }
+            }
             HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()) { index ->
                 val page = PAGES[index]
-                PageContent(page, index, granted = page.grant in state.granted, extra = {
-                    if (page.grant == Grant.AutoClipboard && page.grant !in state.granted) {
-                        ClipboardSteps(viewModel.adbCommand(), viewModel::overlayAllowed, viewModel::logsAllowed) {
-                            viewModel.settings(Grant.AutoClipboard, mirrorSettings)?.let(context::startActivity)
-                        }
-                    }
-                }) {
-                    val permissions = viewModel.permissions(page.grant)
-                    if (permissions.isNotEmpty()) {
-                        request.launch(
-                            permissions,
-                        )
-                    } else {
-                        viewModel.settings(page.grant, mirrorSettings)?.let(context::startActivity)
+                val granted = page.grant in state.granted
+                val clipboardSteps = page.grant == Grant.AutoClipboard && !granted
+                PageContent(
+                    page,
+                    granted,
+                    steps =
+                        if (clipboardSteps) {
+                            {
+                                ClipboardSteps(viewModel.adbCommand(), viewModel::overlayAllowed, viewModel::logsAllowed) {
+                                    viewModel.settings(Grant.AutoClipboard, mirrorSettings)?.let(context::startActivity)
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                ) {
+                    when {
+                        clipboardSteps -> {}
+                        granted ->
+                            Capsule(
+                                stringResource(if (index == PAGES.lastIndex) R.string.onboarding_done else R.string.onboarding_next),
+                                { next() },
+                                Modifier.fillMaxWidth(),
+                                kind = CapsuleKind.Primary,
+                                large = true,
+                            )
+                        else ->
+                            Capsule(
+                                stringResource(R.string.onboarding_allow),
+                                {
+                                    val permissions = viewModel.permissions(page.grant)
+                                    if (permissions.isNotEmpty()) {
+                                        request.launch(permissions)
+                                    } else {
+                                        viewModel.settings(page.grant, mirrorSettings)?.let(context::startActivity)
+                                    }
+                                },
+                                Modifier.fillMaxWidth(),
+                                kind = CapsuleKind.Primary,
+                                large = true,
+                            )
                     }
                 }
             }
-            Row(
-                Modifier.fillMaxWidth().navigationBarsPadding().padding(Space.page),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Readout(
-                    stringResource(R.string.onboarding_count, state.granted.count { grant -> PAGES.any { it.grant == grant } }, PAGES.size),
-                    modifier = Modifier.weight(1f),
-                )
-                if (!last) PillButton(stringResource(R.string.onboarding_not_now), onDone, kind = PillKind.Quiet)
-                PillButton(
-                    stringResource(if (last) R.string.onboarding_done else R.string.onboarding_next),
-                    onClick = { if (last) onDone() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
-                    kind = PillKind.Tonal,
-                )
-            }
+        }
+    }
+}
+
+/** The step track: one bar per page, the current one accent and wider. */
+@Composable
+private fun Steps(
+    current: Int,
+    modifier: Modifier = Modifier,
+) {
+    val s = LinkTheme.scheme
+    val description = stringResource(R.string.onboarding_step, current + 1, PAGES.size)
+    Row(modifier.semantics { contentDescription = description }, horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp)) {
+        repeat(PAGES.size) {
+            Box(
+                Modifier
+                    .width(if (it == current) Tok.Space.p24.dp else Tok.Space.p16.dp)
+                    .height(Tok.Space.p4.dp)
+                    .background(if (it == current) s.accent else s.fill2, CircleShape),
+            )
         }
     }
 }
@@ -181,42 +287,56 @@ fun OnboardingScreen(
 @Composable
 private fun PageContent(
     page: Page,
-    index: Int,
     granted: Boolean,
-    extra: @Composable () -> Unit,
-    onAllow: () -> Unit,
+    steps: (@Composable () -> Unit)?,
+    action: @Composable () -> Unit,
 ) {
-    val colors = LinkTheme.colors
-    // Set low on the page when it fits; a page with more to say, like the clipboard one, scrolls instead of clipping.
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    // The hero sits in the middle when the page fits; a page with more to say, like the clipboard one, scrolls.
     BoxWithConstraints(Modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .heightIn(min = maxHeight)
-                .padding(horizontal = Space.page, vertical = Space.s16),
-            verticalArrangement = Arrangement.spacedBy(Space.s16, Alignment.CenterVertically),
+                .navigationBarsPadding()
+                .padding(horizontal = Tok.Space.p16.dp)
+                .padding(bottom = Tok.Space.p12.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Box(
-                Modifier
-                    .size(72.dp)
-                    .clip(Radius.pill)
-                    .background(if (granted) colors.accent else colors.surfacePrimary)
-                    .border(1.5.dp, if (granted) colors.accent else colors.borderPrimary, Radius.pill),
-                contentAlignment = Alignment.Center,
-            ) { Glyph(if (granted) Icons.Filled.Check else page.icon, if (granted) colors.onAccent else colors.textPrimary, 30.dp) }
-            Readout(
-                stringResource(if (granted) R.string.onboarding_step_granted else R.string.onboarding_step, index + 1, PAGES.size),
-                if (granted) colors.accentText else colors.textTertiary,
-                Modifier.padding(top = Space.s8),
-            )
-            Label(stringResource(page.title), LinkTheme.type.displayLarge, modifier = Modifier.fillMaxWidth())
-            Label(stringResource(page.body), LinkTheme.type.bodyLarge, colors.textSecondary, Modifier.fillMaxWidth())
-            if (granted) return@Column
-            if (page.grant != Grant.AutoClipboard) {
-                PillButton(stringResource(R.string.onboarding_allow), onAllow, Modifier.padding(top = Space.s8).fillMaxWidth())
-            } else {
-                extra()
+            Box(Modifier)
+            Column(verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+                val tint = if (granted) s.success else s.accent
+                Box(
+                    Modifier
+                        .padding(bottom = Tok.Space.p16.dp)
+                        .size(Tok.Phone.heroGlyph.dp)
+                        .clip(RoundedCornerShape(Tok.Radius.r24.dp))
+                        .background(tint.copy(alpha = Tok.Phone.glyphTint)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Symbol(
+                        if (granted) Icons.Check else page.icon,
+                        if (granted) s.success else s.accentText,
+                        size = Tok.Phone.heroSymbol.dp,
+                    )
+                }
+                Text(stringResource(page.title), t.large)
+                Text(stringResource(page.body), t.paragraph, color = s.label2)
+                Column(Modifier.padding(top = Tok.Space.p8.dp), verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+                    for (point in page.points) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) {
+                            Symbol(Icons.Check, s.success, Modifier.padding(top = Tok.Space.p2.dp), size = Tok.Size.symbol.dp)
+                            Text(stringResource(point), t.body.copy(lineHeight = t.paragraph.lineHeight))
+                        }
+                    }
+                }
+                if (steps != null) Box(Modifier.padding(top = Tok.Space.p16.dp)) { steps() }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) {
+                Text(stringResource(page.foot), t.footnote, modifier = Modifier.fillMaxWidth(), color = s.label2, align = TextAlign.Center)
+                action()
             }
         }
     }
@@ -235,7 +355,8 @@ private fun ClipboardSteps(
     logsAllowed: () -> Boolean,
     onOverlay: () -> Unit,
 ) {
-    val colors = LinkTheme.colors
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
     val context = LocalContext.current
     var overlay by remember { mutableStateOf(overlayAllowed()) }
     var logs by remember { mutableStateOf(logsAllowed()) }
@@ -246,36 +367,42 @@ private fun ClipboardSteps(
         logs = logsNow()
         onPauseOrDispose {}
     }
-    DashboardCard(Modifier.fillMaxWidth()) {
+    val inset = Modifier.padding(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Space.p12.dp)
+    GroupCard {
         Step(stringResource(R.string.onboarding_clipboard_step_overlay), overlay) {
-            PillButton(stringResource(R.string.onboarding_clipboard_open), onOverlay)
+            Pill(stringResource(R.string.onboarding_clipboard_open), onOverlay)
         }
         if (!overlay) {
-            Label(stringResource(R.string.onboarding_clipboard_restricted), LinkTheme.type.bodySmall, colors.textSecondary)
-            PillButton(stringResource(R.string.onboarding_clipboard_app_info), {
-                context.startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }, kind = PillKind.Quiet)
+            Column(inset, verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+                Text(stringResource(R.string.onboarding_clipboard_restricted), t.footnote, color = s.label2)
+                Pill(stringResource(R.string.onboarding_clipboard_app_info), {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                })
+            }
         }
+        Separator()
         Step(stringResource(R.string.onboarding_clipboard_step_logs), logs) {
-            if (LogAccess.shizukuAsks()) PillButton(stringResource(R.string.onboarding_clipboard_shizuku), LogAccess::askShizuku)
+            if (LogAccess.shizukuAsks()) Pill(stringResource(R.string.onboarding_clipboard_shizuku), LogAccess::askShizuku)
         }
         if (!logs) {
-            Label(
-                command,
-                LinkTheme.type.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                colors.textPrimary,
-                Modifier
-                    .fillMaxWidth()
-                    .clip(Radius.list)
-                    .background(colors.surfacePrimary)
-                    .padding(Space.s12),
-            )
-            PillButton(stringResource(R.string.onboarding_clipboard_copy), onClick = {
-                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb", command))
-            }, kind = PillKind.Quiet)
+            Column(inset, verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+                Text(
+                    command,
+                    t.mono,
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Tok.Radius.r12.dp))
+                        .background(s.fill1)
+                        .padding(Tok.Space.p12.dp),
+                )
+                Pill(stringResource(R.string.onboarding_clipboard_copy), {
+                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb", command))
+                })
+                Text(stringResource(R.string.onboarding_clipboard_note), t.footnote, color = s.label2)
+            }
         }
     }
 }
@@ -287,14 +414,5 @@ private fun Step(
     done: Boolean,
     action: @Composable () -> Unit,
 ) {
-    val colors = LinkTheme.colors
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = Space.s8),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.s12),
-    ) {
-        Glyph(if (done) Icons.Filled.Check else Icons.Filled.Warning, if (done) colors.success else colors.warning, Size.icon - 4.dp)
-        Label(label, LinkTheme.type.titleMedium, modifier = Modifier.weight(1f))
-        if (!done) action()
-    }
+    ValueRow(label, icon = if (done) Icons.Check else Icons.Alert) { if (!done) action() }
 }

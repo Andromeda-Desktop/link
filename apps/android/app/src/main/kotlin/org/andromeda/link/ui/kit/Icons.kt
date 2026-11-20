@@ -144,6 +144,7 @@ object Icons {
             "M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2z M6 9h.01M10 9h.01M14 9h.01M18 9h.01M7 15h10",
         )
     }
+    val Qr by lazy { icon("qr", "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3z M14 14h3v3h-3zM20 14v.01M14 20h.01M17 17h4v4h-4") }
 }
 
 private fun icon(

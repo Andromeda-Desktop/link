@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -92,6 +93,7 @@ fun Capsule(
     icon: ImageVector? = null,
     kind: CapsuleKind = CapsuleKind.Neutral,
     large: Boolean = false,
+    enabled: Boolean = true,
 ) {
     val s = LinkTheme.scheme
     val (fill, ink) =
@@ -104,9 +106,10 @@ fun Capsule(
     Row(
         modifier
             .height(if (large) Tok.Size.rowTwo.dp else Tok.Phone.hit.dp)
+            .alpha(if (enabled) 1f else Tok.Phone.offAlpha)
             .clip(CircleShape)
             .background(fill)
-            .clickable(role = Role.Button, onClick = onClick)
+            .clickable(enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = Tok.Space.p16.dp),
         horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
@@ -191,6 +194,7 @@ private fun RowFrame(
     modifier: Modifier = Modifier,
     on: Boolean = false,
     accent: Boolean = false,
+    leading: (@Composable () -> Unit)? = null,
     trailing: @Composable RowScope.() -> Unit,
 ) {
     val s = LinkTheme.scheme
@@ -203,6 +207,7 @@ private fun RowFrame(
         horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        leading?.invoke()
         if (icon != null) {
             Symbol(
                 icon,
@@ -238,10 +243,19 @@ fun ValueRow(
     chevron: ImageVector? = null,
     accent: Boolean = false,
     onClick: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
     trailing: @Composable RowScope.() -> Unit = {},
 ) {
     val s = LinkTheme.scheme
-    RowFrame(title, subtitle, icon, true, if (onClick != null) modifier.clickable(onClick = onClick) else modifier, accent = accent) {
+    RowFrame(
+        title,
+        subtitle,
+        icon,
+        true,
+        if (onClick != null) modifier.clickable(onClick = onClick) else modifier,
+        accent = accent,
+        leading = leading,
+    ) {
         if (value !=
             null
         ) {
@@ -309,18 +323,21 @@ fun Switch(
     }
 }
 
-/** A short heading over a group: headline, 32 above, 8 below. */
+/** A short heading over a group: headline, 32 above, 8 below; [detail] follows it in label_2. */
 @Composable
 fun SectionTitle(
     text: String,
     modifier: Modifier = Modifier,
+    detail: String? = null,
 ) {
-    Text(
-        text,
-        LinkTheme.phoneType.headline,
-        modifier = modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p32.dp, bottom = Tok.Space.p8.dp),
-        maxLines = 1,
-    )
+    Row(
+        modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p32.dp, bottom = Tok.Space.p8.dp),
+        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(text, LinkTheme.phoneType.headline, maxLines = 1)
+        if (detail != null) Text(detail, LinkTheme.phoneType.body, color = LinkTheme.scheme.label2, maxLines = 1)
+    }
 }
 
 /** One of a few options: fill_1 track, the selected option on view with e1. [tall] = 48, else 40 with a 4 inset. */

@@ -1,49 +1,35 @@
 package org.andromeda.link.devices
 
 import android.content.Context
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.clipboard.LogAccess.Method
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.PaperRow
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.theme.LinkColors
+import org.andromeda.link.ui.kit.GroupCard
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Separator
+import org.andromeda.link.ui.kit.Sheet
+import org.andromeda.link.ui.kit.Text
+import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Motion
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
 
 /** What each method needs, read when Settings resumes or the pick changes. */
 data class LogMethods(
@@ -65,7 +51,7 @@ data class LogMethods(
         }
 }
 
-/** Settings > Advanced (DESIGN.md, direction A): one radio row per method, and the setup step of a pick not ready. */
+/** Settings > Advanced: one radio row per method, and the setup step of a pick not ready. */
 @Suppress("ktlint:standard:function-naming")
 @Composable
 fun BoxScope.LogAccessSheet(
@@ -77,47 +63,13 @@ fun BoxScope.LogAccessSheet(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    BackHandler(open, onClose)
-    val colors = LinkTheme.colors
-    AnimatedVisibility(open, enter = fadeIn(tween(Motion.FAST)), exit = fadeOut(tween(Motion.FADE_OUT))) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(colors.surfaceOverlay)
-                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onClose),
-        )
-    }
-    AnimatedVisibility(
-        open,
-        modifier = modifier.align(Alignment.BottomCenter),
-        enter = slideInVertically(tween(Motion.NORMAL, easing = Motion.smoothEnter)) { it },
-        exit = slideOutVertically(tween(Motion.FAST, easing = Motion.exit)) { it },
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                .background(if (colors.dark) colors.surfaceSecondary else colors.surfacePrimary)
-                .clickable(remember { MutableInteractionSource() }, indication = null) {}
-                .navigationBarsPadding()
-                .padding(start = Space.page, end = Space.page, bottom = Space.s16),
-        ) {
-            Box(
-                Modifier
-                    .padding(top = Space.s8)
-                    .align(Alignment.CenterHorizontally)
-                    .size(36.dp, 4.dp)
-                    .clip(Radius.pill)
-                    .background(colors.borderPrimary),
-            )
-            Label(
-                stringResource(R.string.log_method),
-                LinkTheme.type.headlineMedium,
-                modifier = Modifier.padding(top = Space.s16, bottom = Space.s8),
-            )
+    val s = LinkTheme.scheme
+    Sheet(open, onClose, stringResource(R.string.log_method), modifier) {
+        GroupCard {
             Method.entries.forEachIndexed { index, method ->
                 val selected = picked == method
-                PaperRow(
+                if (index > 0) Separator()
+                ValueRow(
                     stringResource(method.title()),
                     Modifier.selectable(selected, role = Role.RadioButton) { onPick(method) },
                     subtitle =
@@ -129,30 +81,22 @@ fun BoxScope.LogAccessSheet(
                             Method.Android -> stringResource(R.string.log_method_android_hint)
                             else -> null
                         },
-                    leading = {
-                        Box(
-                            Modifier
-                                .size(20.dp)
-                                .clip(Radius.pill)
-                                .border(2.dp, if (selected) colors.accent else colors.borderPrimary, Radius.pill),
-                            contentAlignment = Alignment.Center,
-                        ) { if (selected) Box(Modifier.size(10.dp).clip(Radius.pill).background(colors.accent)) }
-                    },
-                    divided = index > 0,
+                    leading = { Radio(selected) },
                 ) {
-                    val state = stateWord(method, methods, colors)
-                    if (state != null) Label(stringResource(state.first), LinkTheme.type.titleSmall, state.second)
+                    stateWord(method, methods, s)?.let { (word, ink) ->
+                        Text(stringResource(word), LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.SemiBold), color = ink)
+                    }
                 }
                 if (selected && !methods.ready(method)) {
                     Column(
-                        Modifier.padding(start = 36.dp, bottom = Space.s12),
-                        verticalArrangement = Arrangement.spacedBy(Space.s8),
+                        Modifier.padding(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Space.p12.dp),
+                        verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
                     ) {
-                        Label(stringResource(setupStep(method, methods)), LinkTheme.type.bodyMedium, colors.textSecondary)
+                        Text(stringResource(setupStep(method, methods)), LinkTheme.phoneType.footnote, color = s.label2)
                         if (method == Method.Shizuku && methods.shizukuAsks) {
-                            PillButton(stringResource(R.string.onboarding_clipboard_shizuku), LogAccess::askShizuku, kind = PillKind.Tonal)
+                            Pill(stringResource(R.string.onboarding_clipboard_shizuku), LogAccess::askShizuku)
                         } else if (method == Method.Automatic || method == Method.Android) {
-                            PillButton(stringResource(R.string.log_method_show_command), onClipboardSetup, kind = PillKind.Tonal)
+                            Pill(stringResource(R.string.log_method_show_command), onClipboardSetup)
                         }
                     }
                 }
@@ -161,24 +105,35 @@ fun BoxScope.LogAccessSheet(
     }
 }
 
+@Composable
+private fun Radio(selected: Boolean) {
+    val s = LinkTheme.scheme
+    Box(
+        Modifier
+            .size(Tok.Phone.symbol.dp)
+            .border(Tok.Space.p2.dp, if (selected) s.accent else s.label3, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) { if (selected) Box(Modifier.size(Tok.Space.p12.dp).background(s.accent, CircleShape)) }
+}
+
 private fun stateWord(
     method: Method,
     methods: LogMethods,
-    colors: LinkColors,
+    s: Tok.SchemeToken,
 ): Pair<Int, Color>? =
     when (method) {
         Method.Automatic -> null
         Method.Shizuku ->
-            if (methods.shizuku) R.string.log_method_running to colors.success else R.string.settings_set_up to colors.warning
+            if (methods.shizuku) R.string.log_method_running to s.success else R.string.settings_set_up to s.warning
         Method.Root ->
             when {
-                methods.root -> R.string.log_method_granted to colors.success
-                methods.su -> R.string.settings_set_up to colors.warning
-                else -> R.string.log_method_no_su to colors.textTertiary
+                methods.root -> R.string.log_method_granted to s.success
+                methods.su -> R.string.settings_set_up to s.warning
+                else -> R.string.log_method_no_su to s.label3
             }
         Method.Helper ->
-            if (methods.helper) R.string.log_method_running to colors.success else R.string.log_method_off to colors.textTertiary
-        Method.Android -> if (methods.readLogs) null else R.string.settings_set_up to colors.warning
+            if (methods.helper) R.string.log_method_running to s.success else R.string.log_method_off to s.label3
+        Method.Android -> if (methods.readLogs) null else R.string.settings_set_up to s.warning
     }
 
 private fun setupStep(

@@ -47,6 +47,9 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=u
 link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
 prop() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 "$1"; }
 
+# A real phone dials over Wi-Fi: the desktop's own linkd holds 4717, so this one takes the store's last port, which ufw opens.
+mkdir -p "$RUNTIME/desktop/andromeda-link"
+echo "{\"port\": ${LINK_E2E_PORT:-57051}}" > "$RUNTIME/desktop/andromeda-link/devices.json"
 start_linkd() { XDG_STATE_HOME=$RUNTIME/desktop "$BIN/andromeda-linkd" >> "$OUT/linkd.log" 2>&1 & LINKD=$!; }
 start_linkd
 for _ in $(seq 100); do link CancelPairing > /dev/null 2>&1 && break; sleep 0.05; done
@@ -117,18 +120,25 @@ kind = lambda v: dbus.Boolean(v) if isinstance(v, bool) else dbus.UInt32(v)
 link.SetDesktopStatus(dbus.Dictionary({k: kind(v) for k, v in json.loads(sys.argv[2]).items()}, signature="sv"))
 time.sleep(3600)' "$CAN" "$STATUS" &
   SESSION=$!
+  # widget-add.yaml drives the Pixel launcher's picker; on another launcher the widget shots need it placed by hand.
+  WIDGET=1
   if ! adb shell dumpsys appwidget | grep -q "provider=.*$PACKAGE/.*widget.DesktopWidgetProvider"; then
-    maestro "$FLOWS/widget-add.yaml"
-    adb shell dumpsys appwidget | grep -q "provider=.*$PACKAGE/.*widget.DesktopWidgetProvider" || fail "the widget is not on the home screen"
+    if adb shell pm path com.google.android.apps.nexuslauncher > /dev/null 2>&1; then
+      maestro "$FLOWS/widget-add.yaml"
+      adb shell dumpsys appwidget | grep -q "provider=.*$PACKAGE/.*widget.DesktopWidgetProvider" || fail "the widget is not on the home screen"
+    else
+      echo "SKIP: widget shots (no Pixel launcher and no Link widget on the home screen)"
+      WIDGET=0
+    fi
   fi
   maestro -e THEME="$mode" "$FLOWS/ui-paired.yaml"
-  widget widget "$([[ $mode == light ]] && echo 82% || echo 14%)"
+  if ((WIDGET)); then widget widget "$([[ $mode == light ]] && echo 82% || echo 14%)"; fi
   kill "$SESSION"
   # The desktop goes away with the phone still paired: Home shows when it was last seen. Then it comes back.
   kill "$LINKD"
   wait "$LINKD" 2> /dev/null || true
   maestro -e THEME="$mode" "$FLOWS/ui-offline.yaml"
-  widget widget-offline "Last seen .*"
+  if ((WIDGET)); then widget widget-offline "Last seen .*"; fi
   sessions=$(grep -c "connected over" "$OUT/linkd.log")
   start_linkd
   for _ in $(seq 600); do (( $(grep -c "connected over" "$OUT/linkd.log") > sessions )) && break; sleep 0.1; done

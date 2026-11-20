@@ -29,21 +29,21 @@ appId: org.andromeda.link
     visible: "Notifications on your desktop"
     timeout: 10000
 - takeScreenshot: ${OUT}/${THEME}-onboarding-1-notifications
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-2-dnd
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-3-post
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-4-battery
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-5-calls
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-6-bluetooth
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-7-texts
-- tapOn: "Next"
+- tapOn: "Not now"
 - takeScreenshot: ${OUT}/${THEME}-onboarding-8-clipboard
-- tapOn: "Done"
+- tapOn: "Not now"
 - runFlow: go-home.yaml
 - extendedWaitUntil:
     visible: "Connected, .*"
