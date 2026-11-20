@@ -63,7 +63,7 @@ async fn main() -> Result {
                 link.recv_mtu()
             );
             let id = links.add_link(L2cap(link), peer);
-            links.route_to(peer).set(Some(id));
+            links.route_to(peer).set(link_core::path::Hop::Link(id));
         }
     });
 

@@ -90,7 +90,7 @@ impl Listener {
 
 async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc<Context>) {
     let remote = incoming.remote_address();
-    let (connecting, route) = match server.accept(incoming) {
+    let (connecting, _route) = match server.accept(incoming) {
         Ok(accepted) => accepted,
         Err(error) => return log::info!("{remote}: {error}"),
     };
@@ -102,7 +102,7 @@ async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc
     let Ok(peer) = tls::peer_spki(connection.peer_identity()) else {
         return Connection::from(connection).close(CloseCode::ProtocolError);
     };
-    if let Some(link) = route.link() {
+    if let Some(link) = server.socket.link_to(remote) {
         server.socket.tie(link, connection.clone());
     }
     let quic = connection;

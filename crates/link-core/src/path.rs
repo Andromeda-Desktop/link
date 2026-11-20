@@ -11,7 +11,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, Waker, ready};
 use std::time::Instant;
 
 use quinn::congestion::{Controller, ControllerFactory};
@@ -76,11 +76,44 @@ struct Slot {
     ended: watch::Sender<()>,
 }
 
+/// Where a route sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hop {
+    /// Over UDP to this address; for a route to a virtual address, the peer's real one.
+    Udp(SocketAddr),
+    Link(LinkId),
+}
+
+/// Destinations not sent as addressed, both ways round, changed only together.
+#[derive(Default)]
+struct Routes {
+    to: HashMap<SocketAddr, Hop>,
+    /// The reverse of each `Hop::Udp`: UDP packets from the key reach quinn as from the value.
+    from: HashMap<SocketAddr, SocketAddr>,
+}
+
+impl Routes {
+    fn set(&mut self, peer: SocketAddr, via: Hop) {
+        if let Some(Hop::Udp(old)) = self.to.remove(&peer) {
+            self.from.remove(&old);
+        }
+        match via {
+            Hop::Udp(addr) if canonical(addr) == peer => {}
+            Hop::Udp(addr) => {
+                self.from.insert(canonical(addr), peer);
+                self.to.insert(peer, via);
+            }
+            Hop::Link(_) => {
+                self.to.insert(peer, via);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     links: Mutex<Vec<Option<Arc<Slot>>>>,
-    /// Destinations sent over a link instead of UDP.
-    routes: Mutex<HashMap<SocketAddr, LinkId>>,
+    routes: Mutex<Routes>,
 }
 
 impl Shared {
@@ -94,7 +127,7 @@ impl Shared {
         if let Some(slot) = lock(&self.links).get_mut(id) {
             *slot = None;
         }
-        lock(&self.routes).retain(|_, link| *link != id);
+        lock(&self.routes).to.retain(|_, via| *via != Hop::Link(id));
     }
 }
 
@@ -128,7 +161,12 @@ pub fn link_address(n: u16) -> SocketAddr {
     SocketAddr::from((std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, n), 1))
 }
 
-/// Whether quinn sees `addr` for a link rather than a UDP peer.
+/// The `n`th address a phone dials a desktop at, in `2001:db8:1::/64`; its route says where packets go.
+pub fn virtual_address(n: u16) -> SocketAddr {
+    SocketAddr::from((std::net::Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, n), 1))
+}
+
+/// Whether quinn sees `addr` for a link or a virtual peer rather than a UDP peer.
 pub fn is_link_address(addr: SocketAddr) -> bool {
     matches!(addr.ip().to_canonical(), std::net::IpAddr::V6(v6) if v6.segments()[..2] == [0x2001, 0xdb8])
 }
@@ -155,14 +193,19 @@ impl PathSocket {
         }))
     }
 
+    /// `addr` as the UDP socket takes it: a dual-stack socket sends to IPv4 peers at IPv4-mapped addresses.
+    fn native(&self, addr: SocketAddr) -> SocketAddr {
+        match (addr, self.udp.local_addr()) {
+            (SocketAddr::V4(v4), Ok(SocketAddr::V6(_))) => SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()),
+            _ => addr,
+        }
+    }
+
     /// Adds a link whose packets quinn sees as coming from `peer`. Runs a reader and a writer task on the current
     /// runtime until the link ends.
     pub fn add_link(&self, link: impl MessageLink, peer: SocketAddr) -> LinkId {
         // A dual-stack socket reports IPv4 peers as IPv4-mapped, and a quinn client drops packets from any other form.
-        let peer = match (peer, self.udp.local_addr()) {
-            (SocketAddr::V4(v4), Ok(SocketAddr::V6(_))) => SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()),
-            _ => peer,
-        };
+        let peer = self.native(peer);
         let link = Arc::new(link);
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE);
         let slot = Arc::new(Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()) });
@@ -208,12 +251,17 @@ impl PathSocket {
         id
     }
 
-    /// The path to `peer`, one connection's remote address, starting on the link it is routed over now.
+    /// The path to `peer`, one connection's remote address, a real or a virtual one; UDP to `peer` until set.
     pub fn route_to(self: &Arc<Self>, peer: SocketAddr) -> Route {
-        let peer = canonical(peer);
-        let on_link = lock(&self.shared.routes).contains_key(&peer);
-        let state = RouteState { on_link: AtomicBool::new(on_link), changes: AtomicU64::default() };
-        Route { socket: self.clone(), peer, state: Arc::new(state) }
+        Route { socket: self.clone(), peer: canonical(peer), state: Arc::default() }
+    }
+
+    /// The link `peer` is reached over now.
+    pub fn link_to(&self, peer: SocketAddr) -> Option<LinkId> {
+        match lock(&self.shared.routes).to.get(&canonical(peer)) {
+            Some(&Hop::Link(id)) => Some(id),
+            _ => None,
+        }
     }
 
     /// Ends link `id`; its routes fall back to UDP.
@@ -221,12 +269,18 @@ impl PathSocket {
         self.shared.drop_link(id, &io::Error::other("closed"));
     }
 
-    /// Ties link `id` and `connection`, the one connection it carries: when either ends, so does the other.
+    /// Ties link `id` and `connection`, the one connection it carries: the link ends with the connection, and the
+    /// connection with the link while no other route reaches its peer.
     pub fn tie(self: &Arc<Self>, id: LinkId, connection: quinn::Connection) {
         let (socket, link_closed) = (self.clone(), self.link_closed(id));
         tokio::spawn(async move {
             tokio::select! {
-                () = link_closed => connection.close(0u32.into(), b"link closed"),
+                () = link_closed => {
+                    let remote = canonical(connection.remote_address());
+                    if is_link_address(remote) && !lock(&socket.shared.routes).to.contains_key(&remote) {
+                        connection.close(0u32.into(), b"link closed");
+                    }
+                }
                 _ = connection.closed() => socket.close_link(id),
             }
         });
@@ -266,6 +320,7 @@ impl PathSocket {
 
 /// One connection's path: whether its peer is reached over a link or UDP. Changing it here also tells the
 /// connection's congestion controller, so the two never disagree.
+#[derive(Clone)]
 pub struct Route {
     socket: Arc<PathSocket>,
     peer: SocketAddr,
@@ -280,22 +335,35 @@ struct RouteState {
 }
 
 impl Route {
-    /// Sends to the peer over `via`, or over UDP with `None`.
-    pub fn set(&self, via: Option<LinkId>) {
-        {
-            let mut routes = lock(&self.socket.shared.routes);
-            match via {
-                Some(link) => routes.insert(self.peer, link),
-                None => routes.remove(&self.peer),
-            };
-        }
-        self.state.on_link.store(via.is_some(), Ordering::Relaxed);
+    /// Sends to the peer over `via`.
+    pub fn set(&self, via: Hop) {
+        lock(&self.socket.shared.routes).set(self.peer, via);
+        self.state.on_link.store(matches!(via, Hop::Link(_)), Ordering::Relaxed);
         self.state.changes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The link the peer is reached over now; None for UDP.
-    pub fn link(&self) -> Option<LinkId> {
-        lock(&self.socket.shared.routes).get(&self.peer).copied()
+    /// A server's view: the peer moved the connection to `remote`, and quinn followed. Tells the controller whether
+    /// that is a link.
+    pub fn follow(&self, remote: SocketAddr) {
+        let on_link = self.socket.link_to(remote).is_some();
+        if self.state.on_link.swap(on_link, Ordering::Relaxed) != on_link {
+            self.state.changes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the connection runs over a link now.
+    pub fn on_link(&self) -> bool {
+        self.state.on_link.load(Ordering::Relaxed)
+    }
+
+    /// Where the peer is reached now; None once its link ended.
+    pub fn via(&self) -> Option<Hop> {
+        let routes = lock(&self.socket.shared.routes);
+        match routes.to.get(&self.peer) {
+            Some(&via) => Some(via),
+            None if is_link_address(self.peer) => None,
+            None => Some(Hop::Udp(self.peer)),
+        }
     }
 
     /// `inner` for this connection, capped at [`LINK_WINDOW`] while it runs over a link and rebuilt after every path
@@ -389,17 +457,17 @@ impl AsyncUdpSocket for PathSocket {
     }
 
     fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
-        let route = lock(&self.shared.routes).get(&canonical(transmit.destination)).copied();
-        if let Some(id) = route
-            && let Some(slot) = self.shared.slot(id)
-        {
-            return self.send_link(id, &slot, transmit);
-        }
-        if is_link_address(transmit.destination) {
+        let via = lock(&self.shared.routes).to.get(&canonical(transmit.destination)).copied();
+        let result = match via {
+            Some(Hop::Link(id)) => {
+                // A link that ends here drops its routes too, so the next send goes elsewhere.
+                return self.shared.slot(id).map_or(Ok(()), |slot| self.send_link(id, &slot, transmit));
+            }
+            Some(Hop::Udp(addr)) => self.udp.try_send(&Transmit { destination: self.native(addr), ..*transmit }),
             // Its link ended; no UDP route leads there.
-            return Ok(());
-        }
-        let result = self.udp.try_send(transmit);
+            None if is_link_address(transmit.destination) => return Ok(()),
+            None => self.udp.try_send(transmit),
+        };
         if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
             *lock(&self.blocked) = Blocked::Udp;
         }
@@ -420,7 +488,16 @@ impl AsyncUdpSocket for PathSocket {
             *first = RecvMeta { addr, len, stride: len, ..RecvMeta::default() };
             return Poll::Ready(Ok(1));
         }
-        self.udp.poll_recv(cx, bufs, meta)
+        let received = ready!(self.udp.poll_recv(cx, bufs, meta))?;
+        let routes = lock(&self.shared.routes);
+        if !routes.from.is_empty() {
+            for meta in meta.iter_mut().take(received) {
+                if let Some(&peer) = routes.from.get(&canonical(meta.addr)) {
+                    meta.addr = peer;
+                }
+            }
+        }
+        Poll::Ready(Ok(received))
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -483,7 +560,8 @@ mod tests {
         u8::try_from(at % 251).unwrap_or(0)
     }
 
-    /// One stream keeps flowing while the phone moves the connection from UDP to a link and back.
+    /// One stream keeps flowing while the phone moves the connection from UDP to a link and back: it dials a virtual
+    /// address, so quinn never sees the path change.
     #[tokio::test]
     async fn a_live_stream_survives_moves_between_udp_and_a_link() -> Result {
         let server_socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
@@ -493,8 +571,9 @@ mod tests {
         let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
         let link_addr: SocketAddr = "10.255.255.1:1".parse()?;
         let desk_link = server_socket.add_link(FdLink::new(desk_end)?, link_addr);
-        server_socket.route_to(link_addr).set(Some(desk_link));
-        let phone_link = phone_socket.add_link(FdLink::new(phone_end)?, server_addr);
+        server_socket.route_to(link_addr).set(Hop::Link(desk_link));
+        let desktop_at = virtual_address(1);
+        let phone_link = phone_socket.add_link(FdLink::new(phone_end)?, desktop_at);
 
         let desktop = Identity::generate()?;
         let server = path_server_endpoint(&desktop, server_socket.clone())?;
@@ -516,15 +595,16 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((got, seen_link, connection.remote_address()))
         });
 
-        let path = phone_socket.route_to(server_addr);
-        let connection = dialer.dial(server_addr, pin).await?.connection;
+        let path = phone_socket.route_to(desktop_at);
+        path.set(Hop::Udp(server_addr));
+        let connection = dialer.dial(desktop_at, pin).await?.connection;
         let mut send = connection.open_uni().await?;
         for at in (0..TOTAL).step_by(CHUNK) {
             if at == TOTAL / 8 {
-                path.set(Some(phone_link));
+                path.set(Hop::Link(phone_link));
             }
             if at == TOTAL / 2 {
-                path.set(None);
+                path.set(Hop::Udp(server_addr));
             }
             let chunk: Vec<u8> = (at..at + CHUNK).map(byte).collect();
             send.write_all(&chunk).await?;
@@ -546,16 +626,16 @@ mod tests {
         let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
         let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
         let (desk_addr, phone_addr) = (link_address(1), link_address(1));
-        desktop.route_to(desk_addr).set(Some(desktop.add_link(FdLink::new(desk_end)?, desk_addr)));
+        desktop.route_to(desk_addr).set(Hop::Link(desktop.add_link(FdLink::new(desk_end)?, desk_addr)));
         let phone_link = phone.add_link(FdLink::new(phone_end)?, phone_addr);
         let route = phone.route_to(phone_addr);
-        route.set(Some(phone_link));
+        route.set(Hop::Link(phone_link));
 
         let accepted = tokio::spawn(async move {
             let incoming = server.endpoint.accept().await.ok_or("no connection")?;
-            let (connecting, route) = server.accept(incoming)?;
+            let link = server.socket.link_to(incoming.remote_address()).ok_or("the server did not see the link")?;
+            let (connecting, _route) = server.accept(incoming)?;
             let connection = connecting.await?;
-            let link = route.link().ok_or("the route forgot its link")?;
             server.socket.tie(link, connection.clone());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, connection))
         });
@@ -599,7 +679,8 @@ mod tests {
     #[tokio::test]
     async fn the_window_follows_the_path() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
-        let path = socket.route_to("10.0.0.1:1".parse()?);
+        let addr = "10.0.0.1:1".parse()?;
+        let path = socket.route_to(addr);
         let mut inner = quinn::congestion::NewRenoConfig::default();
         inner.initial_window(4 * LINK_WINDOW);
         let factory = path.congestion(Arc::new(inner));
@@ -609,9 +690,9 @@ mod tests {
         let later = |ms| start + std::time::Duration::from_millis(ms);
         controller.on_congestion_event(later(2), later(1), false, 1200);
         assert!(controller.window() < initial, "a loss did not shrink the window");
-        path.set(Some(0));
+        path.set(Hop::Link(0));
         assert!(controller.window() <= LINK_WINDOW);
-        path.set(None);
+        path.set(Hop::Udp(addr));
         controller.on_sent(later(3), 1200, 1);
         assert_eq!(controller.window(), initial, "the window learnt before the moves survived them");
         Ok(())

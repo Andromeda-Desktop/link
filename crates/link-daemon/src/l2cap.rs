@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bluer::l2cap::{SeqPacket, Socket, SocketAddr as L2capAddr};
 use bluer::{Address, AddressType};
-use link_core::path::{FdLink, MessageLink, PathSocket, link_address};
+use link_core::path::{FdLink, Hop, MessageLink, PathSocket, link_address};
 use link_core::stream::L2CAP_PSM;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use tokio::io::Interest;
@@ -82,7 +82,7 @@ impl Peers {
         self.0 = self.0.wrapping_add(1);
         let peer = link_address(self.0);
         let id = socket.add_link(link, peer);
-        socket.route_to(peer).set(Some(id));
+        socket.route_to(peer).set(Hop::Link(id));
     }
 }
 

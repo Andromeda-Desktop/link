@@ -20,7 +20,7 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, PathSocket, link_address};
+use crate::path::{FdLink, Hop, PathSocket, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::store::{Feature, Peer, Store};
 use crate::stream::{BluetoothOpener, FdStream, StreamDialer};
@@ -285,7 +285,7 @@ impl Phone {
         let to = link_address(self.links);
         let link = self.socket.add_link(FdLink::new(fd)?, to);
         let route = self.socket.route_to(to);
-        route.set(Some(link));
+        route.set(Hop::Link(link));
         let over_link = self.dialer.routed(&route, self.present.then_some(PHONE_KEEP_ALIVE));
         let dialed = match over_link.dial(to, ServerPin::Key(peer.spki()?.fingerprint())).await {
             Ok(dialed) => dialed,

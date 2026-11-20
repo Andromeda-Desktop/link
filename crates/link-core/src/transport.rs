@@ -115,9 +115,11 @@ impl PathServer {
         Ok(Self { endpoint, puncher, socket, config })
     }
 
-    /// Accepts `incoming` with a congestion controller that follows its route, and returns that route.
+    /// Accepts `incoming`, and returns its route, which the session updates (`Route::follow`) when the peer moves.
     pub fn accept(&self, incoming: quinn::Incoming) -> Result<(quinn::Connecting, Route), Error> {
-        let route = self.socket.route_to(incoming.remote_address());
+        let remote = incoming.remote_address();
+        let route = self.socket.route_to(remote);
+        route.follow(remote);
         let mut transport = transport_config_value(Some(KEEP_ALIVE));
         transport.congestion_controller_factory(route.congestion(bbr()));
         let mut config = self.config.clone();

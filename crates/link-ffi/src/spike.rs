@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use link_core::identity::Identity;
-use link_core::path::{FdLink, PathSocket};
+use link_core::path::{FdLink, Hop, PathSocket};
 use link_core::tls::ServerPin;
 use link_core::transport::Dialer;
 
@@ -119,7 +119,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     let (connection, mut on_link) = match (wifi, link) {
         (Ok(Ok(dialed)), _) => (dialed.connection, false),
         (_, Some(link)) => {
-            route.set(Some(link));
+            route.set(Hop::Link(link));
             let start = Instant::now();
             let dialed = phone.dial(desktop, ServerPin::Any).await?;
             writeln!(out, "wifi dial failed; l2cap dial {:?}", start.elapsed())?;
@@ -147,7 +147,7 @@ async fn spike(desktop: &str, fd: Option<OwnedFd>, out: &mut Report, report: &st
     for round in 0..if link.is_some() { 3 } else { 1 } {
         if round > 0 {
             on_link = !on_link;
-            route.set(on_link.then_some(link).flatten());
+            route.set(on_link.then_some(link).flatten().map_or(Hop::Udp(desktop), Hop::Link));
             writeln!(out, "switch to {}: first ping {:?}", path(on_link), ping().await?)?;
         }
         let mut idle = Vec::with_capacity(PINGS);
