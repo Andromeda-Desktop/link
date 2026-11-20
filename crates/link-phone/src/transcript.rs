@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
+use cddl::validator::cbor::CBORValidator;
+use cddl::validator::{Validator, cbor_value};
 use link_core::control::{Direction, Tap};
 use serde_json::json;
 
@@ -21,12 +23,14 @@ pub fn tap(path: &Path) -> anyhow::Result<Tap> {
 }
 
 pub fn check(schema: &Path, transcript: &Path) -> anyhow::Result<()> {
-    let cddl = std::fs::read_to_string(schema).with_context(|| format!("reading {}", schema.display()))?;
+    let text = std::fs::read_to_string(schema).with_context(|| format!("reading {}", schema.display()))?;
+    let cddl = cddl::cddl_from_str(&text, true).map_err(anyhow::Error::msg)?;
     let (mut valid, mut invalid) = (0_u32, 0_u32);
     for (index, line) in BufReader::new(std::fs::File::open(transcript)?).lines().enumerate() {
         let entry: serde_json::Value = serde_json::from_str(&line?)?;
         let cbor = hex::decode(entry["cbor"].as_str().context("entry without cbor")?)?;
-        match cddl::validate_cbor_from_slice(&cddl, &cbor, None) {
+        let value = cbor_value::decode_cbor(&cbor).map_err(|error| anyhow::anyhow!("line {}: {error}", index + 1))?;
+        match CBORValidator::new(&cddl, value, None).validate() {
             Ok(()) => valid += 1,
             Err(error) => {
                 invalid += 1;
