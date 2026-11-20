@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use link_core::discovery::Advertiser;
 use link_core::identity::{DeviceId, Spki};
+use link_core::link_state::LinkState;
 use link_core::net;
 use link_core::proto::CloseCode;
 use link_core::proto::message::{
@@ -69,6 +70,8 @@ pub struct DeviceInfo {
     pub last_seen: i64,
     /// wifi, bluetooth, or empty when not connected.
     pub transport: &'static str,
+    /// live, reconnecting (the session is open but the phone missed its heartbeat), or empty without a session.
+    pub link: &'static str,
     /// `(free, total)` bytes of the phone's shared storage, as last reported; kept in memory past the session.
     pub storage: Option<(u64, u64)>,
     /// Percent, while connected.
@@ -713,7 +716,8 @@ impl Hub {
             SessionEvent::SystemCommand { from, id, command } if self.sessions.contains_key(&from) => {
                 self.on_system_command(from, id, command).await;
             }
-            SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } | SessionEvent::Link { .. } => {}
+            SessionEvent::Link { .. } => self.publish(),
+            SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
             SessionEvent::Unpaired { from } => {
                 log::info!("{from} unpaired itself");
                 self.sessions.remove(&from);
@@ -1698,12 +1702,20 @@ impl Hub {
         }
     }
 
+    fn link(&self, id: &DeviceId) -> &'static str {
+        match self.sessions.get(id).map(SessionHandle::link) {
+            Some(LinkState::Live { .. }) => "live",
+            Some(LinkState::Degraded { .. }) => "reconnecting",
+            Some(LinkState::Closed) | None => "",
+        }
+    }
+
     fn publish(&self) {
         let devices = self
             .store
             .peers
             .iter()
-            .map(|peer| (peer.id.to_string(), peer.name.clone(), self.sessions.contains_key(&peer.id)))
+            .map(|peer| (peer.id.to_string(), peer.name.clone(), self.link(&peer.id) == "live"))
             .collect();
         let info = self
             .store
@@ -1718,6 +1730,7 @@ impl Hub {
                     id: peer.id.to_string(),
                     last_seen: i64::try_from(peer.last_seen).unwrap_or(0),
                     transport,
+                    link: self.link(&peer.id),
                     storage: self.storage.get(&peer.id).map(|storage| (storage.free, storage.total)),
                     battery: self.status.get(&peer.id).map(|status| status.battery),
                 }

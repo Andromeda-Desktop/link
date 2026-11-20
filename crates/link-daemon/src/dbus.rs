@@ -607,7 +607,7 @@ impl Link {
     }
 
     /// Device id to `last_seen` (x, unix seconds), `transport` (s: wifi, bluetooth, or empty when not connected),
-    /// `connected` (b), `storage_free` and `storage_total` (t, bytes; absent when unknown), `battery` (i, percent;
+    /// `link` (s: live, reconnecting, or empty without a session), `connected` (b: link is live), `storage_free` and `storage_total` (t, bytes; absent when unknown), `battery` (i, percent;
     /// absent when not connected).
     #[zbus(property)]
     fn device_info(&self) -> HashMap<String, HashMap<String, zbus::Variant<'static>>> {
@@ -1078,7 +1078,8 @@ fn info_fields(info: &crate::hub::DeviceInfo) -> HashMap<String, zbus::Variant<'
     let mut fields = HashMap::from([
         ("last_seen".to_owned(), info.last_seen.into()),
         ("transport".to_owned(), info.transport.into()),
-        ("connected".to_owned(), (!info.transport.is_empty()).into()),
+        ("link".to_owned(), info.link.into()),
+        ("connected".to_owned(), (info.link == "live").into()),
     ]);
     if let Some((free, total)) = info.storage {
         fields.insert("storage_free".to_owned(), free.into());
