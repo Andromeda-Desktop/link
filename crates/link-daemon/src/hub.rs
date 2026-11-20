@@ -1628,8 +1628,8 @@ impl Hub {
             });
             return;
         }
-        log::info!("{id}: asking whether to leave this desktop's Wi-Fi for the phone's group {:?}", group.ssid);
-        let answered = self.ask_hotspot(&id, &group.ssid).await;
+        let what = format!("leave this desktop's Wi-Fi for the phone's group {:?}", group.ssid);
+        let answered = self.ask_hotspot(&id, &group.ssid, &what).await;
         self.joining.spawn(async move {
             let joined = match tokio::time::timeout(HOTSPOT_ASK_TIMEOUT, answered).await {
                 Ok(Ok(true)) => hotspot::join(&group.ssid, &group.passphrase).await,
@@ -1649,9 +1649,9 @@ impl Hub {
             Some(Nearby::Joined(active)) => Some(active),
             _ => None,
         };
-        log::info!("{id}: asking whether to join the phone's hotspot {:?}", offered.ssid);
         self.nearby.insert(id.clone(), Nearby::Joining { kind: NearbyKind::Hotspot, asked: None });
-        let answered = self.ask_hotspot(&id, &offered.ssid).await;
+        let what = format!("join the phone's hotspot {:?}", offered.ssid);
+        let answered = self.ask_hotspot(&id, &offered.ssid, &what).await;
         self.joining.spawn(async move {
             if let Some(group) = abandoned {
                 hotspot::leave(&group).await;
@@ -1664,9 +1664,16 @@ impl Hub {
         });
     }
 
-    /// Asks the shell whether the desktop may leave its Wi-Fi for `ssid`; the answer comes through `AnswerHotspot`.
-    async fn ask_hotspot(&mut self, id: &DeviceId, ssid: &str) -> oneshot::Receiver<bool> {
+    /// Asks the shell whether the desktop may leave its Wi-Fi for `ssid`; the answer comes through `AnswerHotspot`. A
+    /// phone with the `nearby` grant gets yes at once.
+    async fn ask_hotspot(&mut self, id: &DeviceId, ssid: &str, what: &str) -> oneshot::Receiver<bool> {
         let (answer, answered) = oneshot::channel();
+        if self.store.peer(id).is_some_and(|peer| peer.grants.nearby) {
+            log::info!("{id}: allowed to {what} without asking");
+            let _ = answer.send(true);
+            return answered;
+        }
+        log::info!("{id}: asking whether to {what}");
         if let Some(Nearby::Joining { asked, .. }) = self.nearby.get_mut(id) {
             *asked = Some((answer, ssid.to_owned()));
         }

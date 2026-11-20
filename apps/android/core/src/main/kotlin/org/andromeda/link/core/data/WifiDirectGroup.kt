@@ -13,7 +13,6 @@ import android.os.SystemClock
 import android.util.Log
 import org.andromeda.link.ffi.HotspotCredentials
 import org.andromeda.link.ffi.PhoneWifiDirect
-import java.security.SecureRandom
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -30,23 +29,22 @@ class WifiDirectGroup(
 ) : PhoneWifiDirect {
     private val manager: WifiP2pManager? = context.getSystemService(WifiP2pManager::class.java)
     private var channel: WifiP2pManager.Channel? = null
-    private val random = SecureRandom()
 
-    override fun start(): HotspotCredentials? {
+    /** Forms [group], the same name and passphrase each time for one desktop, so the desktop knows it again. */
+    override fun start(group: HotspotCredentials): HotspotCredentials? {
         val (manager, channel) = ready() ?: return null
         val config =
             WifiP2pConfig
                 .Builder()
-                // Android takes only names that start with "DIRECT-" and two characters.
-                .setNetworkName("DIRECT-${text(2)}-Link")
-                .setPassphrase(text(PASSPHRASE_LENGTH))
+                .setNetworkName(group.ssid)
+                .setPassphrase(group.passphrase)
                 .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
                 .build()
         // A group left from an earlier attempt would make Android refuse a new one.
         call(manager, channel, "removing the group", manager::removeGroup)
         if (!created(manager, channel, config)) return null
-        val group = group(manager, channel) ?: return null.also { Log.i(TAG, "the group did not come up") }
-        return HotspotCredentials(group.networkName, group.passphrase ?: return null)
+        val formed = group(manager, channel) ?: return null.also { Log.i(TAG, "the group did not come up") }
+        return HotspotCredentials(formed.networkName, formed.passphrase ?: return null)
     }
 
     override fun stop() {
@@ -154,12 +152,8 @@ class WifiDirectGroup(
         return manager to channel
     }
 
-    private fun text(length: Int) = String(CharArray(length) { ALPHABET[random.nextInt(ALPHABET.length)] })
-
     private companion object {
         const val TAG = "WifiDirectGroup"
-        const val ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        const val PASSPHRASE_LENGTH = 16
         const val ANSWER_TIMEOUT_S = 5L
         const val FORM_TIMEOUT_MS = 10_000L
         const val ATTEMPTS = 5

@@ -1014,15 +1014,16 @@ impl link_core::hotspot::HotspotProvider for Hotspots {
 /// main thread.
 #[uniffi::export(with_foreign)]
 pub trait PhoneWifiDirect: Send + Sync {
-    fn start(&self) -> Option<HotspotCredentials>;
+    fn start(&self, group: HotspotCredentials) -> Option<HotspotCredentials>;
     fn stop(&self);
 }
 
 struct WifiDirects(Arc<dyn PhoneWifiDirect>);
 
 impl link_core::hotspot::WifiDirectProvider for WifiDirects {
-    fn start(&self) -> std::io::Result<link_core::proto::message::Hotspot> {
-        let group = self.0.start().ok_or_else(|| std::io::Error::other("Android did not create the group"))?;
+    fn start(&self, group: &link_core::proto::message::Hotspot) -> std::io::Result<link_core::proto::message::Hotspot> {
+        let wanted = HotspotCredentials { ssid: group.ssid.clone(), passphrase: group.passphrase.clone() };
+        let group = self.0.start(wanted).ok_or_else(|| std::io::Error::other("Android did not create the group"))?;
         Ok(link_core::proto::message::Hotspot { ssid: group.ssid, passphrase: group.passphrase })
     }
 

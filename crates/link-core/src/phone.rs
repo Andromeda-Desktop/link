@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
-    Hello, LATE_HASH, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL,
+    Hello, Hotspot, LATE_HASH, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL,
     bluetooth_address,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
+use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::browse::Roots;
 use crate::control::{Control, Tap};
@@ -330,6 +331,19 @@ impl Phone {
         self.store.save(&self.store_path)
     }
 
+    /// The group credentials for desktop `id`, made and saved on first use.
+    pub fn group_for(&mut self, id: &DeviceId) -> Result<Hotspot, Error> {
+        let peer = self.store.peer_mut(id).ok_or(Error::UnknownDevice)?;
+        if let Some(group) = &peer.group {
+            return Ok(group.clone());
+        }
+        // Android takes only names that start with "DIRECT-" and two characters.
+        let group = Hotspot { ssid: format!("DIRECT-{}-Link", random_text(2)?), passphrase: random_text(16)? };
+        peer.group = Some(group.clone());
+        self.store.save(&self.store_path)?;
+        Ok(group)
+    }
+
     pub fn forget(&mut self, id: &DeviceId) -> Result<(), Error> {
         self.store.remove(id);
         self.store.save(&self.store_path)
@@ -350,5 +364,48 @@ async fn pairing_desktop() -> Result<Vec<SocketAddr>, Error> {
         [desktop] => Ok(desktop.addresses.clone()),
         [] => Err(Error::NoPairingDesktop),
         _ => Err(Error::ManyPairingDesktops),
+    }
+}
+
+/// `length` characters without look-alikes, which Android accepts in a group name and passphrase.
+fn random_text(length: usize) -> Result<String, Error> {
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut text = String::with_capacity(length);
+    let mut byte = [0u8];
+    while text.len() < length {
+        SystemRandom::new().fill(&mut byte).map_err(|_| Error::Unexpected("no randomness for a Wi-Fi Direct group"))?;
+        // Bytes from 224 = 4 x 56 up are skipped, so every character is equally likely.
+        if usize::from(byte[0]) < ALPHABET.len() * 4 {
+            text.push(char::from(ALPHABET[usize::from(byte[0]) % ALPHABET.len()]));
+        }
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    async fn each_desktop_keeps_its_own_group_after_a_restart() {
+        let path = std::env::temp_dir().join(format!("link-phone-group-{}.json", std::process::id()));
+        let (first, second) = (Identity::generate().expect("key"), Identity::generate().expect("key"));
+        let mut store = Store::default();
+        for desktop in [&first, &second] {
+            store.upsert(Peer::new(desktop.spki(), "desktop".to_owned()));
+        }
+        store.save(&path).expect("save");
+        let (first, second) = (first.spki().device_id(), second.spki().device_id());
+        let open =
+            || Phone::new(Identity::generate().expect("key"), path.clone(), "phone".to_owned(), None).expect("phone");
+        let mut phone = open();
+        let group = phone.group_for(&first).expect("group");
+        let other = phone.group_for(&second).expect("group");
+        let again = open().group_for(&first).expect("group");
+        drop(std::fs::remove_file(&path));
+        assert_eq!(group, again);
+        assert_ne!(group, other);
+        assert!(group.ssid.starts_with("DIRECT-") && group.passphrase.len() == 16, "{group:?}");
     }
 }

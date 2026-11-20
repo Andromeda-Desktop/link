@@ -286,7 +286,8 @@ impl link_core::hotspot::HotspotProvider for FixedHotspot {
 struct FixedWifiDirect(Hotspot);
 
 impl link_core::hotspot::WifiDirectProvider for FixedWifiDirect {
-    fn start(&self) -> std::io::Result<Hotspot> {
+    /// The test's fixed group, which `nm_mock.py` knows, not the one asked for.
+    fn start(&self, _: &Hotspot) -> std::io::Result<Hotspot> {
         log::info!("wifi-direct group created");
         Ok(self.0.clone())
     }

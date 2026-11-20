@@ -1122,6 +1122,7 @@ impl ClientActor {
     fn start_provider(&mut self, id: &DeviceId, kind: Kind) {
         let handle = self.sessions.get(id).cloned();
         let (group, hotspot) = (self.phone.wifi_direct(), self.phone.hotspot());
+        let wanted = (kind == Kind::Group).then(|| self.phone.group_for(id).map_err(text));
         let id = id.clone();
         self.starting.spawn(async move {
             let started = async {
@@ -1130,7 +1131,8 @@ impl ClientActor {
                 let network = match kind {
                     Kind::Group => {
                         let provider = group.ok_or_else(none)?;
-                        tokio::task::spawn_blocking(move || provider.start()).await
+                        let wanted = wanted.ok_or_else(none)??;
+                        tokio::task::spawn_blocking(move || provider.start(&wanted)).await
                     }
                     Kind::Hotspot => {
                         let provider = hotspot.ok_or_else(none)?;

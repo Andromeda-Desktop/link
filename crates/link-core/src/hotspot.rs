@@ -22,6 +22,7 @@ pub const WIFI_DIRECT_TIMEOUT: Duration = Duration::from_secs(45);
 /// Creates a Wi-Fi Direct group the phone owns, which a desktop joins with its credentials. Blocking, like
 /// [`HotspotProvider`].
 pub trait WifiDirectProvider: Send + Sync {
-    fn start(&self) -> std::io::Result<Hotspot>;
+    /// Forms `group`, or the group Android brought up instead, and returns its credentials.
+    fn start(&self, group: &Hotspot) -> std::io::Result<Hotspot>;
     fn stop(&self);
 }

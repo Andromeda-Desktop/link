@@ -11,7 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
-use link_proto::message::Message;
+use link_proto::message::{Hotspot, Message};
 
 use crate::Error;
 use crate::identity::{DeviceId, Spki};
@@ -48,6 +48,10 @@ pub struct Peer {
     /// The user disconnected this phone on the desktop: no session is admitted until Connect. A desktop-side setting.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
+    /// The Wi-Fi Direct group this phone forms for that desktop, the same each time, so the desktop knows it again. A
+    /// phone-side setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Hotspot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,10 +78,13 @@ pub enum Feature {
     System,
     /// Do Not Disturb follows the other side's both ways; a desktop-side switch, off after pairing.
     DndSync,
+    /// The desktop joins the phone's Wi-Fi Direct group or hotspot without asking, even when that leaves its own Wi-Fi;
+    /// a desktop-side switch, off after pairing.
+    Nearby,
 }
 
 /// One switch per feature and paired device, all on after pairing but `browse`, `screen`, `messages`, `input`,
-/// `system`, and `dnd_sync`. A store from before a feature gets its value after pairing.
+/// `system`, `dnd_sync`, and `nearby`. A store from before a feature gets its value after pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[expect(clippy::struct_excessive_bools, reason = "one independent switch per feature")]
@@ -95,6 +102,7 @@ pub struct Grants {
     pub commands: bool,
     pub system: bool,
     pub dnd_sync: bool,
+    pub nearby: bool,
 }
 
 impl Default for Grants {
@@ -113,12 +121,13 @@ impl Default for Grants {
             commands: true,
             system: false,
             dnd_sync: false,
+            nearby: false,
         }
     }
 }
 
 impl Feature {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Clipboard,
         Self::Files,
         Self::Notifications,
@@ -132,6 +141,7 @@ impl Feature {
         Self::Commands,
         Self::System,
         Self::DndSync,
+        Self::Nearby,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -149,6 +159,7 @@ impl Feature {
             Self::Commands => "commands",
             Self::System => "system",
             Self::DndSync => "dnd-sync",
+            Self::Nearby => "nearby",
         }
     }
 
@@ -212,6 +223,7 @@ impl Grants {
             Feature::Commands => self.commands,
             Feature::System => self.system,
             Feature::DndSync => self.dnd_sync,
+            Feature::Nearby => self.nearby,
         }
     }
 
@@ -230,6 +242,7 @@ impl Grants {
             Feature::Commands => &mut self.commands,
             Feature::System => &mut self.system,
             Feature::DndSync => &mut self.dnd_sync,
+            Feature::Nearby => &mut self.nearby,
         };
         *flag = on;
     }
@@ -290,6 +303,7 @@ impl Peer {
             bt_pairing: false,
             features: Vec::new(),
             paused: false,
+            group: None,
         }
     }
 
