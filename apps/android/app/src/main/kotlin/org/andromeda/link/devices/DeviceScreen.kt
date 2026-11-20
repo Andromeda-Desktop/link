@@ -4,62 +4,64 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
-import androidx.annotation.StringRes
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
+import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.screen.ScreenInput
-import org.andromeda.link.ui.components.DashboardCard
-import org.andromeda.link.ui.components.Glyph
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.LinkIcons
-import org.andromeda.link.ui.components.PaperHeading
-import org.andromeda.link.ui.components.PaperRow
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
 import org.andromeda.link.ui.components.Screen
-import org.andromeda.link.ui.components.Section
+import org.andromeda.link.ui.kit.BackKey
+import org.andromeda.link.ui.kit.BottomFade
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.GroupCard
+import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.SectionTitle
+import org.andromeda.link.ui.kit.Separator
+import org.andromeda.link.ui.kit.Sheet
+import org.andromeda.link.ui.kit.SwitchRow
+import org.andromeda.link.ui.kit.Symbol
+import org.andromeda.link.ui.kit.Text
+import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Radius
-import org.andromeda.link.ui.theme.Space
+import org.andromeda.link.ui.theme.Tok
 
-/** One desktop: what this phone shares with it, the per-app notification filter, and unpairing. */
+/** One desktop: what it may do on this phone, what this phone may open or control on it, and unpairing. */
 @Composable
 fun DeviceScreen(
     viewModel: DeviceViewModel,
@@ -68,6 +70,7 @@ fun DeviceScreen(
     onRemote: () -> Unit,
     onPresenter: () -> Unit,
     onViewer: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val unpaired by viewModel.unpaired.collectAsStateWithLifecycle()
@@ -80,233 +83,297 @@ fun DeviceScreen(
         allFiles = PhoneFiles.allFiles(context)
         onPauseOrDispose {}
     }
-    val resources = LocalContext.current.resources
-    LaunchedEffect(unpaired) { if (unpaired) onBack() }
-    val desktop = state.desktop ?: return Screen(stringResource(R.string.desktops_title), onBack) {}
-    Screen(
-        title = null,
-        onBack = onBack,
-        toast = state.failure?.text(resources),
-        onToastShown = viewModel::failureShown,
-    ) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            Section {
-                val via =
-                    when {
-                        desktop.connected && desktop.bluetooth -> stringResource(R.string.home_via_bluetooth)
-                        desktop.connected -> stringResource(R.string.home_via_wifi)
-                        else -> stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))
-                    }
-                Label(via, LinkTheme.type.titleSmall, if (desktop.connected) LinkTheme.colors.accentText else LinkTheme.colors.textTertiary)
-                Label(desktop.name, LinkTheme.type.hero, modifier = Modifier.padding(top = Space.s4), maxLines = 2)
-                if (!desktop.connected) {
-                    PillButton(
-                        stringResource(R.string.connect),
-                        viewModel::connect,
-                        Modifier.padding(top = Space.s16),
-                        enabled = !state.busy,
-                    )
-                }
-            }
-            Section {
-                PaperHeading(stringResource(R.string.device_phone_grants, desktop.name))
-                val sharing = desktop.sharing
-                listOf(
-                    FeatureRow(Feature.Clipboard, R.string.feature_clipboard, R.string.feature_clipboard_hint, LinkIcons.Clipboard),
-                    FeatureRow(Feature.Files, R.string.feature_files, R.string.feature_files_hint, LinkIcons.Folder),
-                    FeatureRow(
-                        Feature.Notifications,
-                        R.string.feature_notifications,
-                        R.string.feature_notifications_hint,
-                        Icons.Filled.Notifications,
-                    ),
-                    FeatureRow(Feature.Media, R.string.feature_media, R.string.feature_media_hint, Icons.Filled.PlayArrow),
-                    FeatureRow(Feature.Ring, R.string.feature_ring, R.string.feature_ring_hint, LinkIcons.Ring),
-                    FeatureRow(Feature.Calls, R.string.feature_calls, R.string.feature_calls_hint, Icons.Filled.Call),
-                    FeatureRow(Feature.Browse, R.string.feature_browse, R.string.feature_browse_hint, LinkIcons.Folder),
-                    FeatureRow(Feature.Messages, R.string.feature_messages, R.string.feature_messages_hint, LinkIcons.Contacts),
-                    FeatureRow(Feature.Screen, R.string.feature_screen, R.string.feature_screen_hint, LinkIcons.Computer),
-                ).filter { row ->
-                    when (row.feature) {
-                        Feature.Clipboard -> state.desktopCan(CAN_CLIPBOARD)
-                        Feature.Notifications -> state.desktopCan(CAN_NOTIFICATIONS)
-                        else -> true
-                    }
-                }.forEachIndexed { index, row ->
-                    PaperRow(
-                        stringResource(row.label),
-                        subtitle = stringResource(row.hint),
-                        icon = row.icon,
-                        divided = index > 0,
-                        enabled = !state.busy,
-                        checked = sharing.allows(row.feature),
-                        onToggle = { viewModel.setSharing(row.feature, it) },
-                    )
-                    if (row.feature == Feature.Notifications && sharing.allows(Feature.Notifications)) {
-                        Label(
-                            stringResource(R.string.mirror_apps_choose),
-                            LinkTheme.type.titleSmall,
-                            LinkTheme.colors.accentText,
-                            Modifier
-                                .padding(start = 36.dp)
-                                .clip(Radius.pill)
-                                .clickable(role = Role.Button, onClick = onMirrorApps)
-                                .padding(vertical = Space.s8),
+    val back by rememberUpdatedState(onBack)
+    LaunchedEffect(unpaired) { if (unpaired) back() }
+    val resources = context.resources
+    val desktop = state.desktop
+    Box(modifier) {
+        Screen(
+            null,
+            toast = state.failure?.text(resources),
+            onToastShown = viewModel::failureShown,
+            background = LinkTheme.scheme.solidRegular,
+            overlay = {
+                BottomFade(Tok.Space.p48.dp, Modifier.align(Alignment.BottomCenter))
+                if (desktop != null) {
+                    Sheet(
+                        confirmUnpair,
+                        { if (!state.busy) confirmUnpair = false },
+                        stringResource(R.string.device_unpair_title),
+                        subtitle = stringResource(R.string.device_unpair_body, desktop.name),
+                    ) {
+                        Capsule(
+                            stringResource(R.string.unpair),
+                            { if (!state.busy) viewModel.unpair() },
+                            Modifier.fillMaxWidth(),
+                            kind = CapsuleKind.Danger,
+                            large = true,
+                        )
+                        Capsule(
+                            stringResource(R.string.cancel),
+                            { if (!state.busy) confirmUnpair = false },
+                            Modifier.fillMaxWidth(),
+                            large = true,
                         )
                     }
-                    if (row.feature == Feature.Browse && sharing.browse && !allFiles) {
-                        Label(
-                            stringResource(R.string.device_browse_photos_only, desktop.name),
-                            LinkTheme.type.bodyMedium,
-                            LinkTheme.colors.textSecondary,
-                            Modifier.padding(start = 36.dp),
-                        )
-                        Label(
-                            stringResource(R.string.settings_turn_on),
-                            LinkTheme.type.titleSmall,
-                            LinkTheme.colors.accentText,
-                            Modifier
-                                .padding(start = 36.dp)
-                                .clip(Radius.pill)
-                                .clickable(role = Role.Button) { context.startActivity(allFilesSettings(context)) }
-                                .padding(vertical = Space.s8),
-                        )
-                    }
-                    if (row.feature == Feature.Screen && sharing.screen && !controlEnabled) {
-                        PaperRow(
-                            stringResource(R.string.screen_control_off),
-                            icon = Icons.Filled.Lock,
-                            onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                        ) { Glyph(Icons.AutoMirrored.Filled.KeyboardArrowRight, LinkTheme.colors.textTertiary) }
-                    }
                 }
-            }
-            Section {
-                PaperHeading(stringResource(R.string.device_desktop_grants, desktop.name))
-                val allowed = state.capabilities?.contains(CAN_CONTROL) == true
-                PaperRow(
-                    stringResource(R.string.device_control_system),
-                    subtitle = stringResource(R.string.device_control_system_hint),
-                    icon = LinkIcons.Brightness,
-                    divided = false,
-                ) {
-                    Label(
-                        stringResource(if (allowed) R.string.device_allowed else R.string.device_not_allowed),
-                        LinkTheme.type.titleSmall,
-                        if (allowed) LinkTheme.colors.success else LinkTheme.colors.textTertiary,
+            },
+        ) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                BackKey(LinkTheme.scheme.label1, onBack, Modifier.padding(horizontal = Tok.Space.p12.dp))
+                if (desktop == null) return@Column
+                Column(Modifier.padding(horizontal = Tok.Space.p16.dp)) {
+                    Identity(desktop, state.busy, viewModel::connect)
+                    Grants(
+                        desktop,
+                        state,
+                        allFiles,
+                        controlEnabled,
+                        viewModel::setSharing,
+                        onMirrorApps,
+                        { context.startActivity(allFilesSettings(context)) },
+                        { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     )
-                }
-                val chevron = @Composable { Glyph(Icons.AutoMirrored.Filled.KeyboardArrowRight, LinkTheme.colors.textTertiary) }
-                if (desktop.control) {
-                    val input = state.desktopCan(CAN_INPUT)
-                    val inputState =
-                        @Composable {
-                            if (input) {
-                                chevron()
-                            } else {
-                                Label(stringResource(R.string.device_not_allowed), LinkTheme.type.titleSmall, LinkTheme.colors.textTertiary)
+                    Control(desktop, state, onRemote, onPresenter, onViewer, viewModel::ping)
+                    if (desktop.control && state.commands.isNotEmpty()) {
+                        SectionTitle(stringResource(R.string.device_run_on, desktop.name))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp)) {
+                            state.commands.forEach { command ->
+                                Pill(command.name, { if (!state.busy) viewModel.run(command) })
                             }
                         }
-                    PaperRow(
-                        stringResource(R.string.remote_title),
-                        subtitle = stringResource(R.string.device_touchpad_hint),
-                        icon = LinkIcons.Touchpad,
-                        enabled = input,
-                        onClick = onRemote,
-                        trailing = inputState,
-                    )
-                    PaperRow(
-                        stringResource(R.string.presenter_title),
-                        subtitle = stringResource(R.string.device_presenter_hint),
-                        icon = LinkIcons.Presenter,
-                        enabled = input,
-                        onClick = onPresenter,
-                        trailing = inputState,
-                    )
-                    // Only a desktop that says it can share its screen offers it; older ones cannot.
-                    if (state.capabilities?.contains(CAN_SCREEN) == true) {
-                        PaperRow(
-                            stringResource(R.string.viewer_title),
-                            subtitle = stringResource(R.string.device_viewer_hint),
-                            icon = LinkIcons.Computer,
-                            enabled = input,
-                            onClick = onViewer,
-                            trailing = inputState,
-                        )
                     }
-                }
-                if (desktop.control) {
-                    PaperRow(
-                        stringResource(R.string.ping),
-                        subtitle = stringResource(R.string.ping_hint),
-                        icon = Icons.Filled.Notifications,
-                        onClick = viewModel::ping,
-                        trailing = chevron,
-                    )
-                }
-                Label(
-                    stringResource(R.string.device_desktop_decides, desktop.name),
-                    LinkTheme.type.bodyMedium,
-                    LinkTheme.colors.textSecondary,
-                    Modifier.padding(top = Space.s8),
-                )
-            }
-            if (desktop.control && state.commands.isNotEmpty()) {
-                Section {
-                    PaperHeading(stringResource(R.string.device_run_on, desktop.name))
-                    FlowRow(
-                        Modifier.padding(top = Space.s8),
-                        horizontalArrangement = Arrangement.spacedBy(Space.s6),
-                        verticalArrangement = Arrangement.spacedBy(Space.s8),
-                    ) {
-                        state.commands.forEach { command ->
-                            PillButton(command.name, { viewModel.run(command) }, kind = PillKind.Tonal, enabled = !state.busy)
-                        }
-                    }
-                }
-            }
-            Section {
-                Label(
-                    stringResource(R.string.device_unpair, desktop.name),
-                    LinkTheme.type.titleMedium,
-                    LinkTheme.colors.warning,
-                    Modifier
-                        .padding(top = Space.s14)
-                        .clip(Radius.pill)
-                        .clickable(enabled = !state.busy, role = Role.Button) { confirmUnpair = true }
-                        .padding(vertical = Space.s8),
-                )
-            }
-            Spacer(Modifier.height(Space.s32))
-        }
-        if (confirmUnpair) {
-            Dialog(onDismissRequest = { if (!state.busy) confirmUnpair = false }) {
-                DashboardCard(Modifier.fillMaxWidth()) {
-                    Label(stringResource(R.string.device_unpair_title), LinkTheme.type.headlineLarge)
-                    Label(
-                        stringResource(R.string.device_unpair_body, desktop.name),
-                        LinkTheme.type.bodyLarge,
-                        LinkTheme.colors.textSecondary,
-                    )
-                    PillButton(
-                        stringResource(R.string.unpair),
-                        viewModel::unpair,
-                        Modifier.fillMaxWidth(),
-                        PillKind.Destructive,
-                        enabled = !state.busy,
-                    )
-                    PillButton(
-                        stringResource(R.string.cancel),
-                        { confirmUnpair = false },
-                        Modifier.fillMaxWidth(),
-                        PillKind.Quiet,
-                        enabled = !state.busy,
+                    Capsule(
+                        stringResource(R.string.device_unpair, desktop.name),
+                        { if (!state.busy) confirmUnpair = true },
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = Tok.Space.p32.dp)
+                            .navigationBarsPadding()
+                            .padding(bottom = Tok.Space.p48.dp),
+                        kind = CapsuleKind.Danger,
+                        large = true,
                     )
                 }
             }
         }
     }
 }
+
+/** The desktop glyph, its name and where it is; an away desktop offers Connect. */
+@Composable
+private fun Identity(
+    desktop: Desktop,
+    busy: Boolean,
+    onConnect: () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val t = LinkTheme.phoneType
+    val on = desktop.connected
+    Column {
+        Row(
+            Modifier.padding(top = Tok.Space.p8.dp),
+            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(Tok.Phone.glyph.dp)
+                    .clip(RoundedCornerShape(Tok.Radius.r16.dp))
+                    .background(if (on) s.accent.copy(alpha = Tok.Phone.glyphTint) else s.fill1),
+                contentAlignment = Alignment.Center,
+            ) { Symbol(Icons.Laptop, if (on) s.accent else s.label2, size = Tok.Size.controlS.dp) }
+            Column(Modifier.weight(1f)) {
+                Text(desktop.name, t.title1, maxLines = 2)
+                Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(Tok.Space.p8.dp).clip(CircleShape).background(if (on) s.success else s.label3))
+                    val via = stringResource(if (desktop.bluetooth) R.string.home_via_bluetooth else R.string.home_via_wifi)
+                    Text(
+                        if (on) {
+                            stringResource(R.string.home_connected_via, via)
+                        } else {
+                            stringResource(R.string.home_last_seen, lastSeen(desktop.lastSeen))
+                        },
+                        t.footnote,
+                        color = s.label2,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        if (!on) {
+            Capsule(
+                stringResource(R.string.connect),
+                { if (!busy) onConnect() },
+                Modifier.fillMaxWidth().padding(top = Tok.Space.p16.dp),
+                icon = Icons.Refresh,
+                kind = CapsuleKind.Primary,
+                large = true,
+            )
+        }
+    }
+}
+
+/** What the desktop may do on this phone, in three groups: share, this phone, and what it can open. */
+@Composable
+private fun Grants(
+    desktop: Desktop,
+    state: DeviceState,
+    allFiles: Boolean,
+    controlEnabled: Boolean,
+    onShare: (Feature, Boolean) -> Unit,
+    onMirrorApps: () -> Unit,
+    onAllFiles: () -> Unit,
+    onAccessibility: () -> Unit,
+) {
+    val sharing = desktop.sharing
+    val enabled = !state.busy
+
+    @Composable
+    fun Toggle(
+        feature: Feature,
+        label: Int,
+        icon: ImageVector,
+    ) = SwitchRow(stringResource(label), sharing.allows(feature), { onShare(feature, it) }, icon = icon, enabled = enabled)
+
+    SectionTitle(stringResource(R.string.device_share))
+    GroupCard {
+        val rows =
+            buildList<@Composable () -> Unit> {
+                if (state.desktopCan(CAN_CLIPBOARD)) add { Toggle(Feature.Clipboard, R.string.feature_clipboard, Icons.Clip) }
+                add { Toggle(Feature.Files, R.string.feature_files, Icons.File) }
+                add { Toggle(Feature.Media, R.string.feature_media, Icons.Music) }
+                if (state.desktopCan(CAN_NOTIFICATIONS)) {
+                    add { Toggle(Feature.Notifications, R.string.feature_notifications, Icons.Bell) }
+                    if (sharing.allows(Feature.Notifications)) {
+                        add {
+                            ValueRow(
+                                stringResource(R.string.mirror_apps_choose),
+                                Modifier.padding(start = SUB_INDENT),
+                                chevron = Icons.Chev,
+                                accent = true,
+                                onClick = onMirrorApps,
+                            )
+                        }
+                    }
+                }
+            }
+        Rows(rows)
+    }
+    SectionTitle(stringResource(R.string.device_this_phone))
+    GroupCard {
+        Rows(
+            listOf(
+                { Toggle(Feature.Ring, R.string.feature_ring, Icons.Bell) },
+                { Toggle(Feature.Calls, R.string.feature_calls, Icons.Call) },
+                { Toggle(Feature.Messages, R.string.feature_messages, Icons.Msg) },
+            ),
+        )
+    }
+    SectionTitle(stringResource(R.string.device_can_open, desktop.name))
+    GroupCard {
+        val rows =
+            buildList<@Composable () -> Unit> {
+                add { Toggle(Feature.Browse, R.string.device_open_files, Icons.Folder) }
+                if (sharing.browse && !allFiles) {
+                    add {
+                        ValueRow(
+                            stringResource(R.string.device_browse_photos_only, desktop.name),
+                            Modifier.padding(start = SUB_INDENT),
+                        ) { Pill(stringResource(R.string.settings_turn_on), onAllFiles) }
+                    }
+                }
+                add { Toggle(Feature.Screen, R.string.device_open_screen, Icons.Screen) }
+                if (sharing.screen && !controlEnabled) {
+                    add {
+                        ValueRow(
+                            stringResource(R.string.screen_control_off),
+                            Modifier.padding(start = SUB_INDENT),
+                            chevron = Icons.Chev,
+                            accent = true,
+                            onClick = onAccessibility,
+                        )
+                    }
+                }
+            }
+        Rows(rows)
+    }
+}
+
+/** What this phone may control on the desktop; the desktop decides, so rows are off when it does not allow input. */
+@Composable
+private fun Control(
+    desktop: Desktop,
+    state: DeviceState,
+    onRemote: () -> Unit,
+    onPresenter: () -> Unit,
+    onViewer: () -> Unit,
+    onPing: () -> Unit,
+) {
+    val allowed = state.capabilities?.contains(CAN_CONTROL) == true
+    val input = state.desktopCan(CAN_INPUT)
+    val off = stringResource(R.string.device_not_allowed)
+    SectionTitle(stringResource(R.string.device_control))
+    GroupCard {
+        val rows =
+            buildList<@Composable () -> Unit> {
+                add {
+                    ValueRow(
+                        stringResource(R.string.device_control_system),
+                        icon = Icons.Sliders,
+                        subtitle = stringResource(R.string.device_control_system_hint),
+                        value = stringResource(if (allowed) R.string.device_allowed else R.string.device_not_allowed),
+                    )
+                }
+                if (desktop.control) {
+                    add { Open(R.string.remote_title, R.string.device_touchpad_hint, Icons.Pad, input, off, onRemote) }
+                    add { Open(R.string.presenter_title, R.string.device_presenter_hint, Icons.Pres, input, off, onPresenter) }
+                    if (state.capabilities?.contains(CAN_SCREEN) == true) {
+                        add { Open(R.string.viewer_title, R.string.device_viewer_hint, Icons.Monitor, input, off, onViewer) }
+                    }
+                    add { Open(R.string.ping, R.string.ping_hint, Icons.Ping, true, off, onPing) }
+                }
+            }
+        Rows(rows)
+    }
+    Text(
+        stringResource(R.string.device_desktop_decides, desktop.name),
+        LinkTheme.phoneType.footnote,
+        Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p8.dp),
+        color = LinkTheme.scheme.label2,
+    )
+}
+
+@Composable
+private fun Open(
+    title: Int,
+    subtitle: Int,
+    icon: ImageVector,
+    enabled: Boolean,
+    off: String,
+    onClick: () -> Unit,
+) {
+    ValueRow(
+        stringResource(title),
+        icon = icon,
+        subtitle = stringResource(subtitle),
+        value = if (enabled) null else off,
+        chevron = if (enabled) Icons.Chev else null,
+        onClick = if (enabled) onClick else null,
+    )
+}
+
+/** Rows of one group card, with full-width separators between them. */
+@Composable
+private fun Rows(rows: List<@Composable () -> Unit>) {
+    rows.forEachIndexed { index, row ->
+        if (index > 0) Separator()
+        row()
+    }
+}
+
+/** A sub-row starts under its parent's title: the row's symbol and the gap. */
+private val SUB_INDENT = (Tok.Phone.symbol + Tok.Space.p12).dp
 
 /** Android 11+ grants All files access on its own page; Android 10 has only the storage permission in App info. */
 private fun allFilesSettings(context: Context): Intent =
@@ -318,10 +385,3 @@ private fun allFilesSettings(context: Context): Intent =
         },
         "package:${context.packageName}".toUri(),
     )
-
-private data class FeatureRow(
-    val feature: Feature,
-    @param:StringRes val label: Int,
-    @param:StringRes val hint: Int,
-    val icon: ImageVector,
-)

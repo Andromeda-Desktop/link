@@ -343,8 +343,12 @@
     <string name="shortcut_hint">super+t</string>
     <string name="key_dnd">Do not disturb</string>
     <string name="missing_turn_on">Turn on</string>
-    <string name="device_phone_grants">What %1$s can do on this phone</string>
-    <string name="device_desktop_grants">What this phone does on %1$s</string>
+    <string name="device_share">Share</string>
+    <string name="device_this_phone">This phone</string>
+    <string name="device_can_open">%1$s can open</string>
+    <string name="device_control">Control</string>
+    <string name="device_open_files">Files on this phone</string>
+    <string name="device_open_screen">This phone\'s screen</string>
     <string name="device_control_system">Control system</string>
     <string name="device_control_system_hint">Volume, brightness, lock, sleep, Do not disturb</string>
     <string name="device_allowed">Allowed</string>

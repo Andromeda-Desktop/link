@@ -52,7 +52,7 @@ appId: org.andromeda.link
 - waitForAnimationToEnd
 - tapOn: "Connected, .*"
 - extendedWaitUntil:
-    visible: "What .* can do on this phone"
+    visible: "Share"
     timeout: 10000
 - takeScreenshot: ${OUT}/${THEME}-device
 - scrollUntilVisible:
