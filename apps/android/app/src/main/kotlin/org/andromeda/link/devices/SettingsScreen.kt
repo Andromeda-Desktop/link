@@ -44,12 +44,12 @@ import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.clipboard.LogAccess.Method
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.onboarding.Grant
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
 import org.andromeda.link.ui.kit.Segmented
 import org.andromeda.link.ui.kit.Separator
@@ -101,7 +101,6 @@ fun SettingsScreen(
     }
     Box(modifier) {
         Screen(
-            null,
             background = LinkTheme.scheme.solidRegular,
             overlay = {
                 BottomFade(Tok.Space.p48.dp, Modifier.align(Alignment.BottomCenter))

@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.LinkFailure
+import org.andromeda.link.core.domain.ShareDelivery
 import org.andromeda.link.core.domain.ShareKind
 import org.andromeda.link.core.domain.linkFailure
 import org.andromeda.link.core.domain.shareKindOf
@@ -39,10 +40,13 @@ sealed interface SharePayload {
     ) : SharePayload
 }
 
+/** Queued: the desktop is away, and the phone sends the share when it is back. */
+enum class SentAs { Delivered, Queued, Files }
+
 sealed interface ShareOutcome {
     data class Sent(
         val desktop: Desktop,
-        val files: Boolean,
+        val how: SentAs,
     ) : ShareOutcome
 
     data object NoDesktop : ShareOutcome
@@ -84,13 +88,18 @@ class ShareViewModel(
                 when (payload) {
                     is SharePayload.Text -> {
                         val kind = shareKindOf(payload.text.trim())
-                        repository.share(desktop.id, kind, if (kind == ShareKind.Link) payload.text.trim() else payload.text)
+                        repository
+                            .share(desktop.id, kind, if (kind == ShareKind.Link) payload.text.trim() else payload.text)
+                            .map {
+                                when (it) {
+                                    ShareDelivery.Delivered -> SentAs.Delivered
+                                    ShareDelivery.Queued -> SentAs.Queued
+                                }
+                            }
                     }
-                    is SharePayload.Files -> repository.sendFiles(desktop.id, payload.uris).map {}
+                    is SharePayload.Files -> repository.sendFiles(desktop.id, payload.uris).map { SentAs.Files }
                 }
-            val outcome =
-                result.exceptionOrNull()?.let { ShareOutcome.Failed(it.linkFailure()) }
-                    ?: ShareOutcome.Sent(desktop, payload is SharePayload.Files)
+            val outcome = result.fold({ ShareOutcome.Sent(desktop, it) }, { ShareOutcome.Failed(it.linkFailure()) })
             outcomeChannel.send(outcome)
         }
     }

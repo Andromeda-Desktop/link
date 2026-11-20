@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -174,12 +175,16 @@ fun GroupCard(
     )
 }
 
+/** The separator line: 1 dp snapped to whole device pixels (rulebook Hairline). Dp.Hairline is 0 dp outside border(). */
+@Composable
+fun hairline(): Dp = with(LocalDensity.current) { 1.dp.roundToPx().toDp() }
+
 @Composable
 fun Separator(modifier: Modifier = Modifier) {
     Box(
         modifier
             .fillMaxWidth()
-            .height(Dp.Hairline)
+            .height(hairline())
             .background(LinkTheme.scheme.separator),
     )
 }

@@ -234,7 +234,7 @@ object Tok {
                 lens = Color(0x24FFFFFF),
                 lensEdge = Color(0x2EFFFFFF),
                 tintThin = Color(0x8C38383F),
-                tintRegular = Color(0xB31F1F25),
+                tintRegular = Color(0xB30B0B0F),
                 tintThick = Color(0xEB202024),
                 solidThin = Color(0xFF1C1C20),
                 solidRegular = Color(0xFF222226),
@@ -438,6 +438,8 @@ object Tok {
         val loadingDelayMs = 200
         val loadingMinMs = 400
         val caretBlinkMs = 530
+        val spinnerPeriodMs = 800
+        val spinnerArc = 270.0f
     }
 
     object Radius {
@@ -496,6 +498,7 @@ object Tok {
         val identity = 64.0f
         val fixChip = 22.0f
         val slider = 52.0f
+        val mediaArt = 240.0f
         val dockInset = 28.0f
         val fadeDock = 132.0f
         val offAlpha = 0.38f

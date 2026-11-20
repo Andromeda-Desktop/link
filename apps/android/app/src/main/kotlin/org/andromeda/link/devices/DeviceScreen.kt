@@ -42,7 +42,6 @@ import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.screen.ScreenInput
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.Capsule
@@ -50,6 +49,7 @@ import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
 import org.andromeda.link.ui.kit.Separator
 import org.andromeda.link.ui.kit.Sheet
@@ -89,9 +89,8 @@ fun DeviceScreen(
     val desktop = state.desktop
     Box(modifier) {
         Screen(
-            null,
             toast = state.failure?.text(resources),
-            onToastShown = viewModel::failureShown,
+            onToastEnd = viewModel::failureShown,
             background = LinkTheme.scheme.solidRegular,
             overlay = {
                 BottomFade(Tok.Space.p48.dp, Modifier.align(Alignment.BottomCenter))

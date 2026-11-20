@@ -49,7 +49,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.ClipEntry
 import org.andromeda.link.core.domain.TransferRecord
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
@@ -57,6 +56,7 @@ import org.andromeda.link.ui.kit.FilterChips
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Pill
 import org.andromeda.link.ui.kit.PillKind
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
@@ -164,9 +164,8 @@ fun ActivityScreen(
     }
     Box(modifier) {
         Screen(
-            null,
             toast = toast,
-            onToastShown = {
+            onToastEnd = {
                 openFailure = null
                 viewModel.messageShown()
             },

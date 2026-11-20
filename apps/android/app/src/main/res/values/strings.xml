@@ -75,6 +75,7 @@
     <string name="share_sending">Sending to %1$s…</string>
     <string name="share_choose">Send to which desktop?</string>
     <string name="share_sent">Sent to %1$s</string>
+    <string name="share_queued">Sends when %1$s is back</string>
     <string name="share_no_desktop">Pair this phone with a desktop first.</string>
     <string name="share_failed">Not sent. %1$s</string>
     <string name="channel_transfers">Files</string>

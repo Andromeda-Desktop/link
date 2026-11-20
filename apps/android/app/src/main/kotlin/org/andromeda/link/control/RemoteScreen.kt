@@ -91,10 +91,10 @@ import org.andromeda.link.R
 import org.andromeda.link.core.domain.PointerButton
 import org.andromeda.link.core.domain.RemoteInput
 import org.andromeda.link.core.domain.RemoteKey
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.RoundKey
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.text
@@ -155,7 +155,7 @@ fun RemoteScreen(
     }
     val resources = LocalContext.current.resources
     Box(modifier) {
-        Screen(title = null, toast = failure?.text(resources), onToastShown = viewModel::failureShown) {
+        Screen(toast = failure?.text(resources), onToastEnd = viewModel::failureShown) {
             if (mode == RemoteMode.Present) {
                 Presenter(actions, go, onScreen, Modifier.weight(1f).fillMaxWidth())
             } else {

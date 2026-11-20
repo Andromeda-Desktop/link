@@ -2,7 +2,6 @@ package org.andromeda.link.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -20,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -48,7 +48,8 @@ import org.andromeda.link.pairing.PairingScreen
 import org.andromeda.link.pairing.PairingViewModel
 import org.andromeda.link.transfer.ActivityScreen
 import org.andromeda.link.transfer.ActivityViewModel
-import org.andromeda.link.ui.theme.Motion
+import org.andromeda.link.ui.theme.Tok
+import org.andromeda.link.ui.theme.spring
 
 private enum class Screen { Home, Activity, Settings, Device, Pairing, Setup, Media, MirrorApps, Remote, Presenter, Viewer }
 
@@ -140,11 +141,11 @@ fun LinkApp(
                 transitionSpec = {
                     val forward = targetState.ordinal > initialState.ordinal
                     val enter =
-                        slideInHorizontally(tween(Motion.MORPH, easing = Motion.smoothEnter)) {
+                        slideInHorizontally(spring<IntOffset>(Tok.Spring.page)) {
                             if (forward) it / 6 else -it / 6
-                        } + fadeIn(tween(Motion.FAST))
-                    enter togetherWith fadeOut(tween(Motion.FADE_OUT)) +
-                        slideOutHorizontally(tween(Motion.MORPH, easing = Motion.exit)) { if (forward) -it / 8 else it / 8 }
+                        } + fadeIn(spring(Tok.Spring.fade))
+                    enter togetherWith fadeOut(spring(Tok.Spring.fadeOut)) +
+                        slideOutHorizontally(spring<IntOffset>(Tok.Spring.page)) { if (forward) -it / 8 else it / 8 }
                 },
                 label = "screen",
             ) { current ->

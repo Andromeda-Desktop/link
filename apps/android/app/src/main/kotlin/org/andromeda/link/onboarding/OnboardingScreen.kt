@@ -60,12 +60,12 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Pill
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.Separator
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
@@ -192,7 +192,7 @@ fun OnboardingScreen(
         }
     }
     Box(modifier) {
-        Screen(null, background = LinkTheme.scheme.solidRegular) {
+        Screen(background = LinkTheme.scheme.solidRegular) {
             Row(
                 Modifier.fillMaxWidth().padding(start = Tok.Space.p16.dp, end = Tok.Space.p4.dp),
                 verticalAlignment = Alignment.CenterVertically,

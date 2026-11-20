@@ -3,20 +3,16 @@ package org.andromeda.link.devices
 import android.Manifest
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.os.Build
-import android.os.SystemClock
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -27,7 +23,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,9 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,11 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -68,9 +57,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
@@ -86,26 +72,29 @@ import org.andromeda.link.files.PickerActions
 import org.andromeda.link.files.PickerSheet
 import org.andromeda.link.files.PickerTab
 import org.andromeda.link.files.PickerViewModel
+import org.andromeda.link.media.Artwork
+import org.andromeda.link.media.MediaKeys
+import org.andromeda.link.media.Progress
 import org.andromeda.link.onboarding.Grant
-import org.andromeda.link.ui.components.PullRefresh
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.CapsuleSlider
-import org.andromeda.link.ui.kit.DragTrack
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.OfferRow
 import org.andromeda.link.ui.kit.Pill
 import org.andromeda.link.ui.kit.PillKind
+import org.andromeda.link.ui.kit.PullRefresh
 import org.andromeda.link.ui.kit.RoundKey
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
 import org.andromeda.link.ui.kit.Separator
 import org.andromeda.link.ui.kit.Sheet
 import org.andromeda.link.ui.kit.SwitchRow
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
+import org.andromeda.link.ui.kit.hairline
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.LinkTheme
 import org.andromeda.link.ui.theme.Tok
@@ -188,9 +177,8 @@ fun HomeScreen(
     var sheet by rememberSaveable { mutableStateOf(HomeSheet.None) }
     Box(modifier) {
         Screen(
-            title = null,
             toast = toast,
-            onToastShown = viewModel::messageShown,
+            onToastEnd = viewModel::messageShown,
             toastInset = (Tok.Phone.dockInset + Tok.Phone.hit + Tok.Space.p12).dp,
             overlay = {
                 if (primary != null) {
@@ -535,7 +523,7 @@ private fun MediaCard(
             horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Artwork(player.artwork)
+            Artwork(player.artwork, Tok.Size.rowTwo.dp, Tok.Radius.r12.dp)
             Column(Modifier.weight(1f)) {
                 Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
                 val by = if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
@@ -545,143 +533,7 @@ private fun MediaCard(
         Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
             onCommand(MediaCommandKind.Seek, it)
         }
-        Row(
-            Modifier.fillMaxWidth().padding(top = Tok.Space.p4.dp),
-            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p24.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            MediaKey(Icons.Prev, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can) {
-                onCommand(MediaCommandKind.Previous, null)
-            }
-            val playLabel = stringResource(if (playing) R.string.home_pause else R.string.home_play)
-            Box(
-                Modifier
-                    .size(Tok.Phone.roundKeyL.dp)
-                    .clip(CircleShape)
-                    .background(s.label1)
-                    .clickable(enabled = MediaCommandKind.PlayPause in player.can, role = Role.Button) {
-                        onCommand(MediaCommandKind.PlayPause, null)
-                    }.semantics { contentDescription = playLabel },
-                contentAlignment = Alignment.Center,
-            ) { Symbol(if (playing) Icons.Pause else Icons.Play, s.view, size = Tok.Phone.symbol.dp) }
-            MediaKey(Icons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can) {
-                onCommand(MediaCommandKind.Next, null)
-            }
-        }
-    }
-}
-
-@Composable
-private fun MediaKey(
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val s = LinkTheme.scheme
-    Box(
-        Modifier
-            .size(Tok.Phone.hit.dp)
-            .clip(CircleShape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) { Symbol(icon, if (enabled) s.label1 else s.label3, size = Tok.Phone.symbol.dp) }
-}
-
-@Composable
-private fun Artwork(bytes: ByteArray?) {
-    val s = LinkTheme.scheme
-    // The last image stays up while the next one decodes.
-    val image =
-        produceState<ImageBitmap?>(null, bytes) {
-            value = withContext(Dispatchers.Default) { bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap() }
-        }.value
-    Box(
-        Modifier
-            .size(Tok.Size.rowTwo.dp)
-            .clip(RoundedCornerShape(Tok.Radius.r12.dp))
-            .background(Brush.linearGradient(listOf(s.accent, s.fill2))),
-    ) {
-        if (image != null) {
-            Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        }
-    }
-}
-
-/** A hairline that shows how far the track is; a tap or drag seeks, once the finger lifts. */
-@Composable
-private fun Progress(
-    positionMs: Long,
-    lengthMs: Long?,
-    receivedAt: Long,
-    playing: Boolean,
-    seekable: Boolean,
-    onSeek: (Long) -> Unit,
-) {
-    val s = LinkTheme.scheme
-    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    LaunchedEffect(playing, receivedAt) {
-        // Playback has no change event on this side; the line moves once a second while it plays.
-        while (playing) {
-            now = SystemClock.elapsedRealtime()
-            delay(1_000)
-        }
-    }
-    // A player without a length (a live stream, or media still loading) shows no line.
-    if (lengthMs == null) return
-    val position = if (playing) positionMs + (now - receivedAt) else positionMs
-    val fraction = (position.toFloat() / lengthMs.coerceAtLeast(1)).coerceIn(0f, 1f)
-    val t = LinkTheme.phoneType
-    val line = Tok.Space.p4.dp
-    val thumb = Tok.Space.p12.dp
-    Column(Modifier.fillMaxWidth()) {
-        DragTrack(
-            fraction,
-            stringResource(R.string.media_position),
-            seekable,
-            Modifier.fillMaxWidth().height(Tok.Size.controlS.dp),
-            onDone = { onSeek((it * lengthMs).toLong()) },
-        ) { value, _ ->
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(line)
-                    .clip(CircleShape)
-                    .background(s.fill2),
-            )
-            Box(
-                Modifier
-                    .fillMaxWidth(value)
-                    .height(line)
-                    .clip(CircleShape)
-                    .background(s.label1),
-            )
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                Box(
-                    Modifier
-                        .offset(x = (maxWidth - thumb) * value)
-                        .size(thumb)
-                        .clip(CircleShape)
-                        .background(s.label1),
-                )
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            val times = t.caption.copy(fontFeatureSettings = "tnum")
-            Text(clock(position.coerceAtMost(lengthMs)), times, color = s.label2)
-            Text(clock(lengthMs), times, color = s.label2)
-        }
-    }
-}
-
-/** m:ss, or h:mm:ss from an hour on. */
-private fun clock(ms: Long): String {
-    val sec = ms.coerceAtLeast(0) / 1_000
-    return if (sec >= 3_600) {
-        "%d:%02d:%02d".format(sec / 3_600, sec / 60 % 60, sec % 60)
-    } else {
-        "%d:%02d".format(sec / 60, sec % 60)
+        MediaKeys(player, onCommand, Modifier.padding(top = Tok.Space.p4.dp))
     }
 }
 
@@ -861,7 +713,7 @@ private fun SplitCapsule(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         actions.forEachIndexed { index, (icon, label, onClick) ->
-            if (index > 0) Box(Modifier.width(Dp.Hairline).height(Tok.Size.controlS.dp).background(s.separator))
+            if (index > 0) Box(Modifier.width(hairline()).height(Tok.Size.controlS.dp).background(s.separator))
             Row(
                 Modifier.weight(1f).fillMaxHeight().clickable(enabled = enabled, role = Role.Button, onClick = onClick),
                 horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp, Alignment.CenterHorizontally),

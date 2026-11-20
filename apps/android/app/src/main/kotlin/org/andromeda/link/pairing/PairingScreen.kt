@@ -67,11 +67,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.andromeda.link.AppContainer
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.Desktop
-import org.andromeda.link.ui.components.Screen
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.text
@@ -98,7 +98,7 @@ fun PairingScreen(
     BackHandler(state.link != null && !state.busy, viewModel::dismissLink)
     val failure = state.failure?.text(LocalContext.current.resources)
     Box(modifier) {
-        Screen(null, background = LinkTheme.scheme.solidRegular) {
+        Screen(background = LinkTheme.scheme.solidRegular) {
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 when {
                     state.busy -> Busy()

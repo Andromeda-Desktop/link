@@ -3,18 +3,9 @@ package org.andromeda.link.transfer
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.core.app.NotificationManagerCompat
@@ -24,12 +15,10 @@ import kotlinx.coroutines.yield
 import org.andromeda.link.LinkApplication
 import org.andromeda.link.R
 import org.andromeda.link.notifications.TransferNotifier
-import org.andromeda.link.ui.components.Label
-import org.andromeda.link.ui.components.PillButton
-import org.andromeda.link.ui.components.PillKind
-import org.andromeda.link.ui.components.SoftCard
+import org.andromeda.link.ui.kit.Capsule
+import org.andromeda.link.ui.kit.CapsuleKind
+import org.andromeda.link.ui.kit.Sheet
 import org.andromeda.link.ui.theme.LinkTheme
-import org.andromeda.link.ui.theme.Space
 
 /** A desktop's offer, opened from its notification: the same Accept and Decline, for when Android hides the buttons. */
 class OfferActivity : ComponentActivity() {
@@ -49,31 +38,16 @@ class OfferActivity : ComponentActivity() {
         }
         setContent {
             LinkTheme {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(LinkTheme.colors.surfaceOverlay)
-                        .clickable(remember { MutableInteractionSource() }, indication = null, onClick = ::finish),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    val card = remember { MutableInteractionSource() }
-                    SoftCard(
-                        Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(Space.s12)
-                            .clickable(card, indication = null) {},
-                    ) {
-                        Label(title, LinkTheme.type.headlineMedium)
-                        Column(Modifier.padding(top = Space.s16), verticalArrangement = Arrangement.spacedBy(Space.s8)) {
-                            PillButton(stringResource(R.string.transfer_accept), { answer(true) }, Modifier.fillMaxWidth())
-                            PillButton(
-                                stringResource(R.string.transfer_decline),
-                                { answer(false) },
-                                Modifier.fillMaxWidth(),
-                                PillKind.Quiet,
-                            )
-                        }
+                Box(Modifier.fillMaxSize()) {
+                    Sheet(true, ::finish, title) {
+                        Capsule(
+                            stringResource(R.string.transfer_accept),
+                            { answer(true) },
+                            Modifier.fillMaxWidth(),
+                            kind = CapsuleKind.Primary,
+                            large = true,
+                        )
+                        Capsule(stringResource(R.string.transfer_decline), { answer(false) }, Modifier.fillMaxWidth(), large = true)
                     }
                 }
             }
