@@ -36,8 +36,12 @@ pub struct Dialer {
     config: quinn::ClientConfig,
 }
 
-#[expect(clippy::expect_used, reason = "the constant idle timeout is far below QUIC's varint limit")]
 fn transport_config(keep_alive: Option<Duration>) -> Arc<quinn::TransportConfig> {
+    Arc::new(transport_config_value(keep_alive))
+}
+
+#[expect(clippy::expect_used, reason = "the constant idle timeout is far below QUIC's varint limit")]
+fn transport_config_value(keep_alive: Option<Duration>) -> quinn::TransportConfig {
     let mut config = quinn::TransportConfig::default();
     config.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("idle timeout fits a varint")));
     config.max_concurrent_uni_streams(MAX_BULK_STREAMS.into());
@@ -45,7 +49,7 @@ fn transport_config(keep_alive: Option<Duration>) -> Arc<quinn::TransportConfig>
     // Loss-based control collapses on the random loss of Wi-Fi (about 130 KB/s at 5% and 50 ms); BBR paces by the
     // measured bandwidth instead.
     config.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
-    Arc::new(config)
+    config
 }
 
 pub(crate) fn tls13_provider() -> Arc<rustls::crypto::CryptoProvider> {
@@ -126,6 +130,16 @@ impl Dialer {
         let endpoint =
             quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, socket, runtime)?;
         Ok(Self { endpoint, config: client_config(identity)? })
+    }
+
+    /// The same socket and TLS session cache with Link's transport settings changed by `tune`.
+    #[must_use]
+    pub fn tuned(&self, tune: impl FnOnce(&mut quinn::TransportConfig)) -> Self {
+        let mut transport = transport_config_value(None);
+        tune(&mut transport);
+        let mut config = self.config.clone();
+        config.transport_config(Arc::new(transport));
+        Self { endpoint: self.endpoint.clone(), config }
     }
 
     /// The same socket and TLS session cache, dialling with keep-alive so the connection outlives idle periods.

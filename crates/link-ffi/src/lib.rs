@@ -21,6 +21,8 @@ use tokio::sync::{Mutex, mpsc};
 
 uniffi::setup_scaffolding!();
 
+mod spike;
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum LinkError {
     #[error("the code does not match")]
