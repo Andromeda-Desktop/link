@@ -113,7 +113,17 @@ fn spki(certs: Option<&[CertificateDer<'_>]>) -> Result<Spki, Error> {
 /// desktop when it is not paired yet, which the user confirms on both screens; only Link pairing asks for that.
 pub trait BluetoothOpener: Send + Sync {
     fn open(&self, address: &str, pair: bool) -> io::Result<OwnedFd>;
+
+    /// Opens an LE L2CAP channel to the desktop's [`L2CAP_PSM`] as a `SOCK_SEQPACKET` descriptor, one SDU per
+    /// message. Blocking like [`Self::open`]. Platforms without LE channels keep the default.
+    fn open_l2cap(&self, _address: &str) -> io::Result<OwnedFd> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
+
+/// The LE L2CAP channel the desktop listens on, in the dynamic range (0x80-0xFF); fixed, since no service record
+/// names it.
+pub const L2CAP_PSM: u16 = 0xC5;
 
 /// A connected stream socket handed over as a descriptor (`BlueZ`'s RFCOMM socket, one end of the Android app's socket
 /// pair), read and written without blocking.

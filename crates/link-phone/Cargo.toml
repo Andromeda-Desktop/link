@@ -21,6 +21,7 @@ hex.workspace = true
 log.workspace = true
 quinn.workspace = true
 ring.workspace = true
+rustix = { workspace = true, features = ["net"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 

@@ -70,6 +70,12 @@ impl Bluetooth {
         watch::channel(None).0
     }
 
+    /// Whether `BlueZ` serves Link on the adapter, not the test socket.
+    #[cfg(target_os = "linux")]
+    pub fn on_radio(&self) -> bool {
+        self.registration.is_some()
+    }
+
     pub async fn start() -> Self {
         let (tx, incoming) = mpsc::channel(BACKLOG);
         if let Some(path) = std::env::var_os(TEST_SOCKET) {

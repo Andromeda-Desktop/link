@@ -2010,6 +2010,7 @@ name = "link-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bluer",
  "env_logger",
  "futures-util",
  "hex",
@@ -2123,6 +2124,7 @@ dependencies = [
  "log",
  "quinn",
  "ring",
+ "rustix",
  "serde_json",
  "tokio",
 ]

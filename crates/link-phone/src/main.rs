@@ -44,6 +44,10 @@ struct Cli {
     /// (the daemon's `ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET`).
     #[arg(long)]
     bluetooth_socket: Option<PathBuf>,
+    /// Stands in for an LE L2CAP channel, tried before `--bluetooth-socket`: a Unix `SOCK_SEQPACKET` socket (the
+    /// daemon's `ANDROMEDA_LINK_TEST_L2CAP_SOCKET`).
+    #[arg(long, requires = "bluetooth_socket")]
+    l2cap_socket: Option<PathBuf>,
     /// Stands in for the phone's local-only hotspot: `<ssid>:<passphrase>` is what starting it returns.
     #[arg(long)]
     hotspot: Option<String>,
@@ -175,7 +179,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let state = cli.state.context("--state is required for this command")?;
     let mut phone = open(&state, cli.name, cli.transcript.as_deref())?;
     if let Some(socket) = cli.bluetooth_socket {
-        phone.set_bluetooth(std::sync::Arc::new(SocketOpener(socket)));
+        phone.set_bluetooth(std::sync::Arc::new(SocketOpener { rfcomm: socket, l2cap: cli.l2cap_socket }));
     }
     let roots = cli
         .browse_roots
@@ -259,12 +263,23 @@ fn open(state: &Path, name: String, transcript: Option<&Path>) -> anyhow::Result
     Ok(Phone::new(identity, state.join("devices.json"), name, tap)?)
 }
 
-/// Connects the stand-in for a desktop's RFCOMM channel, whatever the address.
-struct SocketOpener(PathBuf);
+/// Connects the stand-ins for a desktop's RFCOMM and L2CAP channels, whatever the address.
+struct SocketOpener {
+    rfcomm: PathBuf,
+    l2cap: Option<PathBuf>,
+}
 
 impl link_core::stream::BluetoothOpener for SocketOpener {
     fn open(&self, _address: &str, _pair: bool) -> std::io::Result<std::os::fd::OwnedFd> {
-        Ok(std::os::unix::net::UnixStream::connect(&self.0)?.into())
+        Ok(std::os::unix::net::UnixStream::connect(&self.rfcomm)?.into())
+    }
+
+    fn open_l2cap(&self, _address: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+        let path = self.l2cap.as_ref().ok_or(std::io::ErrorKind::Unsupported)?;
+        let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
+        rustix::net::connect(&fd, &SocketAddrUnix::new(path)?)?;
+        Ok(fd)
     }
 }
 

@@ -360,14 +360,17 @@ impl Client {
         self.commands.send(Command::Keep { id: id.clone(), keep: true }).await.map_err(|_| Error::Stopped)?;
         let total: u64 = sources.iter().map(Source::size).sum();
         let sent = match self.session(id.clone()).await {
-            Ok(handle) if handle.connection().quic().is_none() && total > BLUETOOTH_UPGRADE_ABOVE => {
+            Ok(handle) if handle.connection().on_bluetooth() && total > BLUETOOTH_UPGRADE_ABOVE => {
                 match self.upgrade(id.clone()).await {
                     Ok(()) => self.transfers.send(id.clone(), sources).await,
                     Err(error) if total <= BLUETOOTH_FILE_LIMIT => {
                         log::info!("{id}: sending over Bluetooth: {error}");
                         self.transfers.send(id.clone(), sources).await
                     }
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        log::info!("{id}: no faster path: {error}");
+                        Err(Error::TooLargeForBluetooth)
+                    }
                 }
             }
             Ok(_) => self.transfers.send(id.clone(), sources).await,

@@ -10,7 +10,7 @@ use rustls::server::AlwaysResolvesServerRawPublicKeys;
 
 use crate::Error;
 use crate::identity::Identity;
-use crate::path::PathSocket;
+use crate::path::{PathSocket, Route};
 use crate::tls::{self, ServerPin};
 
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -54,7 +54,7 @@ fn transport_config_value(keep_alive: Option<Duration>) -> quinn::TransportConfi
     config.send_window(CONNECTION_WINDOW.into());
     // Loss-based control collapses on the random loss of Wi-Fi (about 130 KB/s at 5% and 50 ms); BBR paces by the
     // measured bandwidth instead.
-    config.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    config.congestion_controller_factory(bbr());
     config
 }
 
@@ -63,7 +63,13 @@ pub(crate) fn tls13_provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 pub fn server_endpoint(identity: &Identity, addr: SocketAddr) -> Result<quinn::Endpoint, Error> {
-    Ok(punchable_server_endpoint(identity, addr)?.0)
+    let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
+    let socket = std::net::UdpSocket::bind(addr)?;
+    Ok(quinn::Endpoint::new(quinn::EndpointConfig::default(), Some(server_config(identity)?), socket, runtime)?)
+}
+
+fn bbr() -> Arc<dyn quinn::congestion::ControllerFactory + Send + Sync> {
+    Arc::new(quinn::congestion::BbrConfig::default())
 }
 
 fn server_config(identity: &Identity) -> Result<quinn::ServerConfig, Error> {
@@ -91,14 +97,33 @@ pub fn path_server_endpoint(identity: &Identity, socket: Arc<PathSocket>) -> Res
     )?)
 }
 
-/// A server endpoint and a [`Puncher`] sending from its socket.
-pub fn punchable_server_endpoint(identity: &Identity, addr: SocketAddr) -> Result<(quinn::Endpoint, Puncher), Error> {
-    let config = server_config(identity)?;
-    let socket = std::net::UdpSocket::bind(addr)?;
-    let puncher = Puncher(Arc::new(socket.try_clone()?));
-    let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime"))?;
-    let endpoint = quinn::Endpoint::new(quinn::EndpointConfig::default(), Some(config), socket, runtime)?;
-    Ok((endpoint, puncher))
+/// The desktop's endpoint on a [`PathSocket`] bound to `addr`, so phones reach it over UDP and message links alike.
+pub struct PathServer {
+    pub endpoint: quinn::Endpoint,
+    pub puncher: Puncher,
+    pub socket: Arc<PathSocket>,
+    config: quinn::ServerConfig,
+}
+
+impl PathServer {
+    pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self, Error> {
+        let config = server_config(identity)?;
+        let udp = std::net::UdpSocket::bind(addr)?;
+        let puncher = Puncher(Arc::new(udp.try_clone()?));
+        let socket = PathSocket::new(udp)?;
+        let endpoint = path_server_endpoint(identity, socket.clone())?;
+        Ok(Self { endpoint, puncher, socket, config })
+    }
+
+    /// Accepts `incoming` with a congestion controller that follows its route, and returns that route.
+    pub fn accept(&self, incoming: quinn::Incoming) -> Result<(quinn::Connecting, Route), Error> {
+        let route = self.socket.route_to(incoming.remote_address());
+        let mut transport = transport_config_value(Some(KEEP_ALIVE));
+        transport.congestion_controller_factory(route.congestion(bbr()));
+        let mut config = self.config.clone();
+        config.transport_config(Arc::new(transport));
+        Ok((incoming.accept_with(Arc::new(config))?, route))
+    }
 }
 
 /// Sends from the server's own socket, so a stateful firewall in front of it takes a peer's dial from an address it
@@ -143,6 +168,16 @@ impl Dialer {
     pub fn tuned(&self, tune: impl FnOnce(&mut quinn::TransportConfig)) -> Self {
         let mut transport = transport_config_value(None);
         tune(&mut transport);
+        let mut config = self.config.clone();
+        config.transport_config(Arc::new(transport));
+        Self { endpoint: self.endpoint.clone(), config }
+    }
+
+    /// The same socket and TLS session cache, with a congestion controller that follows `route`.
+    #[must_use]
+    pub fn routed(&self, route: &Route, keep_alive: Option<Duration>) -> Self {
+        let mut transport = transport_config_value(keep_alive);
+        transport.congestion_controller_factory(route.congestion(bbr()));
         let mut config = self.config.clone();
         config.transport_config(Arc::new(transport));
         Self { endpoint: self.endpoint.clone(), config }

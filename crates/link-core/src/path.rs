@@ -19,7 +19,7 @@ use quinn::udp::{RecvMeta, Transmit};
 use quinn::{AsyncUdpSocket, UdpPoller};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 pub type LinkId = usize;
 
@@ -72,6 +72,8 @@ struct Slot {
     tx: mpsc::Sender<Vec<u8>>,
     /// The endpoint task waiting for room in `tx`.
     writable: Mutex<Option<Waker>>,
+    /// Never sent; its receivers wake when the link ends and the slot drops.
+    ended: watch::Sender<()>,
 }
 
 #[derive(Default)]
@@ -121,6 +123,16 @@ impl fmt::Debug for PathSocket {
     }
 }
 
+/// The address quinn sees for the `n`th link a socket adds, in `2001:db8::/32`, which no real peer has.
+pub fn link_address(n: u16) -> SocketAddr {
+    SocketAddr::from((std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, n), 1))
+}
+
+/// Whether quinn sees `addr` for a link rather than a UDP peer.
+pub fn is_link_address(addr: SocketAddr) -> bool {
+    matches!(addr.ip().to_canonical(), std::net::IpAddr::V6(v6) if v6.segments()[..2] == [0x2001, 0xdb8])
+}
+
 /// Route key: quinn hands a dual-stack socket IPv4 peers as IPv4-mapped IPv6 addresses.
 fn canonical(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(addr.ip().to_canonical(), addr.port())
@@ -153,16 +165,18 @@ impl PathSocket {
         };
         let link = Arc::new(link);
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE);
-        let slot = Arc::new(Slot { tx, writable: Mutex::default() });
+        let slot = Arc::new(Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()) });
+        let ended = slot.ended.subscribe();
         let id = {
             let mut links = lock(&self.shared.links);
             links.push(Some(slot.clone()));
             links.len() - 1
         };
-        let (writer, shared) = (link.clone(), self.shared.clone());
+        // Weak, so dropping the slot closes `rx` and ends this task.
+        let (writer, shared, slot) = (link.clone(), self.shared.clone(), Arc::downgrade(&slot));
         tokio::spawn(async move {
             while let Some(packet) = rx.recv().await {
-                if let Some(waker) = lock(&slot.writable).take() {
+                if let Some(waker) = slot.upgrade().and_then(|slot| lock(&slot.writable).take()) {
                     waker.wake();
                 }
                 if let Err(error) = writer.send(&packet).await {
@@ -170,11 +184,16 @@ impl PathSocket {
                 }
             }
         });
-        let (inbound, shared) = (self.inbound_tx.clone(), self.shared.clone());
+        let (inbound, shared, mut ended) = (self.inbound_tx.clone(), self.shared.clone(), ended);
         tokio::spawn(async move {
             let mut buf = vec![0; MAX_PACKET];
             loop {
-                match link.recv(&mut buf).await {
+                let received = tokio::select! {
+                    // Closed elsewhere: dropping `link` here and in the writer closes it.
+                    _ = ended.changed() => return,
+                    received = link.recv(&mut buf) => received,
+                };
+                match received {
                     Ok(0) => return shared.drop_link(id, &io::ErrorKind::UnexpectedEof.into()),
                     Ok(len) => {
                         let Some(packet) = buf.get(..len) else { continue };
@@ -189,9 +208,38 @@ impl PathSocket {
         id
     }
 
-    /// The path to `peer`, one connection's remote address.
+    /// The path to `peer`, one connection's remote address, starting on the link it is routed over now.
     pub fn route_to(self: &Arc<Self>, peer: SocketAddr) -> Route {
-        Route { socket: self.clone(), peer: canonical(peer), state: Arc::default() }
+        let peer = canonical(peer);
+        let on_link = lock(&self.shared.routes).contains_key(&peer);
+        let state = RouteState { on_link: AtomicBool::new(on_link), changes: AtomicU64::default() };
+        Route { socket: self.clone(), peer, state: Arc::new(state) }
+    }
+
+    /// Ends link `id`; its routes fall back to UDP.
+    pub fn close_link(&self, id: LinkId) {
+        self.shared.drop_link(id, &io::Error::other("closed"));
+    }
+
+    /// Ties link `id` and `connection`, the one connection it carries: when either ends, so does the other.
+    pub fn tie(self: &Arc<Self>, id: LinkId, connection: quinn::Connection) {
+        let (socket, link_closed) = (self.clone(), self.link_closed(id));
+        tokio::spawn(async move {
+            tokio::select! {
+                () = link_closed => connection.close(0u32.into(), b"link closed"),
+                _ = connection.closed() => socket.close_link(id),
+            }
+        });
+    }
+
+    /// Resolves once link `id` has ended, at once when it already has.
+    pub fn link_closed(&self, id: LinkId) -> impl Future<Output = ()> + Send + 'static {
+        let ended = self.shared.slot(id).map(|slot| slot.ended.subscribe());
+        async move {
+            if let Some(mut ended) = ended {
+                let _ = ended.changed().await;
+            }
+        }
     }
 
     /// Enqueues the whole batch or nothing: a batch cut short would lose its last packets.
@@ -209,7 +257,8 @@ impl PathSocket {
                 *lock(&self.blocked) = Blocked::Link { id, packets };
                 Err(io::ErrorKind::WouldBlock.into())
             }
-            // The link ended and its routes went with it; QUIC sends the batch again over UDP.
+            // The link ended and its routes went with it; QUIC sends the batch again, over UDP where the peer has a UDP
+            // address.
             Err(mpsc::error::TrySendError::Closed(())) => Ok(()),
         }
     }
@@ -242,6 +291,11 @@ impl Route {
         }
         self.state.on_link.store(via.is_some(), Ordering::Relaxed);
         self.state.changes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The link the peer is reached over now; None for UDP.
+    pub fn link(&self) -> Option<LinkId> {
+        lock(&self.socket.shared.routes).get(&self.peer).copied()
     }
 
     /// `inner` for this connection, capped at [`LINK_WINDOW`] while it runs over a link and rebuilt after every path
@@ -341,6 +395,10 @@ impl AsyncUdpSocket for PathSocket {
         {
             return self.send_link(id, &slot, transmit);
         }
+        if is_link_address(transmit.destination) {
+            // Its link ended; no UDP route leads there.
+            return Ok(());
+        }
         let result = self.udp.try_send(transmit);
         if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
             *lock(&self.blocked) = Blocked::Udp;
@@ -412,8 +470,9 @@ mod tests {
     use super::*;
     use crate::identity::Identity;
     use crate::tls::ServerPin;
-    use crate::transport::{Dialer, path_server_endpoint};
+    use crate::transport::{Dialer, PathServer, path_server_endpoint};
     use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+    use std::time::Duration;
 
     type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -479,11 +538,44 @@ mod tests {
     }
 
     /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
+    /// A connection that runs over a link ends at both ends when one end closes the link, not at the idle timeout.
+    #[tokio::test]
+    async fn a_connection_ends_with_its_link() -> Result {
+        let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
+        let desktop = server.socket.clone();
+        let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
+        let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
+        let (desk_addr, phone_addr) = (link_address(1), link_address(1));
+        desktop.route_to(desk_addr).set(Some(desktop.add_link(FdLink::new(desk_end)?, desk_addr)));
+        let phone_link = phone.add_link(FdLink::new(phone_end)?, phone_addr);
+        let route = phone.route_to(phone_addr);
+        route.set(Some(phone_link));
+
+        let accepted = tokio::spawn(async move {
+            let incoming = server.endpoint.accept().await.ok_or("no connection")?;
+            let (connecting, route) = server.accept(incoming)?;
+            let connection = connecting.await?;
+            let link = route.link().ok_or("the route forgot its link")?;
+            server.socket.tie(link, connection.clone());
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, connection))
+        });
+        let identity = Identity::generate()?;
+        let over_link = Dialer::on_path(&identity, phone.clone())?.routed(&route, None);
+        let dialed = over_link.dial(phone_addr, ServerPin::Any).await?;
+        phone.tie(phone_link, dialed.connection.clone());
+        let (_server, on_desktop) = accepted.await??;
+
+        phone.close_link(phone_link);
+        tokio::time::timeout(Duration::from_secs(2), dialed.connection.closed()).await?;
+        tokio::time::timeout(Duration::from_secs(2), on_desktop.closed()).await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_batch_that_does_not_fit_waits_whole() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
         let (tx, _rx) = mpsc::channel(QUEUE);
-        let slot = Slot { tx, writable: Mutex::default() };
+        let slot = Slot { tx, writable: Mutex::default(), ended: watch::Sender::new(()) };
         for _ in 0..QUEUE - 2 {
             slot.tx.try_send(vec![0])?;
         }

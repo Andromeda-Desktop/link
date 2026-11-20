@@ -16,7 +16,7 @@ use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
 use link_core::session::session as start_session;
 use link_core::stream::{FdStream, StreamAcceptor};
-use link_core::transport::CONNECT_TIMEOUT;
+use link_core::transport::{CONNECT_TIMEOUT, PathServer};
 use link_core::wire::Connection;
 use link_core::{Error, close_code_for, net, tls};
 use tokio::task::JoinSet;
@@ -26,7 +26,7 @@ use crate::bluetooth::Bluetooth;
 use crate::hub::{Admission, Attempt, HubHandle};
 
 pub struct Listener {
-    endpoint: quinn::Endpoint,
+    server: Arc<PathServer>,
     /// Held whole: the RFCOMM profile lives as long as its system bus connection inside.
     bluetooth: Bluetooth,
     acceptor: StreamAcceptor,
@@ -48,23 +48,23 @@ struct Context {
 
 impl Listener {
     pub fn new(
-        endpoint: quinn::Endpoint,
+        server: Arc<PathServer>,
         bluetooth: Bluetooth,
         acceptor: StreamAcceptor,
         hub: HubHandle,
         own: Spki,
         name: String,
     ) -> Self {
-        let port = endpoint.local_addr().map_or(0, |addr| addr.port());
+        let port = server.endpoint.local_addr().map_or(0, |addr| addr.port());
         let context = Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone() });
-        Self { endpoint, bluetooth, acceptor, context }
+        Self { server, bluetooth, acceptor, context }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut connections = JoinSet::new();
         loop {
             tokio::select! {
-                incoming = self.endpoint.accept() => {
+                incoming = self.server.endpoint.accept() => {
                     let Some(incoming) = incoming else { return Ok(()) };
                     if connections.len() >= MAX_CONNECTIONS {
                         incoming.refuse();
@@ -72,7 +72,7 @@ impl Listener {
                         // A Retry proves the source address before the handshake costs a task.
                         let _ = incoming.retry();
                     } else {
-                        connections.spawn(handle(incoming, self.context.clone()));
+                        connections.spawn(handle(incoming, self.server.clone(), self.context.clone()));
                     }
                 }
                 Some(fd) = self.bluetooth.incoming.recv() => {
@@ -88,9 +88,13 @@ impl Listener {
     }
 }
 
-async fn handle(incoming: quinn::Incoming, context: Arc<Context>) {
+async fn handle(incoming: quinn::Incoming, server: Arc<PathServer>, context: Arc<Context>) {
     let remote = incoming.remote_address();
-    let connection = match tokio::time::timeout(CONNECT_TIMEOUT, incoming).await {
+    let (connecting, route) = match server.accept(incoming) {
+        Ok(accepted) => accepted,
+        Err(error) => return log::info!("{remote}: {error}"),
+    };
+    let connection = match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
         Ok(Ok(connection)) => connection,
         Ok(Err(error)) => return log::info!("{remote}: handshake failed: {error}"),
         Err(_) => return log::info!("{remote}: handshake timed out"),
@@ -98,6 +102,9 @@ async fn handle(incoming: quinn::Incoming, context: Arc<Context>) {
     let Ok(peer) = tls::peer_spki(connection.peer_identity()) else {
         return Connection::from(connection).close(CloseCode::ProtocolError);
     };
+    if let Some(link) = route.link() {
+        server.socket.tie(link, connection.clone());
+    }
     let quic = connection;
     let connection = Connection::from(quic.clone());
     let result = match context.hub.admit(peer.clone()).await {

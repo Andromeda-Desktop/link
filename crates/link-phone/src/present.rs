@@ -91,7 +91,10 @@ pub async fn share(phone: Phone, inbox: Inbox, id: DeviceId, share: Share) -> an
     let (kind, bytes) = (share.kind.as_str(), share.text.len());
     let send = async move { client.share(id, share).await };
     let ((), result) = tokio::join!(actor.run(), send);
-    result.context("sharing")?;
+    // This process exits next, so a queued share goes only with a later run: not shared now.
+    if result.context("sharing")? == Sent::Queued {
+        anyhow::bail!("the desktop did not take the share; it waits in the outbox");
+    }
     println!("{}", json!({ "shared": kind, "bytes": bytes }));
     Ok(())
 }

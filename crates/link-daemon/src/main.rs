@@ -12,6 +12,8 @@ mod hub;
 mod ifaddrs;
 #[cfg(target_os = "linux")]
 mod iwd;
+#[cfg(target_os = "linux")]
+mod l2cap;
 mod listener;
 mod localsend;
 mod low_delay;
@@ -30,14 +32,15 @@ mod wifi_direct;
 
 use std::net::{Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use link_core::identity::Identity;
 use link_core::inbox::Inbox;
 use link_core::store::Store;
 use link_core::stream::StreamAcceptor;
-use link_core::transport::Puncher;
-use link_core::{transfer, transport};
+use link_core::transfer;
+use link_core::transport::PathServer;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
@@ -53,7 +56,8 @@ async fn run() -> anyhow::Result<()> {
     save::sweep(&paths.downloads);
     let identity = Identity::load_or_create(&paths.identity).context("loading the device key")?;
     let mut store = Store::load(&paths.devices).context("loading the device store")?;
-    let (endpoint, puncher) = bind(&identity, store.port)?;
+    let server = Arc::new(bind(&identity, store.port)?);
+    let (endpoint, puncher) = (server.endpoint.clone(), server.puncher.clone());
     let port = endpoint.local_addr()?.port();
     if store.port != port {
         store.port = port;
@@ -79,6 +83,8 @@ async fn run() -> anyhow::Result<()> {
     let (mut hub, handle, snapshots, events) =
         hub::Hub::new(identity.spki().clone(), store, paths, desktop_media, transfers, puncher, mdns.clone());
     let bluetooth = bluetooth::Bluetooth::start().await;
+    #[cfg(target_os = "linux")]
+    l2cap::start(server.socket.clone(), bluetooth.on_radio()).await;
     if let Some(address) = &bluetooth.address {
         hub.set_bluetooth(address.clone(), bluetooth.pairing_window());
     }
@@ -98,8 +104,7 @@ async fn run() -> anyhow::Result<()> {
         name: name.clone(),
     };
     let acceptor = StreamAcceptor::new(&identity)?;
-    let listener =
-        listener::Listener::new(endpoint.clone(), bluetooth, acceptor, handle.clone(), identity.spki().clone(), name);
+    let listener = listener::Listener::new(server, bluetooth, acceptor, handle.clone(), identity.spki().clone(), name);
     let mut terminate = signal(SignalKind::terminate())?;
     #[cfg(not(target_os = "linux"))]
     let replaced = std::future::pending::<()>;
@@ -153,20 +158,19 @@ async fn serve_api(
 /// Unassigned at IANA; the ufw profile `Andromeda Link` opens it.
 const DEFAULT_PORT: u16 = 4717;
 
-/// Binds [`DEFAULT_PORT`], the one the firewall opens; a taken port falls back to a random one for this run only, so
-/// the next start returns to the default.
-/// [`DEFAULT_PORT`], else the port of the last run, where phones dial first, else any.
-fn bind(identity: &Identity, last: u16) -> anyhow::Result<(quinn::Endpoint, Puncher)> {
+/// Binds [`DEFAULT_PORT`], the one the firewall opens, else the port of the last run, where phones dial first, else
+/// any.
+fn bind(identity: &Identity, last: u16) -> anyhow::Result<PathServer> {
     let addr = |port| SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
-    transport::punchable_server_endpoint(identity, addr(DEFAULT_PORT))
+    PathServer::bind(identity, addr(DEFAULT_PORT))
         .or_else(|error| {
             log::warn!("port {DEFAULT_PORT}: {error}; choosing another");
             match last {
                 0 | DEFAULT_PORT => Err(error),
-                last => transport::punchable_server_endpoint(identity, addr(last)),
+                last => PathServer::bind(identity, addr(last)),
             }
         })
-        .or_else(|_| transport::punchable_server_endpoint(identity, addr(0)))
+        .or_else(|_| PathServer::bind(identity, addr(0)))
         .context("binding the QUIC endpoint")
 }
 

@@ -134,6 +134,15 @@ impl Connection {
     }
 
     /// The QUIC connection, for what only it has: the TLS exporter pairing binds to, and the peer's address.
+    /// Whether this runs over Bluetooth: the RFCOMM stream, or QUIC over an LE link, which quinn sees at a link
+    /// address.
+    pub fn on_bluetooth(&self) -> bool {
+        match self {
+            Self::Quic(connection) => crate::path::is_link_address(connection.remote_address()),
+            Self::Stream(_) => true,
+        }
+    }
+
     pub fn quic(&self) -> Option<&quinn::Connection> {
         match self {
             Self::Quic(connection) => Some(connection),

@@ -1,7 +1,8 @@
 //! The phone role: pairing with desktops, reaching them, and the sessions it opens. Shared by the headless phone and
 //! the Android app.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
+use crate::path::{FdLink, PathSocket, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::store::{Feature, Peer, Store};
 use crate::stream::{BluetoothOpener, FdStream, StreamDialer};
@@ -55,6 +57,10 @@ pub struct Phone {
     name: String,
     dialer: Dialer,
     present_dialer: Dialer,
+    /// Under both dialers, so a session can run over a Bluetooth LE link.
+    socket: Arc<PathSocket>,
+    /// Links added to `socket`, to give each its own address.
+    links: u16,
     stream_dialer: StreamDialer,
     bluetooth: Option<Arc<dyn BluetoothOpener>>,
     hotspot: Option<Arc<dyn HotspotProvider>>,
@@ -72,7 +78,10 @@ impl Phone {
 
     pub fn new(identity: Identity, store_path: PathBuf, name: String, tap: Option<Tap>) -> Result<Self, Error> {
         let store = Store::load(&store_path)?;
-        let dialer = Dialer::new(&identity)?;
+        let udp = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0))
+            .or_else(|_| std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)))?;
+        let socket = PathSocket::new(udp)?;
+        let dialer = Dialer::on_path(&identity, socket.clone())?;
         let present_dialer = dialer.present();
         let stream_dialer = StreamDialer::new(&identity)?;
         Ok(Self {
@@ -82,6 +91,8 @@ impl Phone {
             name,
             dialer,
             present_dialer,
+            socket,
+            links: 0,
             stream_dialer,
             bluetooth: None,
             hotspot: None,
@@ -237,11 +248,22 @@ impl Phone {
         self.connect_bluetooth(peer).await
     }
 
-    /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi.
+    /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi. QUIC over an LE L2CAP
+    /// channel where the phone and desktop have one, else the RFCOMM stream.
     pub async fn connect_bluetooth(&mut self, peer: &Peer) -> Result<Session, Error> {
         let (Some(address), Some(opener)) = (peer.bluetooth.clone(), self.bluetooth.clone()) else {
             return Err(Error::Unreachable);
         };
+        let le = (address.clone(), opener.clone());
+        let l2cap = tokio::task::spawn_blocking(move || le.1.open_l2cap(&le.0)).await.map_err(|_| Error::Stopped)?;
+        let tried = match l2cap {
+            Ok(fd) => self.connect_link(peer, fd).await,
+            Err(error) => Err(error.into()),
+        };
+        match tried {
+            Ok(session) => return Ok(session),
+            Err(error) => log::info!("{}: no QUIC over Bluetooth LE ({error}); trying RFCOMM", peer.id),
+        }
         let fd =
             tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
         let keep_alive = self.present.then_some(PHONE_KEEP_ALIVE);
@@ -255,6 +277,29 @@ impl Phone {
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = self.remember(&desktop, &hello, None)?;
         Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: false })
+    }
+
+    /// The usual QUIC session, over `fd`, an LE L2CAP channel to the desktop.
+    async fn connect_link(&mut self, peer: &Peer, fd: OwnedFd) -> Result<Session, Error> {
+        self.links = self.links.wrapping_add(1);
+        let to = link_address(self.links);
+        let link = self.socket.add_link(FdLink::new(fd)?, to);
+        let route = self.socket.route_to(to);
+        route.set(Some(link));
+        let over_link = self.dialer.routed(&route, self.present.then_some(PHONE_KEEP_ALIVE));
+        let dialed = match over_link.dial(to, ServerPin::Key(peer.spki()?.fingerprint())).await {
+            Ok(dialed) => dialed,
+            Err(error) => {
+                self.socket.close_link(link);
+                return Err(error);
+            }
+        };
+        self.socket.tie(link, dialed.connection.clone());
+        let connection = Connection::from(dialed.connection);
+        let mut control = Control::open(&connection, self.tap.clone()).await?;
+        let hello = control.hello_as_client(self.hello()).await?;
+        let desktop = self.remember(&peer.spki()?, &hello, None)?;
+        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed: dialed.resumed })
     }
 
     /// Finishes a session to a desktop reached over IP, by this phone or by a probe running beside it.

@@ -35,6 +35,9 @@ zbus.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", default-features = false, features = ["l2cap"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFFileDescriptor", "CFRunLoop"] }

@@ -743,26 +743,38 @@ pub struct LinkClient {
 #[uniffi::export(with_foreign)]
 pub trait BluetoothLink: Send + Sync {
     fn open(&self, address: String, pair: bool) -> i32;
+
+    /// Like `open`, but an LE L2CAP channel to `psm` at the desktop's public address, pumped through a
+    /// `SOCK_SEQPACKET` socket pair so each message stays one SDU. -1 also where the phone has no LE channels.
+    fn open_l2cap(&self, address: String, psm: u16) -> i32;
 }
 
 struct Opener(Arc<dyn BluetoothLink>);
 
 impl link_core::stream::BluetoothOpener for Opener {
     fn open(&self, address: &str, pair: bool) -> std::io::Result<OwnedFd> {
-        let fd = self.0.open(address.to_owned(), pair);
-        let reason = match fd {
-            0.. => None,
-            -2 => Some("the Nearby devices permission is off"),
-            -3 => Some("Bluetooth is off on the phone"),
-            -4 => Some("the Bluetooth pairing was not accepted"),
-            _ => Some("the desktop did not answer"),
-        };
-        if let Some(reason) = reason {
-            return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, reason));
-        }
-        // SAFETY: the app hands over a descriptor it detached and no longer uses, so nothing else owns or closes it.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        adopt(self.0.open(address.to_owned(), pair))
     }
+
+    fn open_l2cap(&self, address: &str) -> std::io::Result<OwnedFd> {
+        adopt(self.0.open_l2cap(address.to_owned(), link_core::stream::L2CAP_PSM))
+    }
+}
+
+/// Takes the descriptor `BluetoothLink` returned, or the reason it gave none.
+fn adopt(fd: i32) -> std::io::Result<OwnedFd> {
+    let reason = match fd {
+        0.. => None,
+        -2 => Some("the Nearby devices permission is off"),
+        -3 => Some("Bluetooth is off on the phone"),
+        -4 => Some("the Bluetooth pairing was not accepted"),
+        _ => Some("the desktop did not answer"),
+    };
+    if let Some(reason) = reason {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, reason));
+    }
+    // SAFETY: the app hands over a descriptor it detached and no longer uses, so nothing else owns or closes it.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 #[derive(Debug, Clone, uniffi::Record)]

@@ -2,6 +2,8 @@
 # Link over Bluetooth without radios: the daemon's RFCOMM side is replaced by a Unix socket
 # (ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET) and the phone reaches it with --bluetooth-socket, so everything after the
 # descriptor handover (TLS over the byte stream, the stream multiplexer, the session, transfers) is the real code.
+# By default the phone first takes QUIC over the L2CAP stand-in (ANDROMEDA_LINK_TEST_L2CAP_SOCKET, --l2cap-socket, a
+# SOCK_SEQPACKET socket); LINK_BT=rfcomm leaves it out, so the RFCOMM stream carries the session.
 # The phone sits in its own network namespace behind a veth pair; 100% loss on it cuts every IP path.
 #
 # Proves, with the IP path cut:
@@ -73,14 +75,18 @@ mkdir -p "$DOWNLOADS" "$PHONE_DL" "$RUNTIME/src"
 link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
 devices() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 Devices; }
 connected() { devices | grep -q "'phone', true"; }
-XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$DOWNLOADS ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET=$RFCOMM \
+L2CAP_ENV=() L2CAP_ARGS=()
+if [[ ${LINK_BT:-l2cap} == l2cap ]]; then
+  L2CAP_ENV=(ANDROMEDA_LINK_TEST_L2CAP_SOCKET="$RUNTIME/l2cap") L2CAP_ARGS=(--l2cap-socket "$RUNTIME/l2cap")
+fi
+env "${L2CAP_ENV[@]}" XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$DOWNLOADS ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET=$RFCOMM \
   "$BIN/andromeda-linkd" >> "$OUT/linkd.log" 2>&1 &
 for _ in $(seq 100); do link CancelPairing > /dev/null 2>&1 && break; sleep 0.05; done
 link CancelPairing > /dev/null || fail "andromeda-linkd did not come up"
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$RUNTIME/desktop/andromeda-link/devices.json")
 phone() {
   in_phone "$BIN/andromeda-link-phone" --state "$RUNTIME/phone" --name phone --downloads "$PHONE_DL" \
-    --transcript "$OUT/transcript.jsonl" --bluetooth-socket "$RFCOMM" "$@"
+    --transcript "$OUT/transcript.jsonl" --bluetooth-socket "$RFCOMM" "${L2CAP_ARGS[@]}" "$@"
 }
 events() { grep -c "\"event\":\"$1\"" "$OUT/hold.jsonl" || true; }
 say() { printf '%s\n' "$*" >&3; }
@@ -107,10 +113,14 @@ wait_for 5 "dbus-monitor did not start" test -s "$OUT/signals.txt"
 mkfifo "$RUNTIME/phone.in"
 exec 3<> "$RUNTIME/phone.in"
 RUST_LOG=info nsenter -t "$PHONE_NS" -n -- "$BIN/andromeda-link-phone" --state "$RUNTIME/phone" --name phone \
-  --downloads "$PHONE_DL" --transcript "$OUT/transcript.jsonl" --bluetooth-socket "$RFCOMM" \
+  --downloads "$PHONE_DL" --transcript "$OUT/transcript.jsonl" --bluetooth-socket "$RFCOMM" "${L2CAP_ARGS[@]}" \
   hold --on-offer accept < "$RUNTIME/phone.in" > "$OUT/hold.jsonl" 2> "$OUT/hold.log" &
 wait_for 30 "the held phone never connected over Bluetooth" eval '[[ $(events connected) == 1 ]]'
 grep '"event":"connected"' "$OUT/hold.jsonl" | grep -q '"via":"bluetooth"' || fail "hold did not connect over Bluetooth"
+if [[ ${LINK_BT:-l2cap} == l2cap ]]; then
+  grep -q "trying RFCOMM" "$OUT/hold.log" && fail "hold fell back to RFCOMM: $(grep 'trying RFCOMM' "$OUT/hold.log")"
+  grep -q "Bluetooth LE link from the test socket" "$OUT/linkd.log" || fail "the daemon took no L2CAP link"
+fi
 wait_for 5 "D-Bus does not show the Bluetooth phone connected: $(devices)" connected
 record '{"step":"held-over-bluetooth"}'
 
