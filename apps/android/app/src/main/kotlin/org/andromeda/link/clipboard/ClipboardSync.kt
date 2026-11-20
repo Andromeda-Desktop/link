@@ -60,12 +60,19 @@ class ClipboardSync(
     ): Result<Int> = offer(listOf(ClipPart.Content(mime, uri)))
 
     private suspend fun offer(parts: List<ClipPart>): Result<Int> {
-        if (parts.isEmpty()) return Result.success(0)
-        return repository.offerClip(parts).onSuccess {
-            val text = parts.firstNotNullOfOrNull { (it as? ClipPart.Text)?.takeIf { part -> part.mime == TEXT_MIME }?.text }
-            val html = parts.firstNotNullOfOrNull { (it as? ClipPart.Text)?.takeIf { part -> part.mime == HTML_MIME }?.text }
-            history.add(ClipEntry(System.currentTimeMillis(), false, null, text, html, parts.first().mime))
+        if (parts.isEmpty()) {
+            ClipEvents.drop(ClipDrop.Empty)
+            return Result.success(0)
         }
+        val text = parts.firstNotNullOfOrNull { (it as? ClipPart.Text)?.takeIf { part -> part.mime == TEXT_MIME }?.text }
+        return repository
+            .offerClip(parts)
+            .onFailure { ClipEvents.record(text, ClipOutcome.Dropped(ClipDrop.SendFailed, it.message)) }
+            .onSuccess { desktops ->
+                ClipEvents.record(text, if (desktops > 0) ClipOutcome.Sent(desktops) else ClipOutcome.Dropped(ClipDrop.NoDesktop))
+                val html = parts.firstNotNullOfOrNull { (it as? ClipPart.Text)?.takeIf { part -> part.mime == HTML_MIME }?.text }
+                history.add(ClipEntry(System.currentTimeMillis(), false, null, text, html, parts.first().mime))
+            }
     }
 
     /** Puts a history entry back on the clipboard; one from a desktop keeps [LABEL], so it is not sent back. */

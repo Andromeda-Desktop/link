@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.core.content.edit
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -124,7 +125,12 @@ object LogAccess {
         if (pick != Method.Android && helper()) {
             val (input, output) = ParcelFileDescriptor.createPipe()
             val writer = ParcelFileDescriptor.AutoCloseOutputStream(output)
-            helperReaders += writer
+            synchronized(unread) {
+                val since = SystemClock.uptimeMillis() - UNREAD_MS
+                for ((at, line) in unread) if (at >= since) runCatching { writer.write((line + "\n").toByteArray()) }
+                unread.clear()
+                helperReaders += writer
+            }
             return HelperProcess(input, writer)
         }
         if (pick.allows(Method.Shizuku) && shizuku()) {
@@ -198,8 +204,18 @@ object LogAccess {
     /** Write ends of the pipes [logcat] gave out for the helper; each gets the helper's lines from now on. */
     private val helperReaders = CopyOnWriteArrayList<ParcelFileDescriptor.AutoCloseOutputStream>()
 
+    /**
+     * Helper lines that came while no reader was open (the watcher restarts when a helper connects), with their uptime;
+     * the next reader gets those younger than [UNREAD_MS].
+     */
+    private val unread = ArrayDeque<Pair<Long, String>>()
+
     /** Runs on a binder thread when a helper connects; the watcher moves to it. */
     @Volatile var onHelper: () -> Unit = {}
+
+    /** The capture mode the connected helper announced; null while none did. */
+    @Volatile var helperMode: CaptureMode.Direct? = null
+        private set
 
     private fun helper(): Boolean = helperStream != null
 
@@ -210,17 +226,25 @@ object LogAccess {
             runCatching {
                 ParcelFileDescriptor.AutoCloseInputStream(stream).bufferedReader().forEachLine { line ->
                     if (line.isEmpty()) return@forEachLine
-                    for (reader in helperReaders) {
-                        runCatching {
-                            reader.write((line + "\n").toByteArray())
-                            reader.flush()
-                        }.onFailure { helperReaders -= reader }
+                    ClipLine.mode(line)?.let { helperMode = it }
+                    synchronized(unread) {
+                        if (helperReaders.isEmpty()) {
+                            if (unread.size == UNREAD_MAX) unread.removeFirst()
+                            unread.addLast(SystemClock.uptimeMillis() to line)
+                        }
+                        for (reader in helperReaders) {
+                            runCatching {
+                                reader.write((line + "\n").toByteArray())
+                                reader.flush()
+                            }.onFailure { helperReaders -= reader }
+                        }
                     }
                 }
             }
             // The helper went away: readers see the end of their stream, as when logcat ends.
             if (helperStream === stream) {
                 helperStream = null
+                helperMode = null
                 for (reader in helperReaders) runCatching { reader.close() }
                 helperReaders.clear()
             }
@@ -279,6 +303,8 @@ object LogAccess {
     }
 
     private const val WAIT_MS = 200L
+    private const val UNREAD_MS = 10_000L
+    private const val UNREAD_MAX = 20
     private const val PREFS = "log_access"
     private const val KEY_METHOD = "method"
 }

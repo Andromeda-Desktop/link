@@ -1,6 +1,7 @@
 package org.andromeda.link.clipboard
 
 import android.net.LocalServerSocket
+import android.os.SystemClock
 import org.andromeda.link.screen.InputRelay
 import java.io.IOException
 import kotlin.concurrent.thread
@@ -25,6 +26,7 @@ object LogHelper {
     private const val IDLE_MS = 30 * 60 * 1000L
     private const val BEAT_MS = 60 * 1000L
     private const val TICK_MS = 3000L
+    private const val LOCK_TRIES = 5
 
     /** Bound while this helper lives, so a second start is a no-op. */
     private var lock: LocalServerSocket? = null
@@ -32,11 +34,27 @@ object LogHelper {
     /** `content write` into Link's provider; its stdin reaches Link. */
     @Volatile private var link: Process? = null
 
+    /** [ClipLine.ready] once the reader runs; sent first on every connect. */
+    @Volatile private var ready: String? = null
+
+    /**
+     * Lines that found no Link connected, with their uptime: a connect within [PENDING_MS] sends them (a watcher restart
+     * or a Link restart); older ones are dropped, since a late copy would replace a newer desktop clip.
+     */
+    private val pending = ArrayDeque<Pair<Long, String>>()
+
     @JvmStatic
     fun main(args: Array<String>) {
         val pkg = args.firstOrNull() ?: exit("usage: LogHelper <package>")
         val appId = appId(pkg) ?: exit("$pkg is not installed")
-        lock = runCatching { LocalServerSocket(LOCK) }.getOrElse { exit("already running") }
+        // A helper from a replaced APK holds the lock until its next tick notices the update.
+        lock =
+            generateSequence(0) { it + 1 }
+                .take(LOCK_TRIES)
+                .firstNotNullOfOrNull {
+                    if (it > 0) Thread.sleep(TICK_MS / 2)
+                    runCatching { LocalServerSocket(LOCK) }.getOrNull()
+                } ?: exit("already running")
         println("helper for $pkg (uid $appId)")
         thread(isDaemon = true, name = "clipboard") { if (!watch()) follow(pkg) }
         thread(isDaemon = true, name = "input") {
@@ -48,6 +66,7 @@ object LogHelper {
         var lastRun = System.currentTimeMillis()
         var lastBeat = 0L
         var lastCheck = lastRun
+        var linkPid: String? = null
         while (true) {
             Thread.sleep(TICK_MS)
             // An update deletes the APK this code came from; the updated Link must not reach this helper first.
@@ -57,20 +76,25 @@ object LogHelper {
                 lastCheck = now
                 if (appId(pkg) != appId) exit("$pkg was uninstalled")
             }
+            val pid = pid(pkg)
             when {
-                // A heartbeat lets a closed reader (Link died or stopped watching) end `content write`.
-                link?.isAlive == true -> {
+                // A heartbeat lets a closed reader (Link stopped watching) end `content write`.
+                link?.isAlive == true && pid == linkPid -> {
                     lastRun = now
                     if (now - lastBeat > BEAT_MS) {
                         lastBeat = now
                         send("")
                     }
                 }
-                // Connects only to a running Link: opening its provider would start Link after a force stop.
-                running(pkg) -> {
+                // Connects only to a running Link: opening its provider would start Link after a force stop. A new pid
+                // is a restarted Link, whose old pipe would take lines into a dead process.
+                pid != null -> {
                     lastRun = now
-                    link = connect(pkg)
+                    reconnect(pkg)
+                    linkPid = pid
                 }
+                // Link died: lines wait in pending, not in a pipe nobody reads.
+                link != null -> reconnect(null)
                 now - lastRun > IDLE_MS -> exit("$pkg has not run for ${IDLE_MS / 60000} min")
             }
         }
@@ -89,6 +113,10 @@ object LogHelper {
             child.destroy()
             return false
         }
+        ClipLine.ready(root).let {
+            ready = it
+            send(it)
+        }
         runCatching { lines.forEachLine(::send) }
         exit("clipboard reader ended")
     }
@@ -103,15 +131,36 @@ object LogHelper {
         exit("logcat ended")
     }
 
+    /** A heartbeat (empty line) is never kept; a copy or denial waits in [pending] while Link is away. */
     @Synchronized
     private fun send(line: String) {
-        val process = link ?: return
-        try {
+        if (!write(line) && line.isNotEmpty()) {
+            if (pending.size == PENDING) pending.removeFirst()
+            pending.addLast(SystemClock.uptimeMillis() to line)
+        }
+    }
+
+    @Synchronized
+    private fun reconnect(pkg: String?) {
+        link?.destroy()
+        link = pkg?.let(::connect)
+        if (link == null) return
+        ready?.let(::write)
+        val since = SystemClock.uptimeMillis() - PENDING_MS
+        pending.removeAll { (at, line) -> at < since || line == ready }
+        while (pending.isNotEmpty() && write(pending.first().second)) pending.removeFirst()
+    }
+
+    private fun write(line: String): Boolean {
+        val process = link ?: return false
+        return try {
             process.outputStream.write((line + "\n").toByteArray())
             process.outputStream.flush()
+            true
         } catch (_: IOException) {
             process.destroy()
             link = null
+            false
         }
     }
 
@@ -123,7 +172,17 @@ object LogHelper {
                 .start()
         }.getOrNull()
 
-    private fun running(pkg: String): Boolean = runCatching { ProcessBuilder("pidof", pkg).start().waitFor() == 0 }.getOrDefault(false)
+    private fun running(pkg: String): Boolean = pid(pkg) != null
+
+    private fun pid(pkg: String): String? =
+        runCatching {
+            val process = ProcessBuilder("pidof", pkg).start()
+            process.inputStream
+                .bufferedReader()
+                .readText()
+                .trim()
+                .takeIf { process.waitFor() == 0 }
+        }.getOrNull()
 
     private fun appId(pkg: String): Int? =
         runCatching {
@@ -147,6 +206,8 @@ object LogHelper {
     }
 
     private const val PER_USER = 100000
+    private const val PENDING = 20
+    private const val PENDING_MS = 10_000L
     private const val SYSTEM_UI = "com.android.systemui"
     private const val SHELL = "com.android.shell"
 }

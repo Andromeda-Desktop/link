@@ -3,7 +3,6 @@ package org.andromeda.link.clipboard
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -52,16 +51,14 @@ class ClipboardWatcher(
         scope.launch {
             LogAccess.method.drop(1).collect {
                 if (!wanted) return@collect
-                stop()
-                start()
+                restart()
             }
         }
     }
 
     private fun restartWhenQuiet() {
         if (!wanted || !LogAccess.quiet()) return
-        stop()
-        start()
+        restart()
     }
 
     /**
@@ -71,7 +68,18 @@ class ClipboardWatcher(
      */
     fun start() {
         wanted = true
-        if (job != null || !granted(context) || !mayAsk()) return
+        if (job != null) return
+        val off =
+            when {
+                !LogAccess.allowed(context) -> OffReason.NoLogAccess
+                !LogAccess.overlayAllowed(context) -> OffReason.NoOverlay
+                !mayAsk() -> OffReason.Background
+                else -> null
+            }
+        if (off != null) {
+            ClipEvents.mode(CaptureMode.Off(off))
+            return
+        }
         clipboard.addPrimaryClipChangedListener(listener)
         job = scope.launch(Dispatchers.IO) { follow() }
     }
@@ -82,8 +90,7 @@ class ClipboardWatcher(
      */
     private fun restartIfBlind() {
         if (job != null && process?.isAlive != false) return
-        stop()
-        start()
+        restart()
     }
 
     private fun mayAsk(): Boolean =
@@ -95,6 +102,16 @@ class ClipboardWatcher(
                 .isAtLeast(Lifecycle.State.STARTED)
 
     fun stop() {
+        halt()
+        ClipEvents.mode(CaptureMode.Off(OffReason.Stopped))
+    }
+
+    private fun restart() {
+        halt()
+        start()
+    }
+
+    private fun halt() {
         wanted = false
         clipboard.removePrimaryClipChangedListener(listener)
         process?.destroy()
@@ -108,28 +125,34 @@ class ClipboardWatcher(
             read()
         } finally {
             val ended = currentCoroutineContext()[Job]
+            // Cancelled means stop(); anything else is a reader that ended under the watcher.
+            if (currentCoroutineContext().isActive) ClipEvents.mode(CaptureMode.Off(OffReason.ReaderEnded))
             scope.launch(Dispatchers.Main) {
                 delay(retryMs)
                 retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
                 if (wanted && job === ended) {
-                    stop()
-                    start()
+                    restart()
                 }
             }
         }
     }
 
     private suspend fun read() {
-        if (!LogAccess.overlay(context)) return
+        if (!LogAccess.overlay(context)) {
+            ClipEvents.mode(CaptureMode.Off(OffReason.NoOverlay))
+            return
+        }
         LogAccess.startHelper(context)
         // -T 1 starts at the newest line, so only denials from now on count.
         val logcat = LogAccess.logcat("-T", "1", "-v", "brief", "ClipboardService:E", "*:S")
         process = logcat
+        ClipEvents.mode(LogAccess.helperMode ?: CaptureMode.Denials)
         val denial = "Denying clipboard access to ${context.packageName}"
         try {
             logcat.inputStream.bufferedReader().useLines { lines ->
                 for (line in lines) {
                     if (!currentCoroutineContext().isActive) break
+                    ClipLine.mode(line)?.let(ClipEvents::mode)
                     val clip = ClipLine.parse(line)
                     // Link's own copy of a desktop clip; it must stay clearable.
                     if (clip != null && ClipboardSync.isFromDesktop(clip)) continue
@@ -139,7 +162,7 @@ class ClipboardWatcher(
                         if (clip == null) {
                             overlay.read()
                         } else {
-                            scope.launch { sync.offer(clip).onFailure { Log.w("link", "Sending clipboard: ${it.message}") } }
+                            scope.launch { sync.offer(clip) }
                         }
                     }
                 }

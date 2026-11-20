@@ -10,7 +10,6 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -43,7 +42,10 @@ class ClipboardOverlay(
     }
 
     private fun show() {
-        if (view != null) return
+        if (view != null) {
+            ClipEvents.drop(ClipDrop.OverlayBusy)
+            return
+        }
         val window =
             object : View(context) {
                 override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
@@ -63,7 +65,7 @@ class ClipboardOverlay(
         try {
             windows.addView(window, params)
         } catch (error: RuntimeException) {
-            Log.w("link", "Clipboard overlay: ${error.message}")
+            ClipEvents.drop(ClipDrop.OverlayFailed, error.message)
             return
         }
         view = window
@@ -77,14 +79,18 @@ class ClipboardOverlay(
         val clip = clipboard.primaryClip
         // Removing a window during its own focus dispatch crashes ViewRootImpl.
         main.post { windows.removeView(window) }
-        if (clip == null || clip.itemCount == 0) return
-        scope.launch { sync.offer(clip).onFailure { Log.w("link", "Sending clipboard: ${it.message}") } }
+        if (clip == null || clip.itemCount == 0) {
+            ClipEvents.drop(ClipDrop.Empty)
+            return
+        }
+        scope.launch { sync.offer(clip) }
     }
 
     private fun remove(window: View) {
         if (view !== window) return
         view = null
         windows.removeView(window)
+        ClipEvents.drop(ClipDrop.NoFocus)
         prompt()
     }
 

@@ -113,6 +113,14 @@ object ClipLine {
     const val READY = "clip-ready"
     const val OTHER = "clip-other"
     private const val CLIP = "clip"
+    private const val SYSTEM_UI = "systemui"
+
+    /** What [LogHelper] sends Link on each connect: its reader runs, as SystemUI or as the shell. */
+    fun ready(asSystemUi: Boolean) = "$READY ${if (asSystemUi) SYSTEM_UI else "shell"}"
+
+    /** The capture mode a [ready] line announces; null for any other line. */
+    fun mode(line: String): CaptureMode.Direct? =
+        line.takeIf { it.startsWith("$READY ") }?.let { CaptureMode.Direct(it.endsWith(" $SYSTEM_UI")) }
 
     fun of(clip: ClipData): String {
         val items = (0 until clip.itemCount).map(clip::getItemAt)
