@@ -5,6 +5,7 @@
 # per-app filter, Media, the five onboarding pages, and the home screen widget (<theme>-widget, <theme>-widget-offline). Proves the screens render and are reachable by their labels;
 # the images are the artifact to judge them by. Writes <theme>-<screen>.png, results.json, linkd.log, maestro.log to
 # $OUT (default ./artifacts/link-android-ui). Run under flock /tmp/link-emulator.lock.
+# It uninstalls Link first: on a real phone, every pairing is lost; pair the real desktop again afterwards.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-android-ui}
@@ -19,7 +20,8 @@ PACKAGE=org.andromeda.link
 rm -rf "$OUT"
 mkdir -p "$OUT"
 RUNTIME=$(mktemp -d /tmp/link-android-ui.XXXX)
-trap 'adb shell cmd uimode night no > /dev/null 2>&1 || true; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
+# The test desktop unpairs while its linkd still runs, so the phone drops it too and no dead desktop stays its primary.
+trap '[[ -n ${ID:-} ]] && link Unpair "$ID" > /dev/null 2>&1; adb shell cmd uimode night no > /dev/null 2>&1 || true; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 adb() { "$ADB" -s "$SERIAL" "$@"; }
 maestro() { "$MAESTRO" --device "$SERIAL" test -e OUT="$OUT" "$@" >> "$OUT/maestro.log" 2>&1 || fail "maestro $*"; }
