@@ -35,8 +35,8 @@ class WifiDirectGroup(
         val (manager, channel) = ready() ?: return null
         // On 2.4 GHz the group shares airtime with Bluetooth, which stays up beside it: 5 GHz first.
         val formed =
-            form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
-                ?: form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+            form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_5GHZ, BAND_5GHZ_TIMEOUT_MS)
+                ?: form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_AUTO, FORM_TIMEOUT_MS)
                 ?: return null.also { Log.i(TAG, "the group did not come up") }
         Log.i(TAG, "wifi-direct group on ${formed.frequency} MHz")
         return HotspotCredentials(formed.networkName, formed.passphrase ?: return null)
@@ -47,6 +47,7 @@ class WifiDirectGroup(
         channel: WifiP2pManager.Channel,
         group: HotspotCredentials,
         band: Int,
+        timeoutMs: Long,
     ): WifiP2pGroup? {
         val config =
             WifiP2pConfig
@@ -58,7 +59,10 @@ class WifiDirectGroup(
         // A group left from an earlier attempt would make Android refuse a new one.
         call(manager, channel, "removing the group", manager::removeGroup)
         if (!created(manager, channel, config)) return null
-        return group(manager, channel)
+        return group(manager, channel, timeoutMs) ?: null.also {
+            // A driver that fails to start the group leaves Android creating it, answering BUSY until cancelled.
+            call(manager, channel, "cancelling the group", manager::cancelConnect)
+        }
     }
 
     override fun stop() {
@@ -85,6 +89,7 @@ class WifiDirectGroup(
     private fun group(
         manager: WifiP2pManager,
         channel: WifiP2pManager.Channel,
+        timeoutMs: Long,
     ): WifiP2pGroup? {
         val changed = Semaphore(0)
         val receiver =
@@ -98,7 +103,7 @@ class WifiDirectGroup(
         // A protected system broadcast: only Android sends it, so the receiver needs no export flag.
         context.registerReceiver(receiver, filter)
         try {
-            val deadline = SystemClock.elapsedRealtime() + FORM_TIMEOUT_MS
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs
             do {
                 owned(manager, channel)?.let { return it }
                 val left = deadline - SystemClock.elapsedRealtime()
@@ -170,6 +175,9 @@ class WifiDirectGroup(
         const val TAG = "WifiDirectGroup"
         const val ANSWER_TIMEOUT_S = 5L
         const val FORM_TIMEOUT_MS = 10_000L
+
+        // A 5 GHz group forms in ~0.5 s on the OnePlus 12; a driver that refuses the band never reports it.
+        const val BAND_5GHZ_TIMEOUT_MS = 3_000L
         const val ATTEMPTS = 5
         const val RETRY_MS = 1_000L
         const val ERROR_TIMEOUT = -1

@@ -182,6 +182,9 @@ impl Slot {
             }
             _ => return Err(Stale),
         };
+        if next != *self {
+            log::info!("hotspot slot: {self:?} -> {next:?}");
+        }
         *self = next;
         Ok(effects)
     }

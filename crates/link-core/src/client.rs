@@ -667,6 +667,7 @@ impl ClientActor {
             }
             Command::SetPresent { present } => self.set_present(present),
             Command::SetScreenOn { on } => {
+                log::info!("screen on: {on}");
                 self.screen_on = on;
                 self.slot_event(slot::Event::IdleChanged).await;
             }
