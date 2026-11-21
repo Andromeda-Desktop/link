@@ -149,6 +149,7 @@ mod tests {
             icon: None,
             actions: Vec::new(),
             alert_once,
+            replies: Vec::new(),
         }
     }
 

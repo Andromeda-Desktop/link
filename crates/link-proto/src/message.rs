@@ -61,6 +61,9 @@ pub const CALL_APP: &str = "feature:call-app";
 /// `notifications_off`, and answers with `notification-pull`; older desktops close a session on them.
 pub const NOTIFICATION_SYNC: &str = "feature:notification-sync";
 
+/// A desktop's hello carries this when its `notification-posted` takes `replies`; older desktops close a session on it.
+pub const NOTIFICATION_REPLIES: &str = "feature:notification-replies";
+
 /// Both hellos carry this when the peer takes `clip-offer`'s `sizes`, `origin`, and `at`, and serves each type's own
 /// bytes; older peers close a session on those fields.
 pub const CLIP_ITEMS: &str = "feature:clip-items";
@@ -199,6 +202,8 @@ pub const MAX_TEXT_LEN: usize = 4096;
 pub const MAX_ICON_LEN: usize = 16 * 1024;
 pub const MAX_ACTIONS: usize = 3;
 pub const MAX_ACTION_LEN: usize = 64;
+/// Suggested replies of one notification, each at most [`MAX_ACTION_LEN`] bytes.
+pub const MAX_REPLIES: usize = 3;
 /// Notifications in a snapshot or a pull: 200 of the longest ids fit a frame.
 pub const MAX_SNAPSHOT: usize = 200;
 
@@ -225,6 +230,10 @@ pub struct NotificationPosted {
     /// Android's `FLAG_ONLY_ALERT_ONCE`: an update replaces the shown one without a sound or a popup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub alert_once: bool,
+    /// Suggested replies (Android's `RemoteInput` choices, then the system's smart replies); a pick goes back as the
+    /// reply action's `reply_text`. Only to desktops with [`NOTIFICATION_REPLIES`], and only with a reply action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,6 +322,9 @@ impl NotificationPosted {
             feed(action.label.as_bytes());
             feed(&[u8::from(action.reply)]);
         }
+        for reply in &self.replies {
+            feed(reply.as_bytes());
+        }
         hash
     }
 
@@ -327,6 +339,9 @@ impl NotificationPosted {
                 .actions
                 .iter()
                 .all(|action| sized(&action.id, 1, MAX_ACTION_LEN) && sized(&action.label, 1, MAX_ACTION_LEN))
+            && self.replies.len() <= MAX_REPLIES
+            && self.replies.iter().all(|reply| sized(reply, 1, MAX_ACTION_LEN))
+            && (self.replies.is_empty() || self.actions.iter().any(|action| action.reply))
     }
 }
 

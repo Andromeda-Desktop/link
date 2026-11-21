@@ -256,6 +256,7 @@ mod tests {
             icon: Some(vec![0x89; 64]),
             actions: vec![NotificationButton { id: "0".to_owned(), label: "Reply".to_owned(), reply: true }],
             alert_once: false,
+            replies: vec!["On my way".to_owned()],
         }
     }
 

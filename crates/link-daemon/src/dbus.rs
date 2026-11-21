@@ -648,6 +648,7 @@ impl Link {
         icon: &[u8],
         actions: Vec<(String, String, bool)>,
         alert: bool,
+        replies: Vec<String>,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
@@ -1078,6 +1079,7 @@ async fn emit_posted(
         &icon,
         actions,
         alert,
+        posted.replies,
     )
     .await
 }

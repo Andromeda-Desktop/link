@@ -17,6 +17,8 @@ class PhoneNotification(
     val actions: List<NotificationButton>,
     /** `FLAG_ONLY_ALERT_ONCE`: an update replaces the desktop's copy without a sound. */
     val alertOnce: Boolean = false,
+    /** Suggested replies, only with a reply action; a pick comes back as that action's reply text. */
+    val replies: List<String> = emptyList(),
 )
 
 /** What a desktop asks of a mirrored notification. */
@@ -44,6 +46,7 @@ object NotificationLimits {
     const val TEXT = 4096
     const val ACTION = 64
     const val ACTIONS = 3
+    const val REPLIES = 3
     const val ICON = 16 * 1024
 }
 

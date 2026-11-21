@@ -141,13 +141,15 @@ notification-posted = {
   ? icon: bstr .size (1..16384),   ; PNG
   actions: [0*3 notification-button],
   ? alert_once: true,              ; FLAG_ONLY_ALERT_ONCE; only to desktops with feature:notification-sync
+  ? replies: [1*3 tstr .size (1..64)], ; suggested replies, only with a reply action; only to feature:notification-replies
 }
 notification-button = { "id": tstr .size (1..64), label: tstr .size (1..64), reply: bool }
 notification-removed-msg = { type: "notification-removed", id: uint, body: { "id": notification-id } }
 
 ; Phone to desktop with feature:notification-sync, on connect: every notification on show. The desktop removes the
 ; ones missing and answers with notification-pull for new ones and ones whose hash differs.
-; hash: FNV-1a 64 over the length-prefixed id, app, title, text, icon, then each action's id, label, reply byte.
+; hash: FNV-1a 64 over the length-prefixed id, app, title, text, icon, then each action's id, label, reply byte, then
+; each reply as the desktop receives it (none for a desktop without feature:notification-replies).
 notification-snapshot-msg = { type: "notification-snapshot", id: uint, body: notification-snapshot }
 notification-snapshot = { notifications: [0*200 { "id": notification-id, hash: uint }] }
 ; Desktop to phone; the phone answers with notification-posted for each id it still shows.

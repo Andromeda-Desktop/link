@@ -1081,6 +1081,7 @@ private fun PhoneNotification.toFfi() =
         icon = icon,
         actions = actions.map { FfiNotificationButton(it.id, it.label, it.reply) },
         alertOnce = alertOnce,
+        replies = replies,
     )
 
 private fun ShareKind.toFfi(): FfiShareKind =

@@ -11,9 +11,9 @@ use link_proto::CloseCode;
 use link_proto::message::{
     CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, HotspotEnd, LATE_HASH,
     MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
-    NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot,
-    PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL,
-    ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
+    NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved,
+    NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE,
+    SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -752,19 +752,19 @@ impl ClientActor {
             Message::NotificationRemoved(removed) => held.retain(|shown| shown.id != removed.id),
             _ => {}
         }
-        let desktops: Vec<(SessionHandle, bool)> = self
+        let desktops: Vec<(SessionHandle, Takes)> = self
             .phone
             .desktops()
             .iter()
             .filter(|peer| peer.grants.allows(Feature::Notifications))
             .filter_map(|peer| {
                 let handle = self.sessions.get(&peer.id).filter(|handle| handle.is_live())?;
-                Some((handle.clone(), peer.has(NOTIFICATION_SYNC)))
+                Some((handle.clone(), Takes::of(peer)))
             })
             .collect();
         let mut sent = 0;
-        for (handle, sync) in desktops {
-            match handle.send(for_desktop(message.clone(), sync)).await {
+        for (handle, takes) in desktops {
+            match handle.send(for_desktop(message.clone(), takes)).await {
                 Ok(()) => sent += 1,
                 Err(error) => log::info!("broadcasting a {}: {error}", message.kind()),
             }
@@ -984,18 +984,19 @@ impl ClientActor {
         let Some(held) = self.notifications.as_ref().filter(|_| peer.grants.allows(Feature::Notifications)) else {
             return;
         };
-        let messages = if peer.has(NOTIFICATION_SYNC) {
+        let takes = Takes::of(&peer);
+        let messages = if takes.sync {
             let notifications = held
                 .iter()
                 .rev()
                 .take(MAX_SNAPSHOT)
-                .map(|posted| NotificationDigest { id: posted.id.clone(), hash: posted.digest() })
+                .map(|posted| NotificationDigest { id: posted.id.clone(), hash: shown_digest(posted, takes) })
                 .collect();
             vec![Message::NotificationSnapshot(NotificationSnapshot { notifications })]
         } else {
             let removed = gone.iter().map(|id| Message::NotificationRemoved(NotificationRemoved { id: id.clone() }));
             removed
-                .chain(held.iter().map(|posted| for_desktop(Message::NotificationPosted(posted.clone()), false)))
+                .chain(held.iter().map(|posted| for_desktop(Message::NotificationPosted(posted.clone()), takes)))
                 .collect()
         };
         for message in messages {
@@ -1507,14 +1508,22 @@ impl ClientActor {
         match event {
             SessionEvent::Message { from, message: Message::NotificationPull(pull) } => {
                 let Some(handle) = self.sessions.get(&from).cloned() else { return };
-                if !self.phone.desktops().iter().any(|peer| peer.id == from && peer.has(NOTIFICATION_SYNC)) {
+                let Some(takes) = self
+                    .phone
+                    .desktops()
+                    .iter()
+                    .find(|peer| peer.id == from && peer.has(NOTIFICATION_SYNC))
+                    .map(Takes::of)
+                else {
                     return log::info!("{from}: a notification pull without the notifications grant");
-                }
+                };
                 let held = self.notifications.as_ref();
                 for posted in
                     pull.ids.iter().filter_map(|id| held.and_then(|held| held.iter().find(|posted| posted.id == *id)))
                 {
-                    if let Err(error) = handle.send(Message::NotificationPosted(posted.clone())).await {
+                    if let Err(error) =
+                        handle.send(for_desktop(Message::NotificationPosted(posted.clone()), takes)).await
+                    {
                         return log::info!("{from}: answering a notification pull: {error}");
                     }
                 }
@@ -1684,13 +1693,39 @@ async fn sleep_until(deadline: Option<Instant>) {
 }
 
 /// The phone's addresses its dials leave from, IPv4 first, for the desktop to punch its firewall toward.
-/// Drops `alert_once` for a desktop without [`NOTIFICATION_SYNC`], which closes a session on the field.
-fn for_desktop(message: Message, sync: bool) -> Message {
+/// The `notification-posted` fields a desktop takes; it closes a session on the others.
+#[derive(Debug, Clone, Copy)]
+struct Takes {
+    /// [`NOTIFICATION_SYNC`]: `alert_once`, snapshots and pulls.
+    sync: bool,
+    /// [`NOTIFICATION_REPLIES`]: `replies`.
+    replies: bool,
+}
+
+impl Takes {
+    fn of(peer: &Peer) -> Self {
+        Self { sync: peer.has(NOTIFICATION_SYNC), replies: peer.has(NOTIFICATION_REPLIES) }
+    }
+}
+
+/// Drops the fields the desktop does not take.
+fn for_desktop(message: Message, takes: Takes) -> Message {
     match message {
-        Message::NotificationPosted(posted) if !sync => {
-            Message::NotificationPosted(NotificationPosted { alert_once: false, ..posted })
-        }
+        Message::NotificationPosted(posted) => Message::NotificationPosted(NotificationPosted {
+            alert_once: posted.alert_once && takes.sync,
+            replies: if takes.replies { posted.replies } else { Vec::new() },
+            ..posted
+        }),
         message => message,
+    }
+}
+
+/// The digest of what [`for_desktop`] sends, as the desktop computes it.
+fn shown_digest(posted: &NotificationPosted, takes: Takes) -> u64 {
+    if takes.replies || posted.replies.is_empty() {
+        posted.digest()
+    } else {
+        NotificationPosted { replies: Vec::new(), ..posted.clone() }.digest()
     }
 }
 
@@ -1704,4 +1739,42 @@ fn punch(dialer: &Dialer) -> Option<Message> {
 
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use link_proto::message::NotificationButton;
+
+    use super::*;
+
+    /// For every desktop feature mix, a snapshot's hash matches what the desktop computes over the post it gets, and
+    /// the post carries no field the desktop does not take.
+    #[test]
+    fn notification_view_per_desktop() {
+        for (alert_once, replies) in
+            [(false, vec![]), (true, vec!["On my way".to_owned(), "Call you later".to_owned()])]
+        {
+            let posted = NotificationPosted {
+                id: "a".to_owned(),
+                app: "Messages".to_owned(),
+                title: "Ann".to_owned(),
+                text: "Dinner?".to_owned(),
+                icon: None,
+                actions: vec![NotificationButton { id: "0".to_owned(), label: "Reply".to_owned(), reply: true }],
+                alert_once,
+                replies,
+            };
+            for (sync, replies) in [(false, false), (false, true), (true, false), (true, true)] {
+                let takes = Takes { sync, replies };
+                let Message::NotificationPosted(sent) = for_desktop(Message::NotificationPosted(posted.clone()), takes)
+                else {
+                    unreachable!()
+                };
+                assert_eq!(shown_digest(&posted, takes), sent.digest(), "{takes:?}");
+                assert!(sync || !sent.alert_once, "{takes:?}");
+                assert!(replies || sent.replies.is_empty(), "{takes:?}");
+                assert_eq!(sent.replies.len(), if replies { posted.replies.len() } else { 0 }, "{takes:?}");
+            }
+        }
+    }
 }

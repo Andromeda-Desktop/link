@@ -252,7 +252,8 @@ impl Held {
     }
 }
 
-/// `{id, app, title, text, icon_file?, actions: [{id, label, reply}], alert_once?}`, the icon read from a PNG file.
+/// `{id, app, title, text, icon_file?, actions: [{id, label, reply}], alert_once?, replies?: [text]}`, the icon read from
+/// a PNG file.
 pub fn notification(value: &Value) -> anyhow::Result<NotificationPosted> {
     let text = |key: &str| value[key].as_str().map(str::to_owned).with_context(|| format!("no {key}"));
     let icon = match value["icon_file"].as_str() {
@@ -280,6 +281,13 @@ pub fn notification(value: &Value) -> anyhow::Result<NotificationPosted> {
         icon,
         actions,
         alert_once: value["alert_once"].as_bool().unwrap_or(false),
+        replies: value["replies"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|reply| reply.as_str().map(str::to_owned).context("a reply that is not text"))
+            .collect::<anyhow::Result<_>>()?,
     })
 }
 

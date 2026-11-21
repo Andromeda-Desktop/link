@@ -234,6 +234,7 @@ class NotificationMirror(
             }
         if (title.isBlank() && text.isBlank()) return null
         val app = appInfo(notification)
+        val actions = if (shown === notification) buttons(notification) else emptyList()
         return PhoneNotification(
             id = sbn.key,
             app =
@@ -243,9 +244,32 @@ class NotificationMirror(
             title = title.truncateUtf8(NotificationLimits.TITLE),
             text = text.truncateUtf8(NotificationLimits.TEXT),
             icon = icon(sbn.packageName, app),
-            actions = if (shown === notification) buttons(notification) else emptyList(),
+            actions = actions,
             alertOnce = alertOnce || (sbn.key in mirrored && notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0),
+            replies = replies(notification, ranking, actions),
         )
+    }
+
+    /**
+     * The suggested replies of the first reply button: its app's choices, then the system's smart replies. A reply too
+     * long for the limit is left out, not cut, since a pick is sent as it is.
+     */
+    private fun replies(
+        notification: Notification,
+        ranking: NotificationListenerService.Ranking?,
+        actions: List<NotificationButton>,
+    ): List<String> {
+        val reply = actions.firstOrNull { it.reply } ?: return emptyList()
+        val inputs =
+            notification.actions
+                ?.getOrNull(reply.id.toInt())
+                ?.remoteInputs
+                .orEmpty()
+        return (inputs.flatMap { it.choices.orEmpty().asList() } + ranking?.smartReplies.orEmpty())
+            .map { it.toString().trim() }
+            .filter { it.isNotEmpty() && it.toByteArray().size <= NotificationLimits.ACTION }
+            .distinct()
+            .take(NotificationLimits.REPLIES)
     }
 
     /**

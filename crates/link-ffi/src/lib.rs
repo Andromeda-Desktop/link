@@ -172,16 +172,18 @@ pub struct PhoneNotification {
     /// Android's `FLAG_ONLY_ALERT_ONCE`.
     #[uniffi(default = false)]
     pub alert_once: bool,
+    /// Suggested replies; the core sends them only to desktops that take them.
+    pub replies: Vec<String>,
 }
 
 impl From<PhoneNotification> for message::NotificationPosted {
     fn from(notification: PhoneNotification) -> Self {
-        let PhoneNotification { id, app, title, text, icon, actions, alert_once } = notification;
+        let PhoneNotification { id, app, title, text, icon, actions, alert_once, replies } = notification;
         let actions = actions
             .into_iter()
             .map(|action| message::NotificationButton { id: action.id, label: action.label, reply: action.reply })
             .collect();
-        Self { id, app, title, text, icon, actions, alert_once }
+        Self { id, app, title, text, icon, actions, alert_once, replies }
     }
 }
 

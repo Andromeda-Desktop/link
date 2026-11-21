@@ -304,6 +304,8 @@
       <arg name="actions" type="a(ssb)"/>
       <!-- False for an update that replaces the shown notification without a sound or a popup. -->
       <arg name="alert" type="b"/>
+      <!-- Suggested replies, at most 3; NotificationAction sends a pick as reply_text of the reply action. -->
+      <arg name="replies" type="as"/>
     </signal>
     <!-- action is "mute" (silence the ringer until the call ends) or "decline" (end the ringing or active call). Returns once sent.
          Errors: .NotConnected, .Rejected for another action. -->
