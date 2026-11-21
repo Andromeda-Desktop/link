@@ -9,7 +9,7 @@ use std::sync::Arc;
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
     Hello, Hotspot, LATE_HASH, MESSAGES, Message, PHOTOS_PAGE, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM,
-    SYSTEM_CONTROL, bluetooth_address, relay_entry,
+    SYSTEM_CONTROL, bluetooth_address, public_address, relay_entry,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -51,6 +51,8 @@ pub struct Session {
     pub resumed: bool,
     /// The connection's path, for a QUIC session.
     pub route: Option<Route>,
+    /// The relay connection the session runs through, for [`Via::Relay`].
+    pub relay: Option<Relay>,
 }
 
 pub struct Phone {
@@ -145,6 +147,11 @@ impl Phone {
         if self.present { &self.present_dialer } else { &self.dialer }
     }
 
+    /// The UDP socket under both dialers.
+    pub fn socket(&self) -> &Arc<PathSocket> {
+        &self.socket
+    }
+
     pub fn desktops(&self) -> &[Peer] {
         &self.store.peers
     }
@@ -189,7 +196,6 @@ impl Phone {
                     },
                 };
                 let Some(opener) = self.bluetooth.clone() else { return Err(ip) };
-
                 log::info!("pairing: no IP path ({ip}); trying Bluetooth");
                 let fd = match tokio::task::spawn_blocking(move || opener.open(&address, true))
                     .await
@@ -212,7 +218,7 @@ impl Phone {
         pair_as_client(&connection, &server, &mut control, &secret, method, self.identity.spki()).await?;
         let desktop = self.remember(&server, &hello, addr)?;
         let via = if addr.is_some() { Via::LastKnown } else { Via::Bluetooth };
-        Ok(Session { connection, control, desktop, addr, via, resumed: false, route })
+        Ok(Session { connection, control, desktop, addr, via, resumed: false, route, relay: None })
     }
 
     /// The one desktop with an open pairing window by mDNS, if any, and an LE scan for desktops that advertise one,
@@ -268,10 +274,16 @@ impl Phone {
     /// Over IP when any address answers, else over Bluetooth when the desktop has an adapter and the platform can
     /// open one, else through the desktop's relay when it has one.
     async fn open_session(&mut self, peer: &Peer) -> Result<Session, Error> {
-        let mut error = match reach::reach(self.dialer(), peer).await {
-            Ok(reached) => return self.adopt_reached(peer, reached).await,
-            Err(error) => error,
-        };
+        match reach::reach(self.dialer(), peer).await {
+            Ok(reached) => self.adopt_reached(peer, reached).await,
+            Err(error) => self.connect_indirect(peer, error).await,
+        }
+    }
+
+    /// With no IP path (`ip` tells why): over Bluetooth when the desktop has an adapter and the platform can open one,
+    /// else through the desktop's relay when it has one.
+    pub async fn connect_indirect(&mut self, peer: &Peer, ip: Error) -> Result<Session, Error> {
+        let mut error = ip;
         if peer.bluetooth.is_some() && self.bluetooth.is_some() {
             log::info!("{}: no IP path ({error}); trying Bluetooth", peer.id);
             match self.connect_bluetooth(peer).await {
@@ -294,7 +306,9 @@ impl Phone {
         });
         let outer = dialer.dial(addr, ServerPin::Key(key)).await?.connection;
         let (relay, _) = Relay::new(outer.clone());
-        let session = self.connect_link(peer, relay.link(desktop), Via::Relay).await;
+        let link = relay.link(desktop);
+        let session =
+            self.connect_link(peer, link, Via::Relay).await.map(|session| Session { relay: Some(relay), ..session });
         let inner = session.as_ref().ok().map(|session| session.connection.quic().clone());
         tokio::spawn(async move {
             if let Some(inner) = inner {
@@ -371,7 +385,7 @@ impl Phone {
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = self.remember(&peer.spki()?, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via, resumed, route })
+        Ok(Session { connection, control, desktop, addr: None, via, resumed, route, relay: None })
     }
 
     /// Finishes a session to a desktop reached over IP, by this phone or by a probe running beside it.
@@ -383,11 +397,21 @@ impl Phone {
         let desktop = if matches!(reached.via, Via::Hotspot | Via::WifiDirect) {
             // The phone's own hotspot or group is gone once it stops: neither the address it reached nor the ones the desktop
             // announces on it are worth dialling later.
-            self.remember(&peer.spki()?, &Hello { addresses: Vec::new(), ..hello }, None)?
+            let addresses = hello.addresses.into_iter().filter(|entry| entry.parse::<SocketAddr>().is_err()).collect();
+            self.remember(&peer.spki()?, &Hello { addresses, ..hello }, None)?
         } else {
             self.remember(&peer.spki()?, &hello, Some(reached.addr))?
         };
-        Ok(Session { connection, control, desktop, addr: Some(reached.addr), via: reached.via, resumed, route })
+        Ok(Session {
+            connection,
+            control,
+            desktop,
+            addr: Some(reached.addr),
+            via: reached.via,
+            resumed,
+            route,
+            relay: None,
+        })
     }
 
     fn hello(&self) -> Hello {
@@ -430,6 +454,7 @@ impl Phone {
             peer.bluetooth = Some(bluetooth);
         }
         peer.relay = hello.addresses.iter().find_map(|entry| relay_entry(entry)).map(str::to_owned);
+        peer.public = hello.addresses.iter().find_map(|entry| public_address(entry));
         peer.bt_pairing = hello.addresses.iter().any(|entry| entry == BT_PAIRING);
         peer.features = hello.addresses.iter().filter(|entry| entry.starts_with(FEATURE)).cloned().collect();
         peer.touch();

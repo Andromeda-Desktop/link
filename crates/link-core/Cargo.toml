@@ -24,6 +24,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "uio", "net"] }
+
 [dev-dependencies]
 bluer = { version = "0.17.4", default-features = false, features = ["l2cap"] }
 tokio = { workspace = true, features = ["test-util"] }

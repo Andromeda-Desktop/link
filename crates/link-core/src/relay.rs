@@ -86,6 +86,12 @@ impl Relay {
         *self.observed.borrow()
     }
 
+    /// This device's address as the relay sees it, as it changes.
+    #[must_use]
+    pub fn observed_changes(&self) -> watch::Receiver<Option<SocketAddr>> {
+        self.observed.clone()
+    }
+
     /// Waits until the relay said this device's address.
     pub async fn wait_observed(&mut self) -> Option<SocketAddr> {
         self.observed.wait_for(Option::is_some).await.ok().and_then(|seen| *seen)

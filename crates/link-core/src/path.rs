@@ -237,6 +237,8 @@ enum Blocked {
 
 pub struct PathSocket {
     udp: Arc<dyn AsyncUdpSocket>,
+    /// The same socket, for packets quinn does not send.
+    raw: std::net::UdpSocket,
     shared: Arc<Shared>,
     inbound_tx: mpsc::Sender<(SocketAddr, Vec<u8>)>,
     inbound: Mutex<mpsc::Receiver<(SocketAddr, Vec<u8>)>>,
@@ -269,6 +271,29 @@ fn canonical(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(addr.ip().to_canonical(), addr.port())
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn send_with_ttl(socket: &std::net::UdpSocket, to: SocketAddr, ttl: u8) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrStorage, sendmsg};
+
+    let hops = nix::libc::c_int::from(ttl);
+    // A dual-stack socket sends to an IPv4-mapped address as IPv4, which takes IP_TTL.
+    let ipv4 = match to {
+        SocketAddr::V4(_) => true,
+        SocketAddr::V6(v6) => v6.ip().to_ipv4_mapped().is_some(),
+    };
+    let control = if ipv4 { ControlMessage::Ipv4Ttl(&hops) } else { ControlMessage::Ipv6HopLimit(&hops) };
+    let to = SockaddrStorage::from(to);
+    sendmsg(socket.as_raw_fd(), &[io::IoSlice::new(&[0])], &[control], MsgFlags::empty(), Some(&to))?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn send_with_ttl(_: &std::net::UdpSocket, _: SocketAddr, _: u8) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -278,6 +303,7 @@ impl PathSocket {
         let runtime = quinn::default_runtime().ok_or_else(|| io::Error::other("no async runtime"))?;
         let (inbound_tx, inbound) = mpsc::channel(INBOUND);
         Ok(Arc::new(Self {
+            raw: udp.try_clone()?,
             udp: runtime.wrap_udp_socket(udp)?,
             shared: Arc::default(),
             inbound_tx,
@@ -291,6 +317,20 @@ impl PathSocket {
         match (addr, self.udp.local_addr()) {
             (SocketAddr::V4(v4), Ok(SocketAddr::V6(_))) => SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()),
             _ => addr,
+        }
+    }
+
+    /// Sends 3 one-byte packets to each of `addresses` that end after `ttl` hops. They open this socket's NAT mapping
+    /// toward a peer without reaching the peer's NAT, which would keep an entry that moves the peer's punch to another
+    /// port. Only the packets themselves carry `ttl`, so QUIC and relay packets on the socket go on unchanged.
+    pub fn open_toward(&self, addresses: &[SocketAddr], ttl: u8) {
+        for &addr in addresses {
+            for _ in 0..3 {
+                if let Err(error) = send_with_ttl(&self.raw, self.native(addr), ttl) {
+                    log::info!("opening toward {addr}: {error}");
+                    break;
+                }
+            }
         }
     }
 

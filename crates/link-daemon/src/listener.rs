@@ -1,5 +1,6 @@
 //! Accepts QUIC and Bluetooth connections and runs each one as a pairing attempt or a session, as the hub admits it.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use link_core::control::Control;
@@ -9,8 +10,8 @@ use link_core::path::{Route, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, LATE_HASH,
-    MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, RELAY_SCHEME, SCREEN_SHAPE,
-    SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
+    MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, PUBLIC_SCHEME, RELAY_SCHEME,
+    SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
 };
 use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
@@ -18,6 +19,7 @@ use link_core::session::session as start_session;
 use link_core::transport::{CONNECT_TIMEOUT, PathServer};
 use link_core::wire::Connection;
 use link_core::{Error, close_code_for, net, tls};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::bluetooth::Bluetooth;
@@ -43,6 +45,8 @@ struct Context {
     port: u16,
     bluetooth: Option<String>,
     relay: Option<String>,
+    /// This desktop's address as its relay sees it.
+    relay_seen: watch::Receiver<Option<SocketAddr>>,
 }
 
 impl Listener {
@@ -50,12 +54,14 @@ impl Listener {
         server: Arc<PathServer>,
         bluetooth: Bluetooth,
         relay: Option<String>,
+        relay_seen: watch::Receiver<Option<SocketAddr>>,
         hub: HubHandle,
         own: Spki,
         name: String,
     ) -> Self {
         let port = server.endpoint.local_addr().map_or(0, |addr| addr.port());
-        let context = Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone(), relay });
+        let context =
+            Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone(), relay, relay_seen });
         Self { server, bluetooth, context }
     }
 
@@ -191,6 +197,7 @@ impl Context {
         let mut addresses: Vec<String> = net::local_addresses(self.port).iter().map(ToString::to_string).collect();
         addresses.extend(self.bluetooth.iter().map(|address| format!("{BLUETOOTH_SCHEME}{address}")));
         addresses.extend(self.relay.iter().map(|spec| format!("{RELAY_SCHEME}{spec}")));
+        addresses.extend(self.relay_seen.borrow().map(|seen| format!("{PUBLIC_SCHEME}{seen}")));
         if self.bluetooth.is_some() {
             addresses.push(BT_PAIRING.to_owned());
         }

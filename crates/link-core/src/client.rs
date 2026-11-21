@@ -34,6 +34,7 @@ use crate::outbox::{self, Outbox, OutboxActor, Seen, Sent};
 use crate::path::{Hop, LinkId};
 use crate::phone::{self, PairTarget, Phone};
 use crate::reach::{self, Reached, Via};
+use crate::relay::Relay;
 use crate::session::{self, Route, SessionEvent, SessionHandle};
 use crate::slot::{self, Effect, Kind, Slot};
 use crate::store::{Feature, Grants, Peer, feature_of};
@@ -50,6 +51,8 @@ const STATUS_EVERY: Duration = Duration::from_secs(10);
 const CONTROL_EVERY: Duration = Duration::from_millis(150);
 /// How often a session on Bluetooth looks for an IP path to move to.
 const PROBE_EVERY: Duration = Duration::from_secs(30);
+/// Hop counts that pass the phone's own NAT but end before the desktop's; the path's length is unknown.
+const OPEN_TTLS: [u8; 3] = [2, 3, 4];
 
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -243,6 +246,10 @@ pub struct ClientActor {
     probes: JoinSet<(DeviceId, Result<Reached, Error>)>,
     /// The probe running for each desktop: a new one stops it, since two dials to one address contend for its packets.
     probing: HashMap<DeviceId, tokio::task::AbortHandle>,
+    /// The relay connection under each session that started through the relay; it tells the phone's public address.
+    relayed: HashMap<DeviceId, Relay>,
+    /// Probe rounds so far; the NAT-opening packets' TTL cycles through [`OPEN_TTLS`] by round.
+    probe_round: usize,
     /// Redials looking for an IP path, off the actor: a desktop that does not answer takes seconds to give up on.
     redials: JoinSet<(DeviceId, Duration, Result<Reached, Error>)>,
     redialing: HashSet<DeviceId>,
@@ -313,6 +320,8 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         standbys: JoinSet::new(),
         probes: JoinSet::new(),
         probing: HashMap::new(),
+        relayed: HashMap::new(),
+        probe_round: 0,
         redials: JoinSet::new(),
         redialing: HashSet::new(),
         slot: Slot::Idle,
@@ -666,6 +675,7 @@ impl ClientActor {
                 self.controlled_by.remove(&id);
                 self.status_to.remove(&id);
                 self.standby.remove(&id);
+                self.relayed.remove(&id);
                 if let Some(handle) = self.sessions.remove(&id) {
                     handle.close(CloseCode::Done);
                 }
@@ -865,8 +875,12 @@ impl ClientActor {
     }
 
     async fn adopt(&mut self, session: phone::Session) -> SessionHandle {
-        let phone::Session { connection, control, desktop, addr, via, resumed, route: path } = session;
+        let phone::Session { connection, control, desktop, addr, via, resumed, route: path, relay } = session;
         let id = desktop.id.clone();
+        match relay {
+            Some(relay) => drop(self.relayed.insert(id.clone(), relay)),
+            None => drop(self.relayed.remove(&id)),
+        }
         let route = Route {
             peer: id.clone(),
             events: self.session_events_tx.clone(),
@@ -890,7 +904,7 @@ impl ClientActor {
         self.outbox.live(id.clone(), handle.clone(), desktop.has(SHARE_OUTBOX));
         self.retries.remove(&id);
         self.path_changed(&id, via, addr).await;
-        if via != Via::Bluetooth
+        if !matches!(via, Via::Bluetooth | Via::Relay)
             && handle.path().is_some()
             && let Some(open) = self.phone.l2cap_opener(&desktop)
         {
@@ -922,6 +936,9 @@ impl ClientActor {
             self.next_probe = Some(Instant::now());
         } else {
             log::info!("{id}: connected at {}", addr.map_or_else(|| format!("{via:?}"), |addr| addr.to_string()));
+            if via == Via::Relay {
+                self.next_probe = Some(Instant::now());
+            }
             if matches!(via, Via::Hotspot | Via::WifiDirect) {
                 self.on_hotspot.insert(id.clone());
             } else {
@@ -931,6 +948,11 @@ impl ClientActor {
             let busy = self.is_busy(id);
             self.slot_event(slot::Event::Adopted { peer: id.clone(), busy }).await;
         }
+    }
+
+    /// Whether `id`'s live session still runs through the relay it started on.
+    fn on_relay(&self, id: &DeviceId, handle: &SessionHandle) -> bool {
+        self.relayed.contains_key(id) && handle.path().is_some_and(|path| matches!(path.via(), Some(Hop::Link(_))))
     }
 
     /// Whether `id`'s live session runs over Bluetooth: QUIC routed over an L2CAP or RFCOMM link.
@@ -1016,6 +1038,7 @@ impl ClientActor {
             return;
         }
         let Some(handle) = self.sessions.remove(&id) else { return };
+        self.relayed.remove(&id);
         self.controlled_by.remove(&id);
         self.status_to.remove(&id);
         self.mirroring.remove(&id);
@@ -1065,7 +1088,8 @@ impl ClientActor {
         }
     }
 
-    /// A redial's IP path becomes a session on the actor; without one, Bluetooth is tried as [`Self::open`] does.
+    /// A redial's IP path becomes a session on the actor; without one, Bluetooth and the relay are tried as
+    /// [`Self::open`] does.
     async fn redialed(&mut self, id: DeviceId, delay: Duration, reached: Result<Reached, Error>) {
         self.redialing.remove(&id);
         if self.sessions.get(&id).is_some_and(SessionHandle::is_live) {
@@ -1074,11 +1098,7 @@ impl ClientActor {
         let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
         let result = match reached {
             Ok(reached) => self.phone.adopt_reached(&peer, reached).await,
-            Err(error) if peer.bluetooth.is_some() => {
-                log::info!("{id}: no IP path ({error}); trying Bluetooth");
-                self.phone.connect_bluetooth(&peer).await
-            }
-            Err(error) => Err(error),
+            Err(error) => self.phone.connect_indirect(&peer, error).await,
         };
         let error = match result {
             Ok(session) => return drop(self.adopt(session).await),
@@ -1133,27 +1153,46 @@ impl ClientActor {
 
     /// Looks for an IP path to every desktop on Bluetooth, off the actor, since reaching one can take seconds.
     fn probe(&mut self) {
-        let on_bluetooth: Vec<DeviceId> =
-            self.sessions.iter().filter(|(_, handle)| handle.on_bluetooth()).map(|(id, _)| id.clone()).collect();
-        self.next_probe = (!on_bluetooth.is_empty()).then(|| Instant::now() + PROBE_EVERY);
-        // On mobile data the only IP path is an overlay such as Tailscale, which would move a Bluetooth session, and
-        // its transfers, onto the data plan.
-        if self.status.is_some_and(|status| status.network == NetworkKind::Cellular) {
-            return;
-        }
-        for id in on_bluetooth {
-            let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { continue };
+        let waiting: Vec<(DeviceId, bool)> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, handle)| {
+                let relayed = self.on_relay(id, handle);
+                (relayed || handle.on_bluetooth()).then(|| (id.clone(), relayed))
+            })
+            .collect();
+        self.next_probe = (!waiting.is_empty()).then(|| Instant::now() + PROBE_EVERY);
+        // On mobile data the only IP path to a Bluetooth peer is an overlay such as Tailscale, which would move the
+        // session, and its transfers, onto the data plan; a relayed session is on that plan already.
+        let cellular = self.status.is_some_and(|status| status.network == NetworkKind::Cellular);
+        let ttl = OPEN_TTLS[self.probe_round % OPEN_TTLS.len()];
+        self.probe_round = self.probe_round.wrapping_add(1);
+        for (id, relayed) in waiting {
+            if cellular && !relayed {
+                continue;
+            }
+            let Some(mut peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { continue };
+            let public = peer.public.filter(|_| relayed);
+            peer.addresses.splice(0..0, public);
             let dialer = self.phone.dialer().clone();
             let session = self.sessions.get(&id).cloned();
+            let observed = self.relayed.get(&id).filter(|_| relayed).and_then(Relay::observed);
+            let opener = relayed.then(|| self.phone.socket().clone());
             if let Some(older) = self.probing.remove(&id) {
                 older.abort();
             }
             let task_id = id.clone();
             let probe = self.probes.spawn(async move {
-                if let (Some(session), Some(punch)) = (session, punch(&dialer))
-                    && let Err(error) = session.send(punch).await
-                {
-                    log::info!("{task_id}: asking for a punch: {error}");
+                if let Some(socket) = opener {
+                    socket.open_toward(public.as_slice(), ttl);
+                }
+                if let (Some(session), Some(punch)) = (session, punch(&dialer, observed)) {
+                    match session.send(punch).await {
+                        Err(error) => log::info!("{task_id}: asking for a punch: {error}"),
+                        // The desktop's punch must pass its own NAT before this phone's first dial reaches it.
+                        Ok(()) if relayed => tokio::time::sleep(session.connection().quic().rtt()).await,
+                        Ok(()) => {}
+                    }
                 }
                 let reached = reach::reach(&dialer, &peer).await;
                 (task_id, reached)
@@ -1167,15 +1206,22 @@ impl ClientActor {
     async fn probed(&mut self, id: DeviceId, reached: Result<Reached, Error>) {
         self.probing.remove(&id);
         let Ok(reached) = reached else { return };
-        let Some(handle) = self.sessions.get(&id).filter(|handle| handle.on_bluetooth()).cloned() else { return };
+        let Some(handle) =
+            self.sessions.get(&id).filter(|handle| handle.on_bluetooth() || self.on_relay(&id, handle)).cloned()
+        else {
+            return;
+        };
+        let from = if handle.on_bluetooth() { "Bluetooth" } else { "the relay" };
         let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
         if let Some(path) = handle.path() {
             // First: while the probe's connection lives, packets from the address it reached are its own.
             crate::wire::Connection::from(reached.dialed.connection).close(CloseCode::Done);
-            if let Some(Hop::Link(link)) = path.via() {
+            if handle.on_bluetooth()
+                && let Some(Hop::Link(link)) = path.via()
+            {
                 self.standby.insert(id.clone(), (handle.stable_id(), link));
             }
-            log::info!("{id}: moving the session from Bluetooth to {}", reached.addr);
+            log::info!("{id}: moving the session from {from} to {}", reached.addr);
             path.set(Hop::Udp(reached.addr));
             handle.wake();
             self.path_changed(&id, reached.via, Some(reached.addr)).await;
@@ -1189,7 +1235,7 @@ impl ClientActor {
         }
         match self.phone.adopt_reached(&peer, reached).await {
             Ok(session) => {
-                log::info!("{id}: moving from Bluetooth to {:?}", session.addr);
+                log::info!("{id}: moving from {from} to {:?}", session.addr);
                 self.adopt(session).await;
             }
             Err(error) => log::info!("{id}: the IP path a probe found failed: {error}"),
@@ -1288,7 +1334,7 @@ impl ClientActor {
         let session = self.sessions.get(&id).cloned();
         self.probes.spawn(async move {
             // The desktop's firewall takes the dial for a reply once it has sent toward the phone's new address.
-            if let (Some(session), Some(punch)) = (session, punch(&dialer))
+            if let (Some(session), Some(punch)) = (session, punch(&dialer, None))
                 && let Err(error) = session.send(punch).await
             {
                 log::info!("{id}: asking for a punch: {error}");
@@ -1729,9 +1775,11 @@ fn shown_digest(posted: &NotificationPosted, takes: Takes) -> u64 {
     }
 }
 
-fn punch(dialer: &Dialer) -> Option<Message> {
+/// Asks the desktop to punch toward this phone's addresses: `observed`, the relay's view of its NAT mapping, first.
+fn punch(dialer: &Dialer, observed: Option<SocketAddr>) -> Option<Message> {
     let mut addresses = net::local_addresses(dialer.port()?);
     addresses.sort_by_key(SocketAddr::is_ipv6);
+    addresses.splice(0..0, observed);
     addresses.truncate(MAX_PUNCH_ADDRESSES);
     let addresses = addresses.iter().map(ToString::to_string).collect::<Vec<_>>();
     (!addresses.is_empty()).then_some(Message::Punch(Punch { addresses }))

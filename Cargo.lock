@@ -1985,6 +1985,7 @@ dependencies = [
  "link-proto",
  "log",
  "mdns-sd",
+ "nix 0.31.3",
  "quinn",
  "quinn-proto",
  "ring",

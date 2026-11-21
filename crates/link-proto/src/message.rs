@@ -26,6 +26,11 @@ pub const BLUETOOTH_SCHEME: &str = "bt:";
 /// desktop through it when no IP or Bluetooth path answers; older phones skip it, since it is not a socket address.
 pub const RELAY_SCHEME: &str = "relay:";
 
+/// The desktop's public address as its relay sees it: `public:<ip:port>`. A phone dials it only after the desktop
+/// punched toward the phone, since an earlier dial leaves a NAT entry that moves the desktop's punch to another port;
+/// hence not a plain address, which every phone dials at once.
+pub const PUBLIC_SCHEME: &str = "public:";
+
 /// A desktop's hello carries this among its `addresses` when it joins a phone's Wi-Fi Direct group by the credentials
 /// in `wifi-direct`; phones send that message only then, since older desktops expect a different body.
 pub const WIFI_DIRECT_JOIN: &str = "feature:wifi-direct-join";
@@ -101,6 +106,12 @@ pub fn bluetooth_address(entry: &str) -> Option<String> {
     let valid = octets.len() == 6
         && octets.iter().all(|octet| octet.len() == 2 && octet.bytes().all(|b| b.is_ascii_hexdigit()));
     valid.then(|| address.to_ascii_uppercase())
+}
+
+/// The address in a `public:` entry, or None when `entry` is not one.
+#[must_use]
+pub fn public_address(entry: &str) -> Option<std::net::SocketAddr> {
+    entry.strip_prefix(PUBLIC_SCHEME)?.parse().ok()
 }
 
 /// The relay spec in a `relay:` entry, or None when `entry` is not one.
