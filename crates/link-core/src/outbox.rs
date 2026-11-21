@@ -120,6 +120,7 @@ enum Command {
     Sent { peer: DeviceId, item: u64, result: Result<(), Error> },
     Retry { peer: DeviceId },
     Forget { peer: DeviceId },
+    Depths { reply: oneshot::Sender<BTreeMap<DeviceId, usize>> },
 }
 
 #[derive(Clone)]
@@ -160,6 +161,13 @@ impl Outbox {
         drop(self.0.send(Command::Forget { peer }));
     }
 
+    /// How many shares wait per peer; peers with none are left out.
+    pub async fn depths(&self) -> BTreeMap<DeviceId, usize> {
+        let (reply, depths) = oneshot::channel();
+        drop(self.0.send(Command::Depths { reply }));
+        depths.await.unwrap_or_default()
+    }
+
     /// `session` to `peer` is live: queued shares go out on it.
     pub fn live(&self, peer: DeviceId, session: SessionHandle, items: bool) {
         drop(self.0.send(Command::Live { peer, session, items }));
@@ -185,6 +193,7 @@ impl OutboxActor {
                     self.queues.remove(&peer, item);
                     return drop(reply.send(Err(error)));
                 }
+                log::info!("{peer}: share {item:016x} queued");
                 if matches!(self.links.get(&peer), None | Some(Link::Down)) {
                     drop(reply.send(Ok(Sent::Queued)));
                 } else {
@@ -203,6 +212,9 @@ impl OutboxActor {
             }
             Command::Sent { peer, item, result } => self.on_sent(&peer, item, result),
             Command::Retry { peer } => self.pump(&peer),
+            Command::Depths { reply } => {
+                drop(reply.send(self.queues.0.iter().map(|(peer, queue)| (peer.clone(), queue.len())).collect()));
+            }
             Command::Forget { peer } => {
                 self.links.remove(&peer);
                 if self.queues.0.remove(&peer).is_some()
@@ -230,6 +242,7 @@ impl OutboxActor {
                 {
                     log::warn!("{peer}: saving the outbox: {error}");
                 }
+                log::info!("{peer}: share {item:016x} acknowledged");
                 if let Some(reply) = self.waiting.remove(&item) {
                     drop(reply.send(Ok(Sent::Delivered)));
                 }

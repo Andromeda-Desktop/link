@@ -382,7 +382,7 @@ impl Live {
         let message_id = envelope.id;
         match self.state.on_message(envelope)? {
             Inbound::Share { id, share } => {
-                log::info!("{peer}: received a {} share", share.kind.as_str());
+                log::info!("{peer}: share {:016x} received ({})", share.item.unwrap_or(0), share.kind.as_str());
                 self.emit(SessionEvent::Received { from: peer.clone(), share }).await;
                 self.writer.send(Message::ShareAck(ShareAck { of: id })).await?;
             }

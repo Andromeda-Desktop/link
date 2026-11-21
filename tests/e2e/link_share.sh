@@ -77,6 +77,7 @@ events() { grep -c "\"event\":\"$1\"" "$OUT/hold.jsonl" || true; }
 signal_count() { grep -cF "string \"$1\"" "$OUT/signals.txt" || true; }
 exited() { ! kill -0 "$1" 2> /dev/null || grep -q '^State:.*Z' "/proc/$1/status"; }
 say() { printf '%s\n' "$*" >&3; }
+doctor() { "$BIN/andromeda-linkd" doctor | awk -v id="$ID" '$NF == id'; }
 blackhole() { in_phone tc qdisc add dev p0 root netem loss 100%; }
 clear_path() { in_phone tc qdisc del dev p0 root; }
 
@@ -92,6 +93,9 @@ ID=$(devices | grep -o "'[0-9a-f]\{32\}', 'phone'" | cut -d"'" -f2)
 
 link Share "$ID" text "'queued while away'" > /dev/null || fail "Share to a disconnected phone was not queued"
 record '{"step":"share-queued-while-away"}'
+[[ $(doctor | awk '{print $2, $3, $(NF-1)}') == "offline - 1" ]] || fail "doctor does not show the away phone's queued share: $(doctor)"
+TRACE=$(grep -o "$ID: share [0-9a-f]\{16\} queued" "$OUT/linkd.log" | awk '{print $3}')
+[[ -n $TRACE ]] || fail "the desktop did not log the queued share's trace id"
 
 dbus-monitor --session "type='signal',interface='org.andromeda.Link1',member='Received'" > "$OUT/signals.txt" 2>&1 &
 wait_for 5 "dbus-monitor did not start" test -s "$OUT/signals.txt"
@@ -106,6 +110,12 @@ wait_for 10 "present phone never shown connected: $(devices)" connected
 record '{"step":"present-connected"}'
 wait_for 10 "the queued share never reached the phone" grep -q '"text":"queued while away"' "$OUT/hold.jsonl"
 record '{"step":"queued-share-delivered"}'
+wait_for 5 "the desktop did not log the ack of share $TRACE" grep -q "share $TRACE acknowledged" "$OUT/linkd.log"
+grep -q "share $TRACE received" "$OUT/hold.log" || fail "the phone did not log share $TRACE"
+read -r _ STATE ROUTE RTT _ <<< "$(doctor)"
+[[ $STATE == live && $ROUTE == wifi && $RTT != - ]] || fail "doctor does not show the live phone: $(doctor)"
+[[ $(doctor | awk '{print $(NF-1)}') == 0 ]] || fail "doctor still shows a queued share: $(doctor)"
+record '{"step":"doctor-and-trace"}'
 
 link Share "$ID" text "'héllo from the desktop ✓'" > /dev/null || fail "D-Bus Share text"
 link Share "$ID" link "'https://example.org/path?q=1'" > /dev/null || fail "D-Bus Share link"

@@ -448,6 +448,12 @@
     <method name="SetSessionCapabilities">
       <arg name="capabilities" type="as" direction="in"/>
     </method>
+    <!-- One row per paired device, for `andromeda-linkd doctor`: id, name, state (live, reconnecting, offline), path
+         (wifi, nearby, bluetooth; empty while offline), QUIC round trip in microseconds (0 while offline), packets
+         QUIC declared lost on the session, shares waiting in the outbox. -->
+    <method name="Doctor">
+      <arg name="devices" type="a(ssssutu)" direction="out"/>
+    </method>
     <!-- Shows message, or a plain ping when empty, on the phone. Errors: .NotConnected; .Rejected when the phone's
          Link takes no pings. -->
     <method name="Ping">

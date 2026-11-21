@@ -840,6 +840,20 @@ impl Link {
         session.send(message).await.map_err(|error| LinkError::Failed(error.to_string()))
     }
 
+    /// One row per paired device: id, name, state, path, rtt in µs, lost packets, outbox depth.
+    async fn doctor(&self) -> Vec<(String, String, String, String, u32, u64, u32)> {
+        self.hub
+            .doctor()
+            .await
+            .into_iter()
+            .map(|c| {
+                let rtt = c.rtt.map_or(0, |rtt| u32::try_from(rtt.as_micros()).unwrap_or(u32::MAX));
+                let outbox = u32::try_from(c.outbox).unwrap_or(u32::MAX);
+                (c.id.to_string(), c.name, c.state.to_owned(), c.path.to_owned(), rtt, c.lost, outbox)
+            })
+            .collect()
+    }
+
     /// Shows `message`, or a plain ping when empty, on the phone.
     async fn ping(&self, device_id: String, message: String) -> Result<(), LinkError> {
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;

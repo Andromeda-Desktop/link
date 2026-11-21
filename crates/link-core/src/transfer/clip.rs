@@ -241,16 +241,19 @@ impl TransferActor {
         let items = self.clips.connected.get(peer).is_some_and(|(clip, _)| clip.items);
         let Some(local) = &self.clips.local else { return };
         let offer = self.clips.peers.entry(peer.clone()).or_default().offer(local.offer(items));
+        log::info!("{peer}: clip {:016x} offered ({} bytes)", local.origin, offer.size);
         self.send_to(peer, Message::ClipOffer(offer)).await;
     }
 
     pub(super) fn on_clip_offer(&mut self, peer: &DeviceId, offer: ClipOffer) {
+        // The copy's origin is its trace id on every hop; 0 is a peer without CLIP_ITEMS.
+        let origin = offer.origin.unwrap_or(0);
         if let Some(at) = offer.at {
             self.clips.clock.observe(at);
         }
         if let Some(local) = &self.clips.local {
             if offer.origin == Some(local.origin) {
-                log::debug!("{peer}: the offer is this side's own clip; dropping it");
+                log::debug!("{peer}: clip {origin:016x} is this side's own; dropping it");
                 return;
             }
             let (clock, since) = self
@@ -259,10 +262,11 @@ impl TransferActor {
                 .get(peer)
                 .map_or((false, None), |(clip, since)| (clip.clock, Some(since.elapsed())));
             if !replaces(clock, since, offer.at, offer.origin, (local.at, local.origin)) {
-                log::info!("{peer}: the clip it offered is older than this side's; dropping it");
+                log::info!("{peer}: clip {origin:016x} is older than this side's; dropping it");
                 return;
             }
         }
+        log::info!("{peer}: clip {origin:016x} received ({} bytes)", offer.size);
         let event = TransferEvent::ClipOffered {
             from: peer.clone(),
             id: offer.id,

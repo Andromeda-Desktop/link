@@ -283,6 +283,24 @@ enum Command {
     SystemResult { id: DeviceId, serial: u64, error: Option<String> },
     SystemToPhone { id: DeviceId, command: SystemCommand, reply: oneshot::Sender<Result<(), String>> },
     Ping { id: DeviceId, message: Option<String>, reply: oneshot::Sender<Result<(), link_core::Error>> },
+    Doctor { reply: oneshot::Sender<Vec<Checkup>> },
+}
+
+/// One paired device as `link doctor` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkup {
+    pub id: DeviceId,
+    pub name: String,
+    /// "live", "reconnecting", or "offline".
+    pub state: &'static str,
+    /// "wifi", "nearby" (the phone's Wi-Fi Direct group or hotspot), "bluetooth", or "" while offline.
+    pub path: &'static str,
+    /// QUIC's smoothed round trip; None while offline.
+    pub rtt: Option<Duration>,
+    /// Packets QUIC declared lost on this session.
+    pub lost: u64,
+    /// Shares in the outbox for this device.
+    pub outbox: usize,
 }
 
 #[derive(Clone)]
@@ -608,6 +626,7 @@ impl Hub {
                 }
             }
             Command::Ping { id, message, reply } => drop(reply.send(self.ping(&id, message).await)),
+            Command::Doctor { reply } => drop(reply.send(self.checkups())),
             Command::DesktopPlayer { player } => self.media.desktop_player(player, self.sessions.values()),
             Command::DesktopPlayerGone { player } => self.media.desktop_gone(player, self.sessions.values()),
             Command::MediaKey { key } => self.emit(Event::MediaKey { key }).await,
@@ -752,7 +771,7 @@ impl Hub {
         if self.seen.first(&from, &share) {
             self.emit(Event::Received { id: from, share }).await;
         } else {
-            log::info!("{from}: dropped a share it sent again");
+            log::info!("{from}: share {:016x} dropped: it came before", share.item.unwrap_or(0));
         }
     }
 
@@ -1825,6 +1844,34 @@ impl Hub {
         }
     }
 
+    fn checkups(&self) -> Vec<Checkup> {
+        self.store
+            .peers
+            .iter()
+            .map(|peer| {
+                let session = self.sessions.get(&peer.id).filter(|session| session.is_live());
+                let quic = session.map(|session| session.connection().quic());
+                Checkup {
+                    id: peer.id.clone(),
+                    name: peer.name.clone(),
+                    state: match self.link(&peer.id) {
+                        "" => "offline",
+                        state => state,
+                    },
+                    path: match session {
+                        None => "",
+                        Some(session) if session.on_bluetooth() => "bluetooth",
+                        Some(_) if matches!(self.nearby.get(&peer.id), Some(Nearby::Joined(_))) => "nearby",
+                        Some(_) => "wifi",
+                    },
+                    rtt: quic.map(quinn::Connection::rtt),
+                    lost: quic.map_or(0, |quic| quic.stats().path.lost_packets),
+                    outbox: 0,
+                }
+            })
+            .collect()
+    }
+
     fn publish(&self) {
         let devices = self
             .store
@@ -2118,6 +2165,16 @@ impl HubHandle {
     /// Replaces the commands phones may run; false when the list breaks its limits.
     pub async fn set_commands(&self, commands: Vec<StoredCommand>) -> bool {
         self.request(|reply| Command::SetCommands { commands, reply }).await.unwrap_or(false)
+    }
+
+    /// Every paired device's state, path, round trip, losses and outbox depth.
+    pub async fn doctor(&self) -> Vec<Checkup> {
+        let mut checkups = self.request(|reply| Command::Doctor { reply }).await.unwrap_or_default();
+        let depths = self.outbox.depths().await;
+        for checkup in &mut checkups {
+            checkup.outbox = depths.get(&checkup.id).copied().unwrap_or(0);
+        }
+        checkups
     }
 
     pub async fn ping(&self, id: DeviceId, message: Option<String>) -> Result<(), link_core::Error> {

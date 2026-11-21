@@ -47,7 +47,30 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn"))
         .format_timestamp(None)
         .init();
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(run())
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    match std::env::args().nth(1).as_deref() {
+        None => runtime.block_on(run()),
+        Some("doctor") => runtime.block_on(doctor()),
+        Some(other) => anyhow::bail!("unknown command {other:?}; the only command is doctor"),
+    }
+}
+
+/// Prints each paired device's state, path, round trip, losses and outbox depth, read from the running daemon.
+async fn doctor() -> anyhow::Result<()> {
+    let bus = link_api::connect().await.context("connecting to the session bus")?;
+    let link = link_api::Link1Proxy::new(&bus).await?;
+    let devices = link.doctor().await.context("asking andromeda-linkd (is it running?)")?;
+    if devices.is_empty() {
+        println!("no paired devices");
+        return Ok(());
+    }
+    println!("{:<20} {:<12} {:<9} {:>9} {:>6} {:>6}  id", "device", "state", "path", "rtt", "lost", "outbox");
+    for (id, name, state, path, rtt, lost, outbox) in devices {
+        let rtt = if rtt == 0 { "-".to_owned() } else { format!("{:.1} ms", f64::from(rtt) / 1000.0) };
+        let path = if path.is_empty() { "-" } else { &path };
+        println!("{name:<20.20} {state:<12} {path:<9} {rtt:>9} {lost:>6} {outbox:>6}  {id}");
+    }
+    Ok(())
 }
 
 async fn run() -> anyhow::Result<()> {
