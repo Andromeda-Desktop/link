@@ -1,0 +1,11 @@
+[Unit]
+Description=Andromeda Link relay
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/andromeda-link-relay --listen [::]:4433
+StateDirectory=andromeda-link-relay
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
