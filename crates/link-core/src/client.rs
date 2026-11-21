@@ -240,8 +240,9 @@ pub struct ClientActor {
     status_pending: bool,
     /// When to probe the desktops whose live session runs over Bluetooth for an IP path, every [`PROBE_EVERY`].
     next_probe: Option<Instant>,
-    /// Each IP session's standby LE link, with the session's stable id; losing Wi-Fi moves the session onto it.
-    standby: HashMap<DeviceId, (usize, LinkId)>,
+    /// Each IP session's standby link (LE, or the relay it started on), with the session's stable id and the link's
+    /// path; losing Wi-Fi or the desktop's heartbeat moves the session onto it.
+    standby: HashMap<DeviceId, (usize, LinkId, Via)>,
     standbys: JoinSet<(DeviceId, usize, std::io::Result<OwnedFd>)>,
     probes: JoinSet<(DeviceId, Result<Reached, Error>)>,
     /// The probe running for each desktop: a new one stops it, since two dials to one address contend for its packets.
@@ -973,29 +974,30 @@ impl ClientActor {
         match added {
             Ok(link) => {
                 log::info!("{id}: standby Bluetooth link up");
-                self.standby.insert(id, (stable_id, link));
+                self.standby.insert(id, (stable_id, link, Via::Bluetooth));
             }
             Err(error) => log::info!("{id}: no standby Bluetooth link: {error}"),
         }
     }
 
     /// The standby link `id`'s live IP session can move onto now.
-    fn standby_for(&self, id: &DeviceId) -> Option<LinkId> {
-        let &(stable_id, link) = self.standby.get(id)?;
+    fn standby_for(&self, id: &DeviceId) -> Option<(LinkId, Via)> {
+        let &(stable_id, link, via) = self.standby.get(id)?;
         let handle = self.sessions.get(id)?;
-        (handle.stable_id() == stable_id && !handle.on_bluetooth() && self.phone.has_link(link)).then_some(link)
+        let elsewhere = handle.path().is_some_and(|path| path.via() != Some(Hop::Link(link)));
+        (handle.stable_id() == stable_id && elsewhere && self.phone.has_link(link)).then_some((link, via))
     }
 
     /// Moves `id`'s session onto its standby link, keeping its streams.
-    async fn move_to_standby(&mut self, id: DeviceId, link: LinkId, why: &str) {
+    async fn move_to_standby(&mut self, id: DeviceId, (link, via): (LinkId, Via), why: &str) {
         let Some(handle) = self.sessions.get(&id).cloned() else { return };
         let Some(path) = handle.path() else { return };
-        log::info!("{id}: {why}; moving the session to its standby Bluetooth link");
+        log::info!("{id}: {why}; moving the session to its standby {via:?} link");
         path.set(Hop::Link(link));
         handle.wake();
-        self.path_changed(&id, Via::Bluetooth, None).await;
+        self.path_changed(&id, via, None).await;
         if let Some(desktop) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() {
-            self.emit(ClientEvent::Connected { desktop, addr: None, via: Via::Bluetooth, resumed: false });
+            self.emit(ClientEvent::Connected { desktop, addr: None, via, resumed: false });
         }
     }
 
@@ -1031,7 +1033,7 @@ impl ClientActor {
     async fn ended(&mut self, ended: Ended) {
         let Ended { id, stable_id, result } = ended;
         self.transfers.detach(id.clone(), stable_id).await;
-        if self.standby.get(&id).is_some_and(|&(standby_of, _)| standby_of == stable_id) {
+        if self.standby.get(&id).is_some_and(|&(standby_of, ..)| standby_of == stable_id) {
             self.standby.remove(&id);
         }
         if self.sessions.get(&id).is_none_or(|handle| handle.stable_id() != stable_id) {
@@ -1127,7 +1129,7 @@ impl ClientActor {
     /// round of redials; Wi-Fi coming back looks for an IP path at once, instead of at the next probe.
     async fn network_changed(&mut self, before: Option<NetworkKind>, now: NetworkKind) {
         if before == Some(NetworkKind::Wifi) && now != NetworkKind::Wifi {
-            let standby: Vec<(DeviceId, LinkId)> =
+            let standby: Vec<(DeviceId, (LinkId, Via))> =
                 self.standby.keys().filter_map(|id| Some((id.clone(), self.standby_for(id)?))).collect();
             for (id, link) in standby {
                 self.move_to_standby(id, link, "Wi-Fi is gone").await;
@@ -1216,10 +1218,9 @@ impl ClientActor {
         if let Some(path) = handle.path() {
             // First: while the probe's connection lives, packets from the address it reached are its own.
             crate::wire::Connection::from(reached.dialed.connection).close(CloseCode::Done);
-            if handle.on_bluetooth()
-                && let Some(Hop::Link(link)) = path.via()
-            {
-                self.standby.insert(id.clone(), (handle.stable_id(), link));
+            if let Some(Hop::Link(link)) = path.via() {
+                let via = if handle.on_bluetooth() { Via::Bluetooth } else { Via::Relay };
+                self.standby.insert(id.clone(), (handle.stable_id(), link, via));
             }
             log::info!("{id}: moving the session from {from} to {}", reached.addr);
             path.set(Hop::Udp(reached.addr));

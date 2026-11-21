@@ -11,6 +11,7 @@
 # 3. eim: the phone opens its NAT, asks for a punch with its relay-observed address, the desktop punches, and the
 #    session moves to the desktop's public address with its streams; a share then arrives over the direct path.
 #    symmetric: the session stays on the relay and a share still arrives.
+# 4. eim: when the direct path dies, the overdue heartbeat moves the same session back onto its relay link.
 # Writes results.jsonl, hold.jsonl, linkd.log, hold.log, relay.log to $OUT (default ./artifacts/link-far).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -176,5 +177,24 @@ fi
 link Share "$PHONE_ID" text "'from afar'" > /dev/null || fail "Share"
 wait_for 10 "the phone missed the share" grep -q '"text":"from afar"' "$OUT/hold.jsonl"
 record '{"step":"share-arrives"}'
+
+if [[ $MODE == eim ]]; then
+  # The direct path dies (the desktop's NAT drops the phone's packets); the relay still forwards.
+  in_ns "$DESK_NAT" nft -f - <<NFT
+table ip cut {
+  chain forward {
+    type filter hook forward priority 0
+    iifname "wan" ip saddr 10.9.3.2 drop
+  }
+}
+NFT
+  wait_for 30 "the session never fell back to the relay" eval '[[ $(events connected) -ge 3 ]]'
+  grep '"event":"connected"' "$OUT/hold.jsonl" | tail -1 | grep -q '"via":"relay"' \
+    || fail "the fallback went elsewhere: $(grep connected "$OUT/hold.jsonl" | tail -1)"
+  grep -q 'moving the session to its standby Relay link' "$OUT/hold.log" || fail "the phone did not use its standby relay link"
+  link Share "$PHONE_ID" text "'after the cut'" > /dev/null || fail "Share after the cut"
+  wait_for 10 "the phone missed the share after the cut" grep -q '"text":"after the cut"' "$OUT/hold.jsonl"
+  record "{\"step\":\"direct-path-dies-back-on-relay\",\"seconds\":$(( $(date +%s) - START ))}"
+fi
 cat "$OUT/results.jsonl"
 echo "PASS ($MODE); artifacts: $OUT"
