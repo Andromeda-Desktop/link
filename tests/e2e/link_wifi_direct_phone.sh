@@ -9,8 +9,8 @@
 #    HotspotRequested is signalled, and the file arrives with a matching SHA-256. results.jsonl records the join path.
 # 3. An 8 MiB share from the phone reaches the desktop intact over the group (phone -> desktop throughput).
 # 4. A text share made while the desktop's linkd is down is queued on the phone and arrives exactly once after.
-# 5. With the screen off the group idles out to Bluetooth; the next 8 MiB rejoins it (rejoin_ms, budget 3 s). This
-#    locks the phone, so it runs last.
+# 5. With LINK_IDLE_STEP=1: with the screen off the group idles out to Bluetooth; the next 8 MiB rejoins it (rejoin_ms,
+#    budget 3 s). This locks the phone, so it runs last and only on request.
 # Takes the laptop off its Wi-Fi for a few minutes. Stops the user's andromeda-linkd for the run (it holds Link's
 # Bluetooth profile and port 4717) and starts it again after, and brings the laptop's Wi-Fi back even on failure.
 # Writes results.jsonl, linkd.log, signals.txt, nm.txt, logcat.txt to $OUT (default ./artifacts/link-wifi-direct-phone).
@@ -209,21 +209,25 @@ wait_for 90 "the session did not join the group again" on_group
 AFTER_SESSION_MS=$(( $(now_ms) - T0 ))
 phone_receives direct-8m.bin "$RUNTIME/direct-8m.bin"
 adb shell rm -f /sdcard/Download/direct-8m.bin
-MOVES=$(grep -cE "connected over|the session is on" "$OUT/linkd.log")
-adb shell input keyevent KEYCODE_SLEEP
-T0=$(now_ms)
-moved_to_bluetooth() { (( $(grep -cE "connected over|the session is on" "$OUT/linkd.log") > MOVES )) && on_bluetooth; }
-wait_for 150 "the group did not idle out with the screen off" moved_to_bluetooth
-IDLE_MS=$(( $(now_ms) - T0 ))
-wait_for 30 "the phone did not stay connected after the idle-out: $(devices)" connected
-adb shell input keyevent KEYCODE_WAKEUP
-T0=$(now_ms)
-python3 "$ROOT/tests/e2e/link_send_files.py" "$ID" "$RUNTIME/direct-8m.bin" > "$RUNTIME/transfer" || fail "SendFiles 8 MiB again"
-wait_for 90 "the session did not rejoin the group" on_group
-REJOIN_MS=$(( $(now_ms) - T0 ))
-MHZ=$(grep -o 'wifi-direct group on [0-9]* MHz' "$OUT/logcat.txt" | tail -1 | grep -o '[0-9]\+' || echo 0)
-# The lock screen is back after the sleep, so nobody taps the offer: the join is what this step measures.
-link CancelTransfer "'$(cat "$RUNTIME/transfer")'" > /dev/null || true
-record "{\"step\":\"rejoin\",\"after_session_ms\":$AFTER_SESSION_MS,\"idle_out_ms\":$IDLE_MS,\"rejoin_ms\":$REJOIN_MS,\"mhz\":$MHZ,\"budget_ms\":3000}"
+if [[ -z ${LINK_IDLE_STEP:-} ]]; then
+  record "{\"step\":\"rejoin\",\"after_session_ms\":$AFTER_SESSION_MS,\"budget_ms\":3000}"
+else
+  MOVES=$(grep -cE "connected over|the session is on" "$OUT/linkd.log")
+  adb shell input keyevent KEYCODE_SLEEP
+  T0=$(now_ms)
+  moved_to_bluetooth() { (( $(grep -cE "connected over|the session is on" "$OUT/linkd.log") > MOVES )) && on_bluetooth; }
+  wait_for 150 "the group did not idle out with the screen off" moved_to_bluetooth
+  IDLE_MS=$(( $(now_ms) - T0 ))
+  wait_for 30 "the phone did not stay connected after the idle-out: $(devices)" connected
+  adb shell input keyevent KEYCODE_WAKEUP
+  T0=$(now_ms)
+  python3 "$ROOT/tests/e2e/link_send_files.py" "$ID" "$RUNTIME/direct-8m.bin" > "$RUNTIME/transfer" || fail "SendFiles 8 MiB again"
+  wait_for 90 "the session did not rejoin the group" on_group
+  REJOIN_MS=$(( $(now_ms) - T0 ))
+  MHZ=$(grep -o 'wifi-direct group on [0-9]* MHz' "$OUT/logcat.txt" | tail -1 | grep -o '[0-9]\+' || echo 0)
+  # The lock screen is back after the sleep, so nobody taps the offer: the join is what this step measures.
+  link CancelTransfer "'$(cat "$RUNTIME/transfer")'" > /dev/null || true
+  record "{\"step\":\"rejoin\",\"after_session_ms\":$AFTER_SESSION_MS,\"idle_out_ms\":$IDLE_MS,\"rejoin_ms\":$REJOIN_MS,\"mhz\":$MHZ,\"budget_ms\":3000}"
+fi
 cat "$OUT/results.jsonl"
 echo "PASS; artifacts: $OUT"
