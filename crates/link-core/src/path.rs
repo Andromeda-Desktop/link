@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, IoSliceMut};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
@@ -243,6 +243,9 @@ pub struct PathSocket {
     inbound_tx: mpsc::Sender<(SocketAddr, Vec<u8>)>,
     inbound: Mutex<mpsc::Receiver<(SocketAddr, Vec<u8>)>>,
     blocked: Mutex<Blocked>,
+    /// The local address each UDP peer last sent to. quinn keeps a server connection's first local address for good
+    /// (quinn-proto 0.11), which no longer exists once the desktop's network changes under a migrated phone.
+    replies_from: Mutex<HashMap<SocketAddr, IpAddr>>,
 }
 
 impl fmt::Debug for PathSocket {
@@ -309,6 +312,7 @@ impl PathSocket {
             inbound_tx,
             inbound: Mutex::new(inbound),
             blocked: Mutex::new(Blocked::Udp),
+            replies_from: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -691,6 +695,13 @@ impl Controller for PathController {
     }
 }
 
+impl PathSocket {
+    /// The source for a packet to `peer`: the address `peer` last sent to, where quinn asks for one.
+    fn reply_from(&self, peer: SocketAddr, asked: Option<IpAddr>) -> Option<IpAddr> {
+        asked.map(|asked| lock(&self.replies_from).get(&canonical(peer)).copied().unwrap_or(asked))
+    }
+}
+
 impl AsyncUdpSocket for PathSocket {
     fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
         let udp = self.udp.clone().create_io_poller();
@@ -704,10 +715,16 @@ impl AsyncUdpSocket for PathSocket {
                 // A link that ends here drops its routes too, so the next send goes elsewhere.
                 return self.shared.slot(id).map_or(Ok(()), |slot| self.send_link(id, &slot, transmit));
             }
-            Some(Hop::Udp(addr)) => self.udp.try_send(&Transmit { destination: self.native(addr), ..*transmit }),
+            Some(Hop::Udp(addr)) => self.udp.try_send(&Transmit {
+                destination: self.native(addr),
+                src_ip: self.reply_from(addr, transmit.src_ip),
+                ..*transmit
+            }),
             // Its link ended; no UDP route leads there.
             None if is_link_address(transmit.destination) => return Ok(()),
-            None => self.udp.try_send(transmit),
+            None => self
+                .udp
+                .try_send(&Transmit { src_ip: self.reply_from(transmit.destination, transmit.src_ip), ..*transmit }),
         };
         if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock) {
             *lock(&self.blocked) = Blocked::Udp;
@@ -735,6 +752,20 @@ impl AsyncUdpSocket for PathSocket {
             return Poll::Ready(Ok(1));
         }
         let received = ready!(self.udp.poll_recv(cx, bufs, meta))?;
+        {
+            let mut replies_from = lock(&self.replies_from);
+            for meta in meta.iter().take(received) {
+                let Some(local) = meta.dst_ip else { continue };
+                let peer = canonical(meta.addr);
+                if replies_from.get(&peer) != Some(&local) {
+                    // Each address a phone sends from adds one entry; old ones are only stale.
+                    if replies_from.len() >= 256 {
+                        replies_from.clear();
+                    }
+                    replies_from.insert(peer, local);
+                }
+            }
+        }
         let routes = lock(&self.shared.routes);
         if !routes.from.is_empty() {
             for meta in meta.iter_mut().take(received) {
@@ -1025,6 +1056,30 @@ mod tests {
         assert!(socket.has_link(id), "the link ended before its peer had time to dial");
         tokio::time::timeout(UNUSED_LINK, socket.link_closed(id)).await?;
         assert!(!socket.has_link(id));
+        Ok(())
+    }
+
+    /// A reply leaves from the address the peer last sent to, not the stale one quinn keeps for the connection.
+    #[tokio::test]
+    async fn a_reply_leaves_from_the_address_the_peer_used() -> Result {
+        let socket = PathSocket::new(std::net::UdpSocket::bind("0.0.0.0:0")?)?;
+        let port = socket.local_addr()?.port();
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+        peer.send_to(b"hi", ("127.0.0.2", port))?;
+        let mut buf = [0u8; 16];
+        let mut meta = [RecvMeta::default()];
+        std::future::poll_fn(|cx| socket.poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)).await?;
+        let stale = std::net::IpAddr::from([127, 0, 0, 1]);
+        socket.try_send(&Transmit {
+            destination: peer.local_addr()?,
+            ecn: None,
+            contents: b"back",
+            segment_size: None,
+            src_ip: Some(stale),
+        })?;
+        let (_, from) = peer.recv_from(&mut buf)?;
+        assert_eq!(from.ip(), std::net::IpAddr::from([127, 0, 0, 2]));
         Ok(())
     }
 
