@@ -34,6 +34,8 @@ pub const PUBLIC_SCHEME: &str = "public:";
 /// A desktop's hello carries this among its `addresses` when it joins a phone's Wi-Fi Direct group by the credentials
 /// in `wifi-direct`; phones send that message only then, since older desktops expect a different body.
 pub const WIFI_DIRECT_JOIN: &str = "feature:wifi-direct-join";
+/// A desktop's hello carries this when it takes a group's `mhz` in `wifi-direct`; older desktops refuse the field.
+pub const GROUP_CHANNEL: &str = "feature:group-channel";
 
 /// A desktop's hello carries this among its `addresses` when it takes `bt-pairing`; older desktops close a session on
 /// the unknown type, and phones skip entries that are not socket addresses.
@@ -461,6 +463,9 @@ pub struct Ringing {
 pub struct Hotspot {
     pub ssid: String,
     pub passphrase: String,
+    /// The group's frequency, so the desktop probes that one channel instead of scanning all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mhz: Option<u32>,
 }
 
 /// Where the desktop listens on the phone's hotspot, once it joined.
@@ -735,6 +740,7 @@ impl Hotspot {
         (1..=MAX_SSID_LEN).contains(&self.ssid.len())
             && (8..=63).contains(&self.passphrase.len())
             && self.passphrase.bytes().all(|byte| (0x20..0x7f).contains(&byte))
+            && self.mhz.is_none_or(|mhz| (2400..=7125).contains(&mhz))
     }
 }
 

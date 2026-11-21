@@ -9,9 +9,9 @@ use link_core::pairing::pair_as_server;
 use link_core::path::{Route, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
-    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, LATE_HASH,
-    MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, PUBLIC_SCHEME, RELAY_SCHEME,
-    SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
+    BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, GROUP_CHANNEL,
+    HEARTBEAT, LATE_HASH, MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, PUBLIC_SCHEME,
+    RELAY_SCHEME, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
 };
 use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
@@ -202,7 +202,7 @@ impl Context {
             addresses.push(BT_PAIRING.to_owned());
         }
         if cfg!(target_os = "linux") {
-            addresses.push(WIFI_DIRECT_JOIN.to_owned());
+            addresses.extend([WIFI_DIRECT_JOIN.to_owned(), GROUP_CHANNEL.to_owned()]);
         }
         addresses.extend(
             [

@@ -43,15 +43,34 @@ pub async fn join(ssid: &str, passphrase: &str) -> Result<Joined, String> {
     }
     let manager = zbus::Proxy::new(&bus, NM, NM_PATH, NM).await.map_err(text)?;
     let device = wifi_device(&bus, &manager).await?;
-    join_on(&bus, &device, ssid, passphrase, false).await
+    join_on(&bus, &device, ssid, passphrase, None, false).await
 }
 
-/// Joins `ssid` on the Wi-Fi `device`, from a random address with `random_address`.
+/// Joins `ssid` on the Wi-Fi `device`, from a random address with `random_address`. With the network's `mhz` the
+/// join probes that one channel; when that fails, it scans every channel and joins again.
 pub async fn join_on(
     bus: &zbus::Connection,
     device: &OwnedObjectPath,
     ssid: &str,
     passphrase: &str,
+    mhz: Option<u32>,
+    random_address: bool,
+) -> Result<Joined, String> {
+    if let Some(channel) = mhz.and_then(channel) {
+        match join_once(bus, device, ssid, passphrase, Some(channel), random_address).await {
+            Ok(joined) => return Ok(joined),
+            Err(error) => log::info!("joining {ssid:?} on channel {}: {error}; scanning every channel", channel.1),
+        }
+    }
+    join_once(bus, device, ssid, passphrase, None, random_address).await
+}
+
+async fn join_once(
+    bus: &zbus::Connection,
+    device: &OwnedObjectPath,
+    ssid: &str,
+    passphrase: &str,
+    channel: Option<(&str, u32)>,
     random_address: bool,
 ) -> Result<Joined, String> {
     let manager = zbus::Proxy::new(bus, NM, NM_PATH, NM).await.map_err(text)?;
@@ -60,6 +79,14 @@ pub async fn join_on(
         HashMap::from([("ssid", Variant::from(ssid.as_bytes().to_vec())), ("mode", Variant::from("infrastructure"))]);
     if random_address {
         wireless.insert("cloned-mac-address", Variant::from("random"));
+    }
+    if let Some((band, number)) = channel {
+        // A hidden network is probed by name, so `NetworkManager` joins without a scan result of its own.
+        wireless.extend([
+            ("band", Variant::from(band)),
+            ("channel", Variant::from(number)),
+            ("hidden", Variant::from(true)),
+        ]);
     }
     let settings: HashMap<&str, HashMap<&str, Variant<'_>>> = HashMap::from([
         (
@@ -80,7 +107,10 @@ pub async fn join_on(
         ("ipv6", HashMap::from([("method", Variant::from("ignore"))])),
     ]);
     // iwd joins only networks its last scan saw, and the hotspot is seconds old, so it is scanned for first.
-    let access_point = scanned(bus, device, ssid).await?;
+    let access_point = match channel {
+        Some(_) => OwnedObjectPath::try_from("/").map_err(text)?,
+        None => scanned(bus, device, ssid).await?,
+    };
     let options: HashMap<&str, Variant<'_>> = HashMap::from([("persist", Variant::from("volatile"))]);
     let (profile, active, _): (OwnedObjectPath, OwnedObjectPath, HashMap<String, OwnedVariant>) =
         manager.call("AddAndActivateConnection2", &(settings, device, &access_point, options)).await.map_err(text)?;
@@ -89,6 +119,16 @@ pub async fn join_on(
         abandon(bus, &manager, &active, &profile).await;
     }
     joined
+}
+
+/// The `NetworkManager` band and channel of `mhz`; None for 6 GHz, which it cannot name.
+fn channel(mhz: u32) -> Option<(&'static str, u32)> {
+    match mhz {
+        2412..=2472 => Some(("bg", (mhz - 2407) / 5)),
+        2484 => Some(("bg", 14)),
+        5160..=5885 => Some(("a", (mhz - 5000) / 5)),
+        _ => None,
+    }
 }
 
 /// Deactivates a join that failed and deletes its profile, so the desktop's usual network comes back.

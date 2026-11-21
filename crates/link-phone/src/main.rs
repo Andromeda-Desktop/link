@@ -191,12 +191,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     phone.set_browse_roots(link_core::browse::Roots::new(roots, library));
     if let Some(hotspot) = cli.hotspot {
         let (ssid, passphrase) = hotspot.split_once(':').context("--hotspot is <ssid>:<passphrase>")?;
-        let hotspot = Hotspot { ssid: ssid.to_owned(), passphrase: passphrase.to_owned() };
+        let hotspot = Hotspot { ssid: ssid.to_owned(), passphrase: passphrase.to_owned(), mhz: None };
         phone.set_hotspot(std::sync::Arc::new(FixedHotspot(hotspot)));
     }
     if let Some(group) = cli.wifi_direct {
         let (ssid, passphrase) = group.split_once(':').context("--wifi-direct is <ssid>:<passphrase>")?;
-        let group = Hotspot { ssid: ssid.to_owned(), passphrase: passphrase.to_owned() };
+        let group = Hotspot { ssid: ssid.to_owned(), passphrase: passphrase.to_owned(), mhz: None };
         phone.set_wifi_direct(std::sync::Arc::new(FixedWifiDirect(group)));
     }
     let inbox = || Inbox::new(cli.downloads.clone().unwrap_or_else(|| state.join("Downloads")), &state);

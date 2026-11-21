@@ -57,16 +57,16 @@ async fn spare_device() -> Result<Spare, String> {
 }
 
 /// Joins the group `ssid` on `spare`; a random address keeps a second interface apart from the first.
-pub async fn join(spare: Spare, ssid: &str, passphrase: &str) -> Result<Joined, String> {
+pub async fn join(spare: Spare, ssid: &str, passphrase: &str, mhz: Option<u32>) -> Result<Joined, String> {
     let bus = zbus::Connection::system().await.map_err(text)?;
     let added = match spare {
-        Spare::Idle(device) => return hotspot::join_on(&bus, &device, ssid, passphrase, false).await,
+        Spare::Idle(device) => return hotspot::join_on(&bus, &device, ssid, passphrase, mhz, false).await,
         Spare::Added(added) => added,
     };
     let joined = async {
         let manager = zbus::Proxy::new(&bus, NM, NM_PATH, NM).await.map_err(text)?;
         let device = managed(&bus, &manager, &added).await?;
-        hotspot::join_on(&bus, &device, ssid, passphrase, true).await
+        hotspot::join_on(&bus, &device, ssid, passphrase, mhz, true).await
     };
     match joined.await {
         Ok(Joined { active: Active::Manager(active), address }) => {

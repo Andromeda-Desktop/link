@@ -1684,7 +1684,7 @@ impl Hub {
         if let Some(spare) = spare {
             log::info!("{id}: joining the phone's Wi-Fi Direct group {:?} beside this desktop's network", group.ssid);
             self.joining.spawn(async move {
-                let joined = crate::wifi_direct::join(spare, &group.ssid, &group.passphrase).await;
+                let joined = crate::wifi_direct::join(spare, &group.ssid, &group.passphrase, group.mhz).await;
                 JoinStep::Joined { id, kind: NearbyKind::Group, joined }
             });
             return;

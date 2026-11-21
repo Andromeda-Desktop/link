@@ -476,7 +476,8 @@ impl Phone {
             return Ok(group.clone());
         }
         // Android takes only names that start with "DIRECT-" and two characters.
-        let group = Hotspot { ssid: format!("DIRECT-{}-Link", random_text(2)?), passphrase: random_text(16)? };
+        let group =
+            Hotspot { ssid: format!("DIRECT-{}-Link", random_text(2)?), passphrase: random_text(16)?, mhz: None };
         peer.group = Some(group.clone());
         self.store.save(&self.store_path)?;
         Ok(group)

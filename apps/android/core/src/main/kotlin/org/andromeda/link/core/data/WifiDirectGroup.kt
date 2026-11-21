@@ -39,7 +39,11 @@ class WifiDirectGroup(
                 ?: form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_AUTO, FORM_TIMEOUT_MS)
                 ?: return null.also { Log.i(TAG, "the group did not come up") }
         Log.i(TAG, "wifi-direct group on ${formed.frequency} MHz")
-        return HotspotCredentials(formed.networkName, formed.passphrase ?: return null)
+        return HotspotCredentials(
+            formed.networkName,
+            formed.passphrase ?: return null,
+            formed.frequency.takeIf { it > 0 }?.toUInt(),
+        )
     }
 
     private fun form(

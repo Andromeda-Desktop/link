@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, HEARTBEAT, HotspotEnd, LATE_HASH,
-    MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted, MirrorStop,
-    NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted, NotificationRemoved,
-    NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE,
-    SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId, WIFI_DIRECT_JOIN,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, GROUP_CHANNEL, HEARTBEAT, HotspotEnd,
+    LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
+    MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
+    NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX,
+    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId,
+    WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -1293,6 +1294,7 @@ impl ClientActor {
         let handle = self.sessions.get(id).cloned();
         let (group, hotspot) = (self.phone.wifi_direct(), self.phone.hotspot());
         let wanted = (kind == Kind::Group).then(|| self.phone.group_for(id).map_err(text));
+        let channel = self.phone.desktops().iter().any(|peer| peer.id == *id && peer.has(GROUP_CHANNEL));
         let id = id.clone();
         self.starting.spawn(async move {
             let started = async {
@@ -1309,7 +1311,10 @@ impl ClientActor {
                         tokio::task::spawn_blocking(move || provider.start()).await
                     }
                 };
-                let network = network.map_err(text)?.map_err(text)?;
+                let mut network = network.map_err(text)?.map_err(text)?;
+                if !channel {
+                    network.mhz = None;
+                }
                 let message = match kind {
                     Kind::Group => Message::WifiDirect(network),
                     Kind::Hotspot => Message::Hotspot(network),

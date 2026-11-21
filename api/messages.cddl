@@ -220,6 +220,7 @@ wifi-direct-ready-msg = {
 wifi-direct-msg = { type: "wifi-direct", id: uint, body: {
   ssid: tstr .size (1..32),
   passphrase: tstr .size (8..63),  ; printable ASCII
+  ? mhz: 2400..7125,  ; the group's channel; only to desktops whose hello lists "feature:group-channel"
 } }
 
 ; Pairing Bluetooth, which the desktop needs before it accepts a phone's connections over it. Phone to desktop,

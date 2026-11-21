@@ -1039,6 +1039,9 @@ impl link_core::camera::Camera for Camera {
 pub struct HotspotCredentials {
     pub ssid: String,
     pub passphrase: String,
+    /// A Wi-Fi Direct group's frequency.
+    #[uniffi(default = None)]
+    pub mhz: Option<u32>,
 }
 
 /// How the app starts and stops a local-only hotspot when a transfer is too large for Bluetooth. `start` blocks until
@@ -1054,7 +1057,7 @@ struct Hotspots(Arc<dyn PhoneHotspot>);
 impl link_core::hotspot::HotspotProvider for Hotspots {
     fn start(&self) -> std::io::Result<link_core::proto::message::Hotspot> {
         let started = self.0.start().ok_or_else(|| std::io::Error::other("Android did not start the hotspot"))?;
-        Ok(link_core::proto::message::Hotspot { ssid: started.ssid, passphrase: started.passphrase })
+        Ok(link_core::proto::message::Hotspot { ssid: started.ssid, passphrase: started.passphrase, mhz: None })
     }
 
     fn stop(&self) {
@@ -1075,9 +1078,9 @@ struct WifiDirects(Arc<dyn PhoneWifiDirect>);
 
 impl link_core::hotspot::WifiDirectProvider for WifiDirects {
     fn start(&self, group: &link_core::proto::message::Hotspot) -> std::io::Result<link_core::proto::message::Hotspot> {
-        let wanted = HotspotCredentials { ssid: group.ssid.clone(), passphrase: group.passphrase.clone() };
+        let wanted = HotspotCredentials { ssid: group.ssid.clone(), passphrase: group.passphrase.clone(), mhz: None };
         let group = self.0.start(wanted).ok_or_else(|| std::io::Error::other("Android did not create the group"))?;
-        Ok(link_core::proto::message::Hotspot { ssid: group.ssid, passphrase: group.passphrase })
+        Ok(link_core::proto::message::Hotspot { ssid: group.ssid, passphrase: group.passphrase, mhz: group.mhz })
     }
 
     fn stop(&self) {
