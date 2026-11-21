@@ -38,8 +38,17 @@ const INBOUND: usize = 256;
 /// The largest packet a link may deliver; QUIC packets stay far below it.
 const MAX_PACKET: usize = 1 << 16;
 
+/// What carries a link. Only Bluetooth gets the [`LINK_WINDOW`] cap and counts as "on Bluetooth".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    Bluetooth,
+    /// Datagrams through a relay server, over the internet.
+    Relay,
+}
+
 /// A connected link that keeps message boundaries: one `send` is one `recv` on the other end.
 pub trait MessageLink: Send + Sync + 'static {
+    const KIND: LinkKind;
     fn send(&self, packet: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
     /// One whole message; 0 bytes means the peer closed the link.
     fn recv(&self, buf: &mut [u8]) -> impl Future<Output = io::Result<usize>> + Send;
@@ -58,6 +67,8 @@ impl FdLink {
 }
 
 impl MessageLink for FdLink {
+    const KIND: LinkKind = LinkKind::Bluetooth;
+
     async fn send(&self, packet: &[u8]) -> io::Result<()> {
         self.0
             .async_io(Interest::WRITABLE, |fd| rustix::io::write(fd.as_fd(), packet).map_err(io::Error::from))
@@ -101,6 +112,8 @@ impl StreamLink {
 }
 
 impl MessageLink for StreamLink {
+    const KIND: LinkKind = LinkKind::Bluetooth;
+
     async fn send(&self, packet: &[u8]) -> io::Result<()> {
         let len = u16::try_from(packet.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         let frame = [&len.to_be_bytes()[..], packet].concat();
@@ -138,6 +151,7 @@ struct Slot {
     ended: watch::Sender<()>,
     /// The address the link's packets arrive from.
     addr: SocketAddr,
+    kind: LinkKind,
     /// A connection is tied to the link.
     tied: AtomicBool,
 }
@@ -282,7 +296,7 @@ impl PathSocket {
 
     /// Adds a link whose packets quinn sees as coming from `peer`. Runs a reader and a writer task on the current
     /// runtime until the link ends.
-    pub fn add_link(&self, link: impl MessageLink, peer: SocketAddr) -> LinkId {
+    pub fn add_link<L: MessageLink>(&self, link: L, peer: SocketAddr) -> LinkId {
         // A dual-stack socket reports IPv4 peers as IPv4-mapped, and a quinn client drops packets from any other form.
         let peer = self.native(peer);
         let link = Arc::new(link);
@@ -292,6 +306,7 @@ impl PathSocket {
             writable: Mutex::default(),
             ended: watch::Sender::new(()),
             addr: canonical(peer),
+            kind: L::KIND,
             tied: AtomicBool::new(false),
         });
         let ended = slot.ended.subscribe();
@@ -389,6 +404,11 @@ impl PathSocket {
         }
     }
 
+    /// Whether `peer` is reached over a Bluetooth link now.
+    fn on_bluetooth(&self, peer: SocketAddr) -> bool {
+        self.link_to(peer).and_then(|id| self.shared.slot(id)).is_some_and(|slot| slot.kind == LinkKind::Bluetooth)
+    }
+
     /// Ends link `id`; its routes fall back to UDP.
     pub fn close_link(&self, id: LinkId) {
         self.shared.drop_link(id, &io::Error::other("closed"));
@@ -457,7 +477,7 @@ pub struct Route {
 
 #[derive(Default)]
 struct RouteState {
-    on_link: AtomicBool,
+    on_bluetooth: AtomicBool,
     /// Counts path changes; the controller starts afresh when it sees a new one.
     changes: AtomicU64,
     /// The last link a server's connection was tied to, so each move onto a link ties once.
@@ -485,21 +505,25 @@ impl Drop for Release {
 impl Route {
     /// Sends to the peer over `via`.
     pub fn set(&self, via: Hop) {
+        let slot = match via {
+            Hop::Udp(_) => None,
+            Hop::Link(id) => self.socket.shared.slot(id),
+        };
         let source = match via {
             Hop::Udp(addr) => canonical(addr),
-            Hop::Link(id) => self.socket.shared.slot(id).map_or(self.peer, |slot| slot.addr),
+            Hop::Link(_) => slot.as_ref().map_or(self.peer, |slot| slot.addr),
         };
         lock(&self.socket.shared.routes).set(self.peer, via, source);
-        self.state.on_link.store(matches!(via, Hop::Link(_)), Ordering::Relaxed);
+        let bluetooth = slot.is_some_and(|slot| slot.kind == LinkKind::Bluetooth);
+        self.state.on_bluetooth.store(bluetooth, Ordering::Relaxed);
         self.state.changes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A server's view: the peer moved the connection to `remote`, and quinn followed. Tells the controller whether
-    /// that is a link.
-    /// True when the route moved between UDP and a link.
+    /// that is a Bluetooth link. True when the route moved onto or off Bluetooth.
     pub fn follow(&self, remote: SocketAddr) -> bool {
-        let on_link = self.socket.link_to(remote).is_some();
-        let moved = self.state.on_link.swap(on_link, Ordering::Relaxed) != on_link;
+        let bluetooth = self.socket.on_bluetooth(remote);
+        let moved = self.state.on_bluetooth.swap(bluetooth, Ordering::Relaxed) != bluetooth;
         if moved {
             self.state.changes.fetch_add(1, Ordering::Relaxed);
         }
@@ -518,9 +542,9 @@ impl Route {
         moved
     }
 
-    /// Whether the connection runs over a link now.
-    pub fn on_link(&self) -> bool {
-        self.state.on_link.load(Ordering::Relaxed)
+    /// Whether the connection runs over a Bluetooth link now.
+    pub fn on_bluetooth(&self) -> bool {
+        self.state.on_bluetooth.load(Ordering::Relaxed)
     }
 
     /// The address quinn reaches this route's peer at.
@@ -539,7 +563,7 @@ impl Route {
         }
     }
 
-    /// `inner` for this connection, capped at [`LINK_WINDOW`] while it runs over a link and rebuilt after every path
+    /// `inner` for this connection, capped at [`LINK_WINDOW`] while it runs over Bluetooth and rebuilt after every path
     /// change: a window learnt on one path is wrong on the other.
     pub fn congestion(
         &self,
@@ -598,7 +622,7 @@ impl Controller for PathController {
 
     fn window(&self) -> u64 {
         let window = self.controller.window();
-        if self.factory.state.on_link.load(Ordering::Relaxed) { window.min(LINK_WINDOW) } else { window }
+        if self.factory.state.on_bluetooth.load(Ordering::Relaxed) { window.min(LINK_WINDOW) } else { window }
     }
 
     fn metrics(&self) -> quinn_proto::congestion::ControllerMetrics {
@@ -970,6 +994,7 @@ mod tests {
             writable: Mutex::default(),
             ended: watch::Sender::new(()),
             addr: link_address(1),
+            kind: LinkKind::Bluetooth,
             tied: AtomicBool::new(false),
         };
         for _ in 0..QUEUE - 2 {
@@ -991,7 +1016,23 @@ mod tests {
         Ok(())
     }
 
-    /// The window stays under the link cap while the path is a link, and a path change starts a fresh controller.
+    /// A link that carries nothing, of either kind.
+    struct Silent<const RELAY: bool>;
+
+    impl<const RELAY: bool> MessageLink for Silent<RELAY> {
+        const KIND: LinkKind = if RELAY { LinkKind::Relay } else { LinkKind::Bluetooth };
+
+        fn send(&self, _: &[u8]) -> impl Future<Output = io::Result<()>> + Send {
+            std::future::ready(Ok(()))
+        }
+
+        async fn recv(&self, _: &mut [u8]) -> io::Result<usize> {
+            std::future::pending().await
+        }
+    }
+
+    /// The window stays under the link cap while the path is Bluetooth, not on a relay, and a path change starts a
+    /// fresh controller.
     #[tokio::test]
     async fn the_window_follows_the_path() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
@@ -1006,8 +1047,12 @@ mod tests {
         let later = |ms| start + std::time::Duration::from_millis(ms);
         controller.on_congestion_event(later(2), later(1), false, 1200);
         assert!(controller.window() < initial, "a loss did not shrink the window");
-        path.set(Hop::Link(0));
-        assert!(controller.window() <= LINK_WINDOW);
+        let relay = socket.add_link(Silent::<true>, link_address(1));
+        path.set(Hop::Link(relay));
+        assert!(!path.on_bluetooth() && controller.window() > LINK_WINDOW, "a relay got the Bluetooth cap");
+        let bluetooth = socket.add_link(Silent::<false>, link_address(2));
+        path.set(Hop::Link(bluetooth));
+        assert!(path.on_bluetooth() && controller.window() <= LINK_WINDOW);
         path.set(Hop::Udp(addr));
         controller.on_sent(later(3), 1200, 1);
         assert_eq!(controller.window(), initial, "the window learnt before the moves survived them");

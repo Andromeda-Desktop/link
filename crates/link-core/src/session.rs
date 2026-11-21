@@ -223,7 +223,7 @@ impl SessionHandle {
     }
 
     pub fn on_bluetooth(&self) -> bool {
-        self.path.as_ref().map_or_else(|| self.connection.on_bluetooth(), crate::path::Route::on_link)
+        self.path.as_ref().map_or_else(|| self.connection.on_bluetooth(), crate::path::Route::on_bluetooth)
     }
 
     /// The transcript tap of this session's control stream, which bulk stream headers go through too.
@@ -340,7 +340,7 @@ impl Live {
         if let Some(path) = &self.route.path
             && path.follow_connection(self.connection.quic())
         {
-            let on_bluetooth = path.on_link();
+            let on_bluetooth = path.on_bluetooth();
             self.emit(SessionEvent::Path { from: self.route.peer.clone(), on_bluetooth }).await;
         }
         match envelope.message {
