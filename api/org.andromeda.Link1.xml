@@ -70,6 +70,20 @@
       <arg name="count" type="q" direction="in"/>
       <arg name="photos" type="a(sst)" direction="out"/>
     </method>
+    <!-- The count (1 to 64) photos and videos of media ("all", "photos" or "videos") from offset on, newest first, and
+         how many items of media the phone has. Each item: path (as RecentPhotos gives it), name, time in Unix seconds,
+         whether a video, a video's length in seconds. The next page starts at offset + count; fewer than count items
+         come back where names the protocol cannot carry are dropped. A phone without feature:photos-page gives its
+         newest photos as the first page of "all" and "photos", and nothing else. SavePhoto takes the paths of every
+         page since the last one from offset 0. Errors as RecentPhotos. -->
+    <method name="PhotosPage">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="offset" type="u" direction="in"/>
+      <arg name="count" type="q" direction="in"/>
+      <arg name="media" type="s" direction="in"/>
+      <arg name="total" type="u" direction="out"/>
+      <arg name="photos" type="a(sstbu)" direction="out"/>
+    </method>
     <!-- Copies a photo of the last RecentPhotos answer for this device into the downloads folder, named from its own
          name (cleaned, never replacing a file), and returns the saved path. Errors: .Rejected for any other path. -->
     <method name="SavePhoto">

@@ -482,24 +482,30 @@ mod tests {
     #[test]
     #[expect(clippy::expect_used, reason = "a failed step fails the test")]
     fn recent_photos_round_trip_and_keep_their_limits() {
-        use crate::message::{MAX_RECENT_PHOTOS, PhotosList, PhotosRecent, RecentPhoto};
+        use crate::message::{MAX_RECENT_PHOTOS, PhotoMedia, PhotosList, PhotosPage, PhotosRecent, RecentPhoto};
         let photo = |n: u64| RecentPhoto {
             path: format!("/Photos/Camera/IMG_{n}.jpg"),
             name: format!("IMG_{n}.jpg"),
             added: n,
+            video: None,
         };
-        let list = Message::PhotosList(PhotosList { req: 3, photos: vec![photo(2), photo(1)] });
-        let ask = Message::PhotosRecent(PhotosRecent { req: 3, count: 2 });
-        for message in [list, ask] {
+        let list = Message::PhotosList(PhotosList { req: 3, photos: vec![photo(2), photo(1)], total: None });
+        let ask = Message::PhotosRecent(PhotosRecent { req: 3, count: 2, page: None });
+        let page = Some(PhotosPage { offset: 64, media: PhotoMedia::Videos });
+        let paged_ask = Message::PhotosRecent(PhotosRecent { req: 4, count: 2, page });
+        let video = RecentPhoto { video: Some(42), ..photo(3) };
+        let paged = Message::PhotosList(PhotosList { req: 4, photos: vec![video, photo(1)], total: Some(50_000) });
+        for message in [list, ask, paged_ask, paged] {
             let decoded = Envelope::from_cbor(&Envelope::new(5, message.clone()).to_cbor());
             assert_eq!(decoded.expect("valid").message, message);
         }
         let bad = [
-            Message::PhotosRecent(PhotosRecent { req: 1, count: 0 }),
-            Message::PhotosRecent(PhotosRecent { req: 1, count: MAX_RECENT_PHOTOS + 1 }),
+            Message::PhotosRecent(PhotosRecent { req: 1, count: 0, page: None }),
+            Message::PhotosRecent(PhotosRecent { req: 1, count: MAX_RECENT_PHOTOS + 1, page: None }),
             Message::PhotosList(PhotosList {
                 req: 1,
                 photos: vec![RecentPhoto { path: "Camera".to_owned(), ..photo(1) }],
+                total: None,
             }),
         ];
         for message in bad {
@@ -508,7 +514,7 @@ mod tests {
             assert!(matches!(decoded, Err(DecodeError::Invalid(k)) if k == kind), "{kind} decoded as {decoded:?}");
         }
         let (phone, desktop) = (Role::Phone, Role::Desktop);
-        let ask = Message::PhotosRecent(PhotosRecent { req: 1, count: 1 });
+        let ask = Message::PhotosRecent(PhotosRecent { req: 1, count: 1, page: None });
         assert!(SessionState::new(phone).on_message(envelope(1, ask.clone())).is_ok());
         assert_eq!(
             SessionState::new(desktop).on_message(envelope(1, ask)),

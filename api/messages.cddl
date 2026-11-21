@@ -300,11 +300,18 @@ photo-taken-msg = { type: "photo-taken", id: uint, body: {
 
 ; The newest photos, with "feature:photos-recent" in the phone's hello and its browse switch on. photos-list answers with
 ; at most count photos, newest first, each with its browse path (for fs-thumb and fs-read) and the time it was added in Unix seconds;
-; fs-error denied answers while Android withholds photo access.
-photos-recent-msg = { type: "photos-recent", id: uint, body: { req: uint, count: 1..64 } }
+; fs-error denied answers while Android withholds photo access. With "feature:photos-page" in the phone's hello, page asks
+; for the count items of media from offset on, newest first, and the answer gives total (all items of media) and each video's
+; length in seconds; photos may be fewer than count when names the protocol cannot carry are dropped.
+photos-recent-msg = { type: "photos-recent", id: uint, body: {
+  req: uint,
+  count: 1..64,
+  ? page: { offset: uint, media: "all" / "photos" / "videos" },
+} }
 photos-list-msg = { type: "photos-list", id: uint, body: {
   req: uint,
-  photos: [* { path: fs-path, name: fs-name, added: uint }],  ; at most 64
+  photos: [* { path: fs-path, name: fs-name, added: uint, ? video: uint }],  ; at most 64
+  ? total: uint,
 } }
 
 ; Contacts, both sides with "feature:messages" in their hello. The desktop pulls them page by page on connect and after

@@ -5,8 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use link_core::browse::{Library, LibraryItem, RecentItem};
+use link_core::browse::{Library, LibraryItem, RecentBatch, RecentItem};
 use link_core::messages::Messages;
+use link_core::proto::message::PhotoMedia;
 use link_core::proto::message::{Contact, LoggedCall, MessagesRefusal, Text};
 
 pub struct Folders(pub PathBuf);
@@ -41,19 +42,35 @@ impl Library for Folders {
         fs::read(path).ok().filter(|bytes| bytes.starts_with(b"\x89PNG"))
     }
 
-    /// A `.denied` file in the folder stands for Android withholding photo access.
-    fn recent(&self, count: usize) -> Option<Vec<RecentItem>> {
+    /// A `.denied` file in the folder stands for Android withholding photo access. A video is an `.mp4`, `.webm`
+    /// or `.mkv` file, with no length known (0).
+    fn recent(&self, offset: usize, count: usize, media: PhotoMedia) -> Option<RecentBatch> {
         if self.0.join(".denied").exists() {
             return None;
         }
-        let mut photos: Vec<RecentItem> = self
+        let video = |name: &str| {
+            let ext = name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).unwrap_or_default();
+            matches!(ext.as_str(), "mp4" | "webm" | "mkv").then_some(0)
+        };
+        let mut items: Vec<RecentItem> = self
             .albums()
             .into_iter()
-            .flat_map(|album| self.album(&album).into_iter().map(move |item| RecentItem { album: album.clone(), item }))
+            .flat_map(|album| {
+                self.album(&album).into_iter().map(move |item| RecentItem {
+                    album: album.clone(),
+                    video: video(&item.name),
+                    item,
+                })
+            })
+            .filter(|item| match media {
+                PhotoMedia::All => true,
+                PhotoMedia::Photos => item.video.is_none(),
+                PhotoMedia::Videos => item.video.is_some(),
+            })
             .collect();
-        photos.sort_by_key(|photo| std::cmp::Reverse(photo.item.mtime));
-        photos.truncate(count);
-        Some(photos)
+        items.sort_by_key(|item| std::cmp::Reverse(item.item.mtime));
+        let total = items.len();
+        Some(RecentBatch { total, items: items.into_iter().skip(offset).take(count).collect() })
     }
 
     /// A folder has no trash: the file goes.

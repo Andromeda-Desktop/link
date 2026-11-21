@@ -48,6 +48,10 @@ pub const CAMERA: &str = "feature:camera";
 /// A phone's hello carries this when it answers `photos-recent`; older phones close a session on the type.
 pub const PHOTOS_RECENT: &str = "feature:photos-recent";
 
+/// A phone's hello carries this when its `photos-recent` takes `page` (then its `photos-list` gives `total` and each
+/// video's `video`); older phones close a session on the field.
+pub const PHOTOS_PAGE: &str = "feature:photos-page";
+
 /// A hello carries this when its side takes the contacts and text message types; older peers close a session on them.
 pub const MESSAGES: &str = "feature:messages";
 
@@ -821,6 +825,25 @@ pub struct PhotoTaken {
 pub struct PhotosRecent {
     pub req: u64,
     pub count: u16,
+    /// Absent: the newest photos alone. Present (needs `feature:photos-page`): the `count` items from `offset` on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<PhotosPage>,
+}
+
+/// Which items of the media store, newest first, a paged `photos-recent` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhotosPage {
+    pub offset: u32,
+    pub media: PhotoMedia,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhotoMedia {
+    All,
+    Photos,
+    Videos,
 }
 
 /// A photo as `photos-list` gives it: its browse path under the Photos root, for `fs-thumb` and `fs-read`.
@@ -831,14 +854,21 @@ pub struct RecentPhoto {
     pub name: String,
     /// Unix seconds.
     pub added: u64,
+    /// A video's length in seconds; absent for a photo. Only in the answer to a paged ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<u32>,
 }
 
-/// The newest photos first, at most the count asked for.
+/// The newest photos first, at most the count asked for. A paged answer covers the asked range of the media store,
+/// less the names the protocol cannot carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhotosList {
     pub req: u64,
     pub photos: Vec<RecentPhoto>,
+    /// The items of the asked kind in the whole media store; only in the answer to a paged ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
 }
 
 /// Asks for one entry; answered by `fs-entries` holding that entry alone, or `fs-error`.

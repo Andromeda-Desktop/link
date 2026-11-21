@@ -794,8 +794,9 @@ pub trait PhoneLibrary: Send + Sync {
     fn albums(&self) -> Vec<String>;
     fn album(&self, name: String) -> Vec<LibraryItem>;
     fn thumbnail(&self, path: String, px: u16) -> Option<Vec<u8>>;
-    /// The newest `count` photos of every album, newest first; None while Android withholds photo access.
-    fn recent(&self, count: u32) -> Option<Vec<RecentPhoto>>;
+    /// The `count` items of `media` from `offset` on, of every album, newest first by date added, and how many items of
+    /// `media` there are; None while Android withholds photo access.
+    fn recent(&self, offset: u32, count: u32, media: PhotoMedia) -> Option<RecentPhotos>;
     /// Moves the item at `path` to the trash (deletes it before Android 11); false when refused. May block while the
     /// user confirms on the phone.
     fn trash(&self, path: String) -> bool;
@@ -810,11 +811,26 @@ pub struct LibraryItem {
     pub mtime: u64,
 }
 
-/// A photo with the album it is in; `mtime` in Unix seconds.
+/// A photo or video with the album it is in; `mtime` in Unix seconds, `video` a video's length in seconds (None for a
+/// photo).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RecentPhoto {
     pub album: String,
     pub item: LibraryItem,
+    pub video: Option<u32>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RecentPhotos {
+    pub total: u32,
+    pub photos: Vec<RecentPhoto>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PhotoMedia {
+    All,
+    Photos,
+    Videos,
 }
 
 struct Library(Arc<dyn PhoneLibrary>);
@@ -838,22 +854,34 @@ impl link_core::browse::Library for Library {
         self.0.thumbnail(path.to_str()?.to_owned(), px)
     }
 
-    fn recent(&self, count: usize) -> Option<Vec<link_core::browse::RecentItem>> {
-        let photos = self.0.recent(u32::try_from(count).unwrap_or(u32::MAX))?;
-        Some(
-            photos
-                .into_iter()
-                .map(|RecentPhoto { album, item }| link_core::browse::RecentItem {
-                    album,
-                    item: link_core::browse::LibraryItem {
-                        name: item.name,
-                        path: PathBuf::from(item.path),
-                        size: item.size,
-                        mtime: item.mtime,
-                    },
-                })
-                .collect(),
-        )
+    fn recent(
+        &self,
+        offset: usize,
+        count: usize,
+        media: link_core::proto::message::PhotoMedia,
+    ) -> Option<link_core::browse::RecentBatch> {
+        use link_core::proto::message::PhotoMedia as Wire;
+        let media = match media {
+            Wire::All => PhotoMedia::All,
+            Wire::Photos => PhotoMedia::Photos,
+            Wire::Videos => PhotoMedia::Videos,
+        };
+        let wide = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let RecentPhotos { total, photos } = self.0.recent(wide(offset), wide(count), media)?;
+        let items = photos
+            .into_iter()
+            .map(|RecentPhoto { album, item, video }| link_core::browse::RecentItem {
+                album,
+                item: link_core::browse::LibraryItem {
+                    name: item.name,
+                    path: PathBuf::from(item.path),
+                    size: item.size,
+                    mtime: item.mtime,
+                },
+                video,
+            })
+            .collect();
+        Some(link_core::browse::RecentBatch { total: total as usize, items })
     }
 
     fn trash(&self, path: &std::path::Path) -> bool {

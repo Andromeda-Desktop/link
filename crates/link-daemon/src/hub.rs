@@ -14,9 +14,9 @@ use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
-    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull,
-    PHOTOS_RECENT, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status,
-    SystemCommand, SystemCommandKind, SystemResult, Text, TransferId,
+    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_PAGE,
+    PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share,
+    Status, SystemCommand, SystemCommandKind, SystemResult, Text, TransferId,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -1164,6 +1164,16 @@ impl Hub {
         if matches!(request, browse::Request::Recent { .. }) && !self.phone_has(&id, PHOTOS_RECENT) {
             return drop(reply.send(Err(browse::Failure::Refused(FsRefusal::NotFound))));
         }
+        let request = match request {
+            // An older phone has only its newest photos: they stand in for the first page of All and Photos.
+            browse::Request::Recent { count, page: Some(page) } if !self.phone_has(&id, PHOTOS_PAGE) => {
+                if page.offset > 0 || page.media == PhotoMedia::Videos {
+                    return drop(reply.send(Ok(browse::Answer::Photos { photos: Vec::new(), total: None })));
+                }
+                browse::Request::Recent { count, page: None }
+            }
+            other => other,
+        };
         let request = if self.phone_has(&id, FS_STAT) { Ok(request) } else { request.for_older_phone() };
         let request = match request {
             Ok(request) => request,

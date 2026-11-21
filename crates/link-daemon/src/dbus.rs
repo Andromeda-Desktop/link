@@ -42,7 +42,8 @@ pub struct Link {
     nearby: watch::Receiver<Vec<(String, String)>>,
     /// Callers of `SetSessionCapabilities` whose leaving the bus is watched.
     watched: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// Per device, the paths of its last `RecentPhotos` answer: the only ones `SavePhoto` takes.
+    /// Per device, the paths of its last `RecentPhotos` answer, or of its `PhotosPage` answers since the last one from
+    /// offset 0: the only ones `SavePhoto` takes.
     recent: std::sync::Arc<std::sync::Mutex<HashMap<String, std::collections::HashSet<String>>>>,
     /// The socket client this copy serves, which owns its capabilities until its connection closes; None on the bus.
     peer: Option<String>,
@@ -475,14 +476,59 @@ impl Link {
         if !(1..=link_core::proto::message::MAX_RECENT_PHOTOS).contains(&count) {
             return Err(LinkError::Rejected("a count outside 1 to 64".to_owned()));
         }
-        match self.browse(&device_id, browse::Request::Recent { count }).await? {
-            browse::Answer::Photos(photos) => {
+        match self.browse(&device_id, browse::Request::Recent { count, page: None }).await? {
+            browse::Answer::Photos { photos, .. } => {
                 let paths = photos.iter().map(|photo| photo.path.clone()).collect();
                 self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(device_id, paths);
                 Ok(photos.into_iter().map(|photo| (photo.path, photo.name, photo.added)).collect())
             }
             _ => Err(LinkError::Failed("the phone did not answer with photos".to_owned())),
         }
+    }
+
+    /// The `count` (1 to 64) photos and videos of `media` ("all", "photos" or "videos") from `offset` on, newest first,
+    /// and how many items of `media` the phone has: (total, [(path, name, time in Unix seconds, whether a video, a
+    /// video's length in seconds)]). The next page starts at offset + count; fewer than count items come back where
+    /// names the protocol cannot carry are dropped. A phone without `feature:photos-page` gives its newest photos as
+    /// the first page of "all" and "photos", and nothing else. Errors as `RecentPhotos`.
+    async fn photos_page(
+        &self,
+        device_id: String,
+        offset: u32,
+        count: u16,
+        media: String,
+    ) -> Result<(u32, Vec<(String, String, u64, bool, u32)>), LinkError> {
+        use link_core::proto::message::{MAX_RECENT_PHOTOS, PhotoMedia, PhotosPage};
+        if !(1..=MAX_RECENT_PHOTOS).contains(&count) {
+            return Err(LinkError::Rejected("a count outside 1 to 64".to_owned()));
+        }
+        let media = match media.as_str() {
+            "all" => PhotoMedia::All,
+            "photos" => PhotoMedia::Photos,
+            "videos" => PhotoMedia::Videos,
+            _ => return Err(LinkError::Rejected("media is not all, photos or videos".to_owned())),
+        };
+        let page = Some(PhotosPage { offset, media });
+        let browse::Answer::Photos { photos, total } =
+            self.browse(&device_id, browse::Request::Recent { count, page }).await?
+        else {
+            return Err(LinkError::Failed("the phone did not answer with photos".to_owned()));
+        };
+        {
+            let mut recent = self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let paths = recent.entry(device_id).or_default();
+            if offset == 0 {
+                paths.clear();
+            }
+            paths.extend(photos.iter().map(|photo| photo.path.clone()));
+        }
+        // An older phone's answer has no total: its newest photos are all there is.
+        let total = total.unwrap_or_else(|| offset.saturating_add(u32::try_from(photos.len()).unwrap_or(u32::MAX)));
+        let rows = photos
+            .into_iter()
+            .map(|photo| (photo.path, photo.name, photo.added, photo.video.is_some(), photo.video.unwrap_or(0)))
+            .collect();
+        Ok((total, rows))
     }
 
     /// Copies a photo of the last `RecentPhotos` answer for this device into the downloads folder, under a free name

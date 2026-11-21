@@ -11,7 +11,8 @@ use std::time::UNIX_EPOCH;
 
 use link_proto::message::{
     FsData, FsDelete, FsEntries, FsEntry, FsError, FsList, FsRead, FsRefusal, FsStat, FsThumb, FsWrite, MAX_FS_CHUNK,
-    MAX_FS_ENTRIES, MAX_FS_NAME, MAX_FS_READ, Message, PhotosList, PhotosRecent, RecentPhoto, fs_path_valid,
+    MAX_FS_ENTRIES, MAX_FS_NAME, MAX_FS_READ, Message, PhotoMedia, PhotosList, PhotosPage, PhotosRecent, RecentPhoto,
+    fs_path_valid,
 };
 
 use crate::session::SessionHandle;
@@ -27,8 +28,9 @@ pub trait Library: Send + Sync {
     fn album(&self, name: &str) -> Vec<LibraryItem>;
     /// A PNG of the image or video at `path`, at most `px` on its longer side; None when it has no picture.
     fn thumbnail(&self, path: &Path, px: u16) -> Option<Vec<u8>>;
-    /// The newest `count` photos (not videos) of every album, newest first; None while Android withholds photo access.
-    fn recent(&self, count: usize) -> Option<Vec<RecentItem>>;
+    /// The `count` items of `media` from `offset` on, of every album, newest first by date added, and how many items of
+    /// `media` there are; None while Android withholds photo access.
+    fn recent(&self, offset: usize, count: usize, media: PhotoMedia) -> Option<RecentBatch>;
     /// Moves the photo or video at `path` to the phone's trash, or deletes it where there is no trash; false when the
     /// user or the system refused. May wait for the user to confirm on the phone.
     fn trash(&self, path: &Path) -> bool;
@@ -37,6 +39,13 @@ pub trait Library: Send + Sync {
 pub struct RecentItem {
     pub album: String,
     pub item: LibraryItem,
+    /// A video's length in seconds; None for a photo.
+    pub video: Option<u32>,
+}
+
+pub struct RecentBatch {
+    pub total: usize,
+    pub items: Vec<RecentItem>,
 }
 
 pub struct LibraryItem {
@@ -118,20 +127,28 @@ impl Roots {
         }
     }
 
-    /// The newest photos with their browse paths, as `fs-thumb` and `fs-read` take them.
-    fn recent(&self, count: u16) -> Result<Vec<RecentPhoto>, FsRefusal> {
+    /// The newest photos with their browse paths, as `fs-thumb` and `fs-read` take them, and the total for a paged ask.
+    fn recent(&self, count: u16, page: Option<PhotosPage>) -> Result<(Vec<RecentPhoto>, Option<u32>), FsRefusal> {
         let library = self.library.as_deref().ok_or(FsRefusal::NotFound)?;
-        // More than asked for, since names the protocol cannot carry are dropped below.
-        let items = library.recent(usize::from(count) * 2 + 16).ok_or(FsRefusal::Denied)?;
-        let photos = items.into_iter().filter_map(|RecentItem { album, item }| {
+        let count = usize::from(count);
+        // Unpaged asks get more than they asked for, since names the protocol cannot carry are dropped below; a paged
+        // answer covers exactly its range, so the next page starts at offset + count.
+        let (offset, ask, media) = match page {
+            Some(page) => (page.offset as usize, count, page.media),
+            None => (0, count * 2 + 16, PhotoMedia::Photos),
+        };
+        let batch = library.recent(offset, ask, media).ok_or(FsRefusal::Denied)?;
+        let photos = batch.items.into_iter().filter_map(|RecentItem { album, item, video }| {
             let path = format!("/{PHOTOS}/{album}/{}", item.name);
             (named(&album) && named(&item.name) && fs_path_valid(&path)).then_some(RecentPhoto {
                 path,
                 name: item.name,
                 added: item.mtime,
+                video,
             })
         });
-        Ok(photos.take(usize::from(count)).collect())
+        let total = page.map(|_| u32::try_from(batch.total).unwrap_or(u32::MAX));
+        Ok((photos.take(count).collect(), total))
     }
 
     fn stat(&self, path: &str) -> Result<FsEntry, FsRefusal> {
@@ -215,8 +232,8 @@ pub async fn answer(roots: Roots, session: SessionHandle, request: Message) {
         Message::FsStat(stat) => vec![stat_reply(&roots, &stat)],
         Message::FsRead(read) => reading(&roots, &read),
         Message::FsThumb(thumb) => thumbnail(&roots, &thumb),
-        Message::PhotosRecent(PhotosRecent { req, count }) => vec![match roots.recent(count) {
-            Ok(photos) => Message::PhotosList(PhotosList { req, photos }),
+        Message::PhotosRecent(PhotosRecent { req, count, page }) => vec![match roots.recent(count, page) {
+            Ok((photos, total)) => Message::PhotosList(PhotosList { req, photos, total }),
             Err(reason) => error(req, reason),
         }],
         Message::FsWrite(write) => vec![match roots.write(&write) {
@@ -378,13 +395,14 @@ mod tests {
             None
         }
 
-        fn recent(&self, count: usize) -> Option<Vec<RecentItem>> {
+        fn recent(&self, offset: usize, count: usize, _: PhotoMedia) -> Option<RecentBatch> {
             let photos = self.0.as_ref()?;
             let item = |(album, name, mtime): &(&str, &str, u64)| RecentItem {
                 album: (*album).to_owned(),
                 item: LibraryItem { name: (*name).to_owned(), path: PathBuf::new(), size: 1, mtime: *mtime },
+                video: (*name == "c.mp4").then_some(42),
             };
-            Some(photos.iter().take(count).map(item).collect())
+            Some(RecentBatch { total: photos.len(), items: photos.iter().skip(offset).take(count).map(item).collect() })
         }
 
         fn trash(&self, _: &Path) -> bool {
@@ -398,20 +416,34 @@ mod tests {
 
     #[test]
     fn denied_photo_access_is_an_error_not_an_empty_list() {
-        assert_eq!(roots(None).recent(5), Err(FsRefusal::Denied));
-        assert_eq!(roots(Some(Vec::new())).recent(5), Ok(Vec::new()));
+        assert_eq!(roots(None).recent(5, None), Err(FsRefusal::Denied));
+        assert_eq!(roots(Some(Vec::new())).recent(5, None), Ok((Vec::new(), None)));
     }
 
     #[test]
     fn photos_with_names_the_protocol_cannot_carry_do_not_cost_the_count() {
         let photos = roots(Some(vec![("Camera", ".hidden.jpg", 9), ("Camera", "b.jpg", 8), ("Camera", "c.jpg", 7)]));
-        assert_eq!(photos.recent(2).map(|photos| photos.len()), Ok(2));
+        assert_eq!(photos.recent(2, None).map(|(photos, _)| photos.len()), Ok(2));
     }
 
     #[test]
     fn recent_photos_carry_browse_paths_and_stop_at_the_count() {
         let photos = roots(Some(vec![("Camera", "b.jpg", 9), ("Screenshots", "a.png", 5), ("Camera", "c.jpg", 1)]));
-        let got: Vec<_> = photos.recent(2).unwrap_or_default().into_iter().map(|p| (p.path, p.added)).collect();
+        let got: Vec<_> = photos.recent(2, None).unwrap_or_default().0.into_iter().map(|p| (p.path, p.added)).collect();
         assert_eq!(got, [("/Photos/Camera/b.jpg".to_owned(), 9), ("/Photos/Screenshots/a.png".to_owned(), 5)]);
+    }
+
+    #[test]
+    fn a_paged_ask_covers_exactly_its_range_and_gives_the_total() {
+        let photos = roots(Some(vec![
+            ("Camera", "a.jpg", 9),
+            ("Camera", ".hidden.jpg", 8),
+            ("Camera", "c.mp4", 7),
+            ("Camera", "d.jpg", 6),
+        ]));
+        let page = Some(PhotosPage { offset: 1, media: PhotoMedia::All });
+        let (got, total) = photos.recent(2, page).unwrap_or_default();
+        let got: Vec<_> = got.into_iter().map(|p| (p.name, p.video)).collect();
+        assert_eq!((got, total), (vec![("c.mp4".to_owned(), Some(42))], Some(4)));
     }
 }

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
-    Hello, Hotspot, LATE_HASH, MESSAGES, Message, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL,
-    bluetooth_address,
+    Hello, Hotspot, LATE_HASH, MESSAGES, Message, PHOTOS_PAGE, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM,
+    SYSTEM_CONTROL, bluetooth_address,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -335,6 +335,7 @@ impl Phone {
             FS_WRITE,
             CAMERA,
             PHOTOS_RECENT,
+            PHOTOS_PAGE,
             MESSAGES,
             CALLS,
             CONTROL,
