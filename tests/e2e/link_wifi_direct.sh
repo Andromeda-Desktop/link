@@ -11,7 +11,8 @@
 #    8 MiB arrives with a matching SHA-256. No hotspot starts and D-Bus signals no Hotspot or HotspotRequested.
 # 2. A desktop SendFiles over 1 MiB while the desktop's Wi-Fi has a connection of its own and no second interface can
 #    be added: the desktop asks the user (HotspotRequested with the group's SSID) before it leaves its network, joins
-#    once allowed, and 8 MiB reaches the phone over the group.
+#    once allowed, and 8 MiB reaches the phone over the group. With the nearby grant ("Always Allow") it joins
+#    without asking and D-Bus signals Hotspot.
 # 3. A group NetworkManager fails to join falls back to the hotspot: the phone starts it, the desktop joins it, the
 #    session moves via "hotspot", and the file arrives; the phone does not try a group again in that session.
 # 4. In a new session, a group join still running when the phone gives up on it does not end the hotspot the phone
@@ -161,6 +162,20 @@ grep -q "no spare Wi-Fi interface" "$OUT/linkd.log" || fail "the desktop did not
 record '{"step":"desktop-send-asks-then-joins-group","path":"leave-wifi","bytes":8388608,"sha256_match":true}'
 wait_for 90 "the second group never ended" eval '[[ $(nm_calls deactivate) == 2 ]]'
 wait_for 20 "the phone was not back on Bluetooth after the second group" eval '[[ $(last_via) == bluetooth ]]'
+
+# "Always Allow": the nearby grant leaves the desktop's Wi-Fi without a question, and says so.
+link SetGrant "'$ID'" nearby true > /dev/null || fail "SetGrant nearby"
+ASKS=$(wc -l < "$OUT/asks.txt")
+HOTSPOTS=$(grep -c "member=Hotspot\$" "$OUT/signals.txt" || true)
+rm "$PHONE_DL/group.bin"
+python3 "$ROOT/tests/e2e/link_send_files.py" "$ID" "$RUNTIME/src/group.bin" > /dev/null || fail "granted SendFiles"
+wait_for 60 "the granted 8 MiB never reached the phone" test -f "$PHONE_DL/group.bin"
+[[ $(wc -l < "$OUT/asks.txt") == "$ASKS" ]] || fail "the desktop asked although the phone has the nearby grant"
+(( $(grep -c "member=Hotspot\$" "$OUT/signals.txt") > HOTSPOTS )) || fail "D-Bus did not signal Hotspot for the granted join"
+record '{"step":"nearby-grant-joins-without-asking"}'
+wait_for 90 "the third group never ended" eval '[[ $(nm_calls deactivate) == 3 ]]'
+wait_for 20 "the phone was not back on Bluetooth after the third group" eval '[[ $(last_via) == bluetooth ]]'
+link SetGrant "'$ID'" nearby false > /dev/null || fail "SetGrant nearby false"
 rm "$RUNTIME/nm-fail-wifi-busy"
 
 touch "$RUNTIME/nm-fail-group"
@@ -173,7 +188,7 @@ grep -q '"fails": true' "$OUT/nm.jsonl" || fail "the desktop did not try the fai
 grep -q "hotspot started" "$OUT/hold.log" || fail "the phone did not start its hotspot after the group failed"
 record '{"step":"failed-group-falls-back-to-hotspot","bytes":8388608,"sha256_match":true}'
 
-wait_for 90 "the fallback hotspot never ended" eval '[[ $(nm_calls deactivate) == 4 ]]'
+wait_for 90 "the fallback hotspot never ended" eval '[[ $(nm_calls deactivate) == 5 ]]'
 wait_for 20 "the phone was not back on Bluetooth after the fallback hotspot" eval '[[ $(last_via) == bluetooth ]]'
 kill "$HOLD"
 wait "$HOLD" || true

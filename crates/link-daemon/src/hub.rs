@@ -1727,6 +1727,7 @@ impl Hub {
         let (answer, answered) = oneshot::channel();
         if self.store.peer(id).is_some_and(|peer| peer.grants.nearby) {
             log::info!("{id}: allowed to {what} without asking");
+            self.emit(Event::Hotspot { id: id.clone(), ssid: Some(ssid.to_owned()) }).await;
             let _ = answer.send(true);
             return answered;
         }
