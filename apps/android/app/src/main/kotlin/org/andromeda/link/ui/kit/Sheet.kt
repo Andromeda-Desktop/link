@@ -9,6 +9,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -88,7 +89,11 @@ fun BoxScope.Sheet(
             ) {
                 Text(subtitle, LinkTheme.phoneType.footnote, color = s.label2, modifier = Modifier.padding(bottom = Tok.Space.p4.dp))
             }
-            Column(Modifier.padding(top = Tok.Space.p8.dp).verticalScroll(rememberScrollState()), content = content)
+            Column(
+                Modifier.padding(top = Tok.Space.p8.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
+                content = content,
+            )
         }
     }
 }
