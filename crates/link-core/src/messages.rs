@@ -5,9 +5,12 @@ use std::sync::Arc;
 
 use link_proto::message::{
     Calls, CallsList, Contact, Contacts, ContactsList, Dial, Dialed, LoggedCall, MAX_CALLER_LEN, MAX_CALLS_PAGE,
-    MAX_CONTACT_NUMBERS, MAX_CONTACTS_PAGE, MAX_NUMBER_LEN, MAX_TEXT_BODY, MAX_TEXTS_PAGE, Message, MessagesRefusal,
-    Text, TextSend, TextSent, Texts, TextsList,
+    MAX_CONTACT_NUMBERS, MAX_CONTACTS_PAGE, MAX_NUMBER_LEN, MAX_TEXT_BODY, MAX_TEXT_PARTS, MAX_TEXTS_PAGE, Message,
+    MessagesRefusal, Text, TextPartThumb, TextSend, TextSent, Texts, TextsList,
 };
+use link_proto::message::{FsRefusal, MAX_FS_READ};
+
+use crate::browse;
 
 use crate::session::SessionHandle;
 
@@ -17,6 +20,8 @@ pub trait Messages: Send + Sync {
     fn contacts(&self, offset: u32, limit: u32) -> Result<Vec<Contact>, MessagesRefusal>;
     /// Up to `limit` texts from `offset`, newest first.
     fn texts(&self, offset: u32, limit: u32) -> Result<Vec<Text>, MessagesRefusal>;
+    /// A PNG of an MMS image part at most `px` on its longer side; `None` when the part is gone or no image.
+    fn text_part(&self, part: u64, px: u16) -> Option<Vec<u8>>;
     /// Returns once Android reports the text sent.
     fn send_text(&self, to: &str, body: &str) -> Result<(), MessagesRefusal>;
     /// Up to `limit` calls of the log from `offset`, newest first.
@@ -27,7 +32,9 @@ pub trait Messages: Send + Sync {
 
 pub enum Request {
     Contacts(ContactsList),
-    Texts(TextsList),
+    /// With whether the desktop takes a text's `state` and `parts` (`feature:texts-mms`).
+    Texts(TextsList, bool),
+    Part(TextPartThumb),
     Send(TextSend),
     Calls(CallsList),
     Dial(Dial),
@@ -37,7 +44,8 @@ impl Request {
     pub fn of(message: Message) -> Option<Self> {
         match message {
             Message::ContactsList(list) => Some(Self::Contacts(list)),
-            Message::TextsList(list) => Some(Self::Texts(list)),
+            Message::TextsList(list) => Some(Self::Texts(list, false)),
+            Message::TextPartThumb(thumb) => Some(Self::Part(thumb)),
             Message::TextSend(send) => Some(Self::Send(send)),
             Message::CallsList(list) => Some(Self::Calls(list)),
             Message::Dial(dial) => Some(Self::Dial(dial)),
@@ -56,7 +64,11 @@ impl Request {
             Self::Contacts(list) => {
                 Message::Contacts(Contacts { req: list.req, contacts: Vec::new(), next: None, refused })
             }
-            Self::Texts(list) => Message::Texts(Texts { req: list.req, texts: Vec::new(), next: None, refused }),
+            Self::Texts(list, _) => Message::Texts(Texts { req: list.req, texts: Vec::new(), next: None, refused }),
+            Self::Part(thumb) => browse::error(
+                thumb.req,
+                if reason == MessagesRefusal::Failed { FsRefusal::Io } else { FsRefusal::Denied },
+            ),
             Self::Send(send) => Message::TextSent(TextSent { req: send.req, refused }),
             Self::Calls(list) => Message::Calls(Calls { req: list.req, calls: Vec::new(), next: None, refused }),
             Self::Dial(dial) => Message::Dialed(Dialed { req: dial.req, refused }),
@@ -66,24 +78,39 @@ impl Request {
 
 /// Answers one request off the actor.
 pub async fn answer(messages: Arc<dyn Messages>, session: SessionHandle, request: Request) {
-    let reply = tokio::task::spawn_blocking(move || match &request {
-        Request::Contacts(list) => contacts_page(&*messages, list).unwrap_or_else(|reason| request.refused(reason)),
-        Request::Texts(list) => texts_page(&*messages, list).unwrap_or_else(|reason| request.refused(reason)),
+    let replies = tokio::task::spawn_blocking(move || replies(&*messages, &request)).await;
+    let Ok(replies) = replies else { return log::warn!("a contacts or texts request panicked") };
+    for reply in replies {
+        if let Err(error) = session.send(reply).await {
+            return log::info!("answering a contacts or texts request: {error}");
+        }
+    }
+}
+
+fn replies(messages: &dyn Messages, request: &Request) -> Vec<Message> {
+    let reply = match request {
+        Request::Contacts(list) => contacts_page(messages, list).unwrap_or_else(|reason| request.refused(reason)),
+        Request::Texts(list, rich) => {
+            texts_page(messages, list, *rich).unwrap_or_else(|reason| request.refused(reason))
+        }
+        Request::Part(thumb) => {
+            return match messages.text_part(thumb.part, thumb.px) {
+                Some(png) if png.len() <= MAX_FS_READ as usize => browse::frames(thumb.req, 0, &png),
+                Some(_) => vec![browse::error(thumb.req, FsRefusal::Io)],
+                None => vec![browse::error(thumb.req, FsRefusal::NotFound)],
+            };
+        }
         Request::Send(send) => match messages.send_text(&send.to, &send.body) {
             Ok(()) => Message::TextSent(TextSent { req: send.req, refused: None }),
             Err(reason) => request.refused(reason),
         },
-        Request::Calls(list) => calls_page(&*messages, list).unwrap_or_else(|reason| request.refused(reason)),
+        Request::Calls(list) => calls_page(messages, list).unwrap_or_else(|reason| request.refused(reason)),
         Request::Dial(dial) => match messages.dial(&dial.number) {
             Ok(()) => Message::Dialed(Dialed { req: dial.req, refused: None }),
             Err(reason) => request.refused(reason),
         },
-    })
-    .await;
-    let Ok(reply) = reply else { return log::warn!("a contacts or texts request panicked") };
-    if let Err(error) = session.send(reply).await {
-        log::info!("answering a contacts or texts request: {error}");
-    }
+    };
+    vec![reply]
 }
 
 fn contacts_page(messages: &dyn Messages, list: &ContactsList) -> Result<Message, MessagesRefusal> {
@@ -94,7 +121,7 @@ fn contacts_page(messages: &dyn Messages, list: &ContactsList) -> Result<Message
     Ok(Message::Contacts(Contacts { req: list.req, contacts, next, refused: None }))
 }
 
-fn texts_page(messages: &dyn Messages, list: &TextsList) -> Result<Message, MessagesRefusal> {
+fn texts_page(messages: &dyn Messages, list: &TextsList, rich: bool) -> Result<Message, MessagesRefusal> {
     let (offset, limit) = (list.cursor.unwrap_or(0), page_len(MAX_TEXTS_PAGE));
     let texts = messages.texts(offset, limit)?;
     let next = (texts.len() >= MAX_TEXTS_PAGE).then(|| offset + limit);
@@ -104,6 +131,8 @@ fn texts_page(messages: &dyn Messages, list: &TextsList) -> Result<Message, Mess
         .map(|text| Text {
             address: cut(text.address.trim(), MAX_NUMBER_LEN),
             body: cut(&text.body, MAX_TEXT_BODY),
+            state: text.state.filter(|_| rich && text.sent),
+            parts: if rich { text.parts.into_iter().take(MAX_TEXT_PARTS).collect() } else { Vec::new() },
             ..text
         })
         .filter(|text| !text.address.is_empty())

@@ -66,6 +66,10 @@ pub const PHOTOS_PAGE: &str = "feature:photos-page";
 /// A hello carries this when its side takes the contacts and text message types; older peers close a session on them.
 pub const MESSAGES: &str = "feature:messages";
 
+/// A hello carries this when its side takes a text's `state` and `parts` and the `text-part` type; older peers close a
+/// session on them.
+pub const TEXTS_MMS: &str = "feature:texts-mms";
+
 /// A hello carries this when its side takes the call log and dial types; older peers close a session on them.
 pub const CALLS: &str = "feature:calls";
 
@@ -1055,7 +1059,13 @@ pub struct TextsList {
     pub cursor: Option<u32>,
 }
 
-/// One text message; `date` in Unix milliseconds, `sent` for one this phone sent.
+/// Image parts per text, so a page of the longest still fits a control frame.
+pub const MAX_TEXT_PARTS: usize = 4;
+/// An MMS text's `id` is its MMS row id plus this; an SMS keeps its row id, so the two never collide.
+pub const MMS_ID: u64 = 1 << 62;
+
+/// One text message (SMS or MMS); `date` in Unix milliseconds, `sent` for one this phone sent. `state` and `parts`
+/// need [`TEXTS_MMS`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Text {
@@ -1065,6 +1075,36 @@ pub struct Text {
     pub body: String,
     pub date: u64,
     pub sent: bool,
+    /// Only on a sent text; none means sent and no delivery report yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<TextState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<TextPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextState {
+    Sending,
+    Delivered,
+    Failed,
+}
+
+/// An MMS image part, fetched with `text-part`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextPart {
+    pub id: u64,
+    pub mime: String,
+}
+
+/// Asks for a PNG of an MMS image part at most `px` on its longer side; answered like `fs-thumb`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextPartThumb {
+    pub req: u64,
+    pub part: u64,
+    pub px: u16,
 }
 
 /// One page of texts; `next` is the cursor for the rest. With `refused`, no texts.
@@ -2052,6 +2092,7 @@ pub enum Message {
     FsError(FsError),
     FsStat(FsStat),
     FsThumb(FsThumb),
+    TextPartThumb(TextPartThumb),
     FsWrite(FsWrite),
     FsDelete(FsDelete),
     PhotoRequest(PhotoRequest),
@@ -2146,6 +2187,7 @@ impl Message {
             Self::FsError(_) => "fs-error",
             Self::FsStat(_) => "fs-stat",
             Self::FsThumb(_) => "fs-thumb",
+            Self::TextPartThumb(_) => "text-part",
             Self::FsWrite(_) => "fs-write",
             Self::FsDelete(_) => "fs-delete",
             Self::PhotoRequest(_) => "photo-request",
@@ -2236,6 +2278,7 @@ impl Message {
             Self::FsError(body) => Value::serialized(body),
             Self::FsStat(body) => Value::serialized(body),
             Self::FsThumb(body) => Value::serialized(body),
+            Self::TextPartThumb(body) => Value::serialized(body),
             Self::FsWrite(body) => Value::serialized(body),
             Self::FsDelete(body) => Value::serialized(body),
             Self::PhotoRequest(body) => Value::serialized(body),
@@ -2337,6 +2380,7 @@ impl Message {
             "fs-error" => Self::FsError(body.deserialized()?),
             "fs-stat" => Self::FsStat(body.deserialized()?),
             "fs-thumb" => Self::FsThumb(body.deserialized()?),
+            "text-part" => Self::TextPartThumb(body.deserialized()?),
             "fs-write" => Self::FsWrite(body.deserialized()?),
             "fs-delete" => Self::FsDelete(body.deserialized()?),
             "photo-request" => Self::PhotoRequest(body.deserialized()?),
@@ -2477,6 +2521,7 @@ impl Message {
             Self::FsData(data) => data.data.len() <= MAX_FS_CHUNK,
             Self::FsStat(stat) => fs_path_valid(&stat.path),
             Self::FsThumb(thumb) => fs_path_valid(&thumb.path) && (1..=MAX_FS_THUMB_PX).contains(&thumb.px),
+            Self::TextPartThumb(thumb) => (1..=MAX_FS_THUMB_PX).contains(&thumb.px),
             Self::FsWrite(write) => fs_path_valid(&write.path) && write.data.len() <= MAX_FS_CHUNK,
             Self::FsDelete(delete) => fs_path_valid(&delete.path),
             Self::PhotosRecent(recent) => (1..=MAX_RECENT_PHOTOS).contains(&recent.count),
@@ -2499,10 +2544,13 @@ impl Message {
             Self::Texts(page) => {
                 page.texts.len() <= MAX_TEXTS_PAGE
                     && (page.refused.is_none() || page.texts.is_empty())
-                    && page
-                        .texts
-                        .iter()
-                        .all(|text| sized(&text.address, 1, MAX_NUMBER_LEN) && text.body.len() <= MAX_TEXT_BODY)
+                    && page.texts.iter().all(|text| {
+                        sized(&text.address, 1, MAX_NUMBER_LEN)
+                            && text.body.len() <= MAX_TEXT_BODY
+                            && (text.sent || text.state.is_none())
+                            && text.parts.len() <= MAX_TEXT_PARTS
+                            && text.parts.iter().all(|part| sized(&part.mime, 1, MAX_MIME_LEN))
+                    })
             }
             Self::TextSend(send) => sized(&send.to, 1, MAX_NUMBER_LEN) && sized(&send.body, 1, MAX_TEXT_BODY),
             Self::RemoteInput(input) => input.valid(),

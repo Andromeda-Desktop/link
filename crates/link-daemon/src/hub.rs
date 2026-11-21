@@ -16,7 +16,7 @@ use link_core::proto::message::{
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
     LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_PAGE,
     PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share,
-    Status, SystemCommand, SystemCommandKind, SystemResult, Text, TransferId,
+    Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS, Text, TransferId,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -1173,6 +1173,9 @@ impl Hub {
                 let reason = if granted { FsRefusal::Denied } else { FsRefusal::NotAllowed };
                 return drop(reply.send(Err(browse::Failure::Refused(reason))));
             }
+        }
+        if matches!(request, browse::Request::TextPart { .. }) && !self.phone_has(&id, TEXTS_MMS) {
+            return drop(reply.send(Err(browse::Failure::Refused(FsRefusal::NotFound))));
         }
         if matches!(request, browse::Request::Recent { .. }) && !self.phone_has(&id, PHOTOS_RECENT) {
             return drop(reply.send(Err(browse::Failure::Refused(FsRefusal::NotFound))));

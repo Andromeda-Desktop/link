@@ -354,7 +354,7 @@ fn thumbnail(roots: &Roots, thumb: &FsThumb) -> Vec<Message> {
     }
 }
 
-fn frames(req: u64, mut offset: u64, bytes: &[u8]) -> Vec<Message> {
+pub(crate) fn frames(req: u64, mut offset: u64, bytes: &[u8]) -> Vec<Message> {
     let chunks: Vec<&[u8]> = if bytes.is_empty() { vec![&[]] } else { bytes.chunks(MAX_FS_CHUNK).collect() };
     let count = chunks.len();
     chunks

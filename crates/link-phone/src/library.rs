@@ -108,11 +108,27 @@ impl Messages for Book {
         let date = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
-        texts.insert(0, Text { id, thread, address: to.to_owned(), body: body.to_owned(), date, sent: true });
+        texts.insert(
+            0,
+            Text {
+                id,
+                thread,
+                address: to.to_owned(),
+                body: body.to_owned(),
+                date,
+                sent: true,
+                state: None,
+                parts: Vec::new(),
+            },
+        );
         fs::write(file, serde_json::to_vec(&texts).map_err(|_| MessagesRefusal::Failed)?)
             .map_err(|_| MessagesRefusal::Failed)?;
         println!("{}", serde_json::json!({ "event": "text-sent", "to": to, "body": body, "id": id }));
         Ok(())
+    }
+
+    fn text_part(&self, _part: u64, _px: u16) -> Option<Vec<u8>> {
+        None
     }
 
     fn calls(&self, _offset: u32, _limit: u32) -> Result<Vec<LoggedCall>, MessagesRefusal> {

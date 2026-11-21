@@ -62,6 +62,14 @@
       <arg name="size" type="q" direction="in"/>
       <arg name="png" type="ay" direction="out"/>
     </method>
+    <!-- A PNG of an MMS image part (from Texts) on a connected phone, at most size pixels (1 to 1024) on its longer
+         side. Errors as ListFiles; .Refused("not-found") from a phone without MMS parts. -->
+    <method name="TextImage">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="part" type="t" direction="in"/>
+      <arg name="size" type="q" direction="in"/>
+      <arg name="png" type="ay" direction="out"/>
+    </method>
     <!-- The count (1 to 64) newest photos on a connected phone, newest first: path (for Thumbnail, ReadFile, and
          SavePhoto), name, time in Unix seconds. Errors as ListFiles; .Refused("denied") while Android withholds photo
          access on the phone, .Refused("not-found") from a phone without feature:photos-recent. -->
@@ -518,9 +526,10 @@
     </method>
     <!-- Device id to its contacts as (name, numbers), from phones whose messages switch is on. -->
     <property name="Contacts" type="a{sa(sas)}" access="read"/>
-    <!-- Device id to its newest texts (id, thread, address, body, date in Unix ms, sent), newest first, from phones
-         whose messages switch is on. -->
-    <property name="Texts" type="a{sa(ttsstb)}" access="read"/>
+    <!-- Device id to its newest texts (id, thread, address, body, date in Unix ms, status, image parts as (part,
+         mime)), newest first, from phones whose messages switch is on. Status: 0 received, 1 sent, 2 sending,
+         3 delivered (the SMS delivery report came), 4 failed. An MMS id has bit 62 set. -->
+    <property name="Texts" type="a{sa(ttsstya(ts))}" access="read"/>
     <!-- A text the phone received, newer than every text kept for it. -->
     <signal name="TextReceived">
       <arg name="device_id" type="s"/>

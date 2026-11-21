@@ -13,7 +13,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   fs-list-msg / fs-entries-msg / fs-read-msg / fs-data-msg / fs-error-msg / fs-stat-msg / fs-thumb-msg /
   fs-write-msg / fs-delete-msg / photo-request-msg / photo-taken-msg / photos-recent-msg / photos-list-msg /
   contacts-list-msg / contacts-msg / contacts-changed-msg /
-  texts-list-msg / texts-msg / texts-changed-msg / text-send-msg / text-sent-msg /
+  texts-list-msg / texts-msg / texts-changed-msg / text-send-msg / text-sent-msg / text-part-msg /
   calls-list-msg / calls-msg / calls-changed-msg / dial-msg / dialed-msg /
   remote-input-msg / remote-request-msg / remote-started-msg / remote-stop-msg / commands-msg / run-command-msg / ping-msg / presenting-msg / capabilities-msg / desktop-status-msg / system-command-msg / system-result-msg /
   offer-msg / offer-reply-msg / resume-msg / resume-at-msg / cancel-msg / file-done-msg / file-hash-msg / file-data-msg /
@@ -344,7 +344,15 @@ text = {
   body: tstr .size (0..2048),
   date: uint,
   sent: bool,
+  ; texts-mms only, on a sent text: none means sent with no delivery report yet
+  ? state: "sending" / "delivered" / "failed",
+  ; texts-mms only: MMS image parts
+  ? parts: [1*4 text-part],
 }
+; an MMS text's id is its MMS row id plus 2^62
+text-part = { id: uint, mime: tstr .size (1..255) }
+; texts-mms: answered like fs-thumb
+text-part-msg = { type: "text-part", id: uint, body: { req: uint, part: uint, px: 1..1024 } }
 texts-changed-msg = { type: "texts-changed", id: uint, body: {} }
 text-send-msg = { type: "text-send", id: uint, body: { req: uint, to: tstr .size (1..64), body: tstr .size (1..2048) } }
 text-sent-msg = { type: "text-sent", id: uint, body: { req: uint, ? refused: "not-allowed" / "denied" / "failed" } }

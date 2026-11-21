@@ -902,10 +902,12 @@ impl link_core::browse::Library for Library {
 /// `contacts` returns up to `limit` from `offset` in a stable order and `texts` newest first, or None while Android
 /// denies access. `send_text` returns once Android reports the text sent or failed. `calls` and `dial` serve desktops
 /// whose calls switch is on: the call log newest first, and a call placed on the phone (`Sent` once Android took it).
+/// `text_part` returns a PNG of an MMS image part at most `px` on its longer side, or None.
 #[uniffi::export(with_foreign)]
 pub trait PhoneMessages: Send + Sync {
     fn contacts(&self, offset: u32, limit: u32) -> Option<Vec<PhoneContact>>;
     fn texts(&self, offset: u32, limit: u32) -> Option<Vec<PhoneText>>;
+    fn text_part(&self, part: u64, px: u16) -> Option<Vec<u8>>;
     fn send_text(&self, to: String, body: String) -> TextOutcome;
     fn calls(&self, offset: u32, limit: u32) -> Option<Vec<PhoneCall>>;
     fn dial(&self, number: String) -> TextOutcome;
@@ -928,7 +930,8 @@ pub enum CallKind {
     Missed,
 }
 
-/// `date` in Unix milliseconds; `sent` for one this phone sent.
+/// An SMS or MMS: `date` in Unix milliseconds; `sent` for one this phone sent, with `state` when it is not plainly
+/// sent; an MMS `id` includes [`message::MMS_ID`]; `parts` are its image parts.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PhoneText {
     pub id: u64,
@@ -937,6 +940,21 @@ pub struct PhoneText {
     pub body: String,
     pub date: u64,
     pub sent: bool,
+    pub state: Option<PhoneTextState>,
+    pub parts: Vec<PhoneTextPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PhoneTextState {
+    Sending,
+    Delivered,
+    Failed,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PhoneTextPart {
+    pub id: u64,
+    pub mime: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -969,8 +987,18 @@ impl link_core::messages::Messages for Messages {
             body: text.body,
             date: text.date,
             sent: text.sent,
+            state: text.state.map(|state| match state {
+                PhoneTextState::Sending => message::TextState::Sending,
+                PhoneTextState::Delivered => message::TextState::Delivered,
+                PhoneTextState::Failed => message::TextState::Failed,
+            }),
+            parts: text.parts.into_iter().map(|part| message::TextPart { id: part.id, mime: part.mime }).collect(),
         };
         Ok(texts.into_iter().map(text).collect())
+    }
+
+    fn text_part(&self, part: u64, px: u16) -> Option<Vec<u8>> {
+        self.0.text_part(part, px)
     }
 
     fn send_text(&self, to: &str, body: &str) -> Result<(), MessagesRefusal> {

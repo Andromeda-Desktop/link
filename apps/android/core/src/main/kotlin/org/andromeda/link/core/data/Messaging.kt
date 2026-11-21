@@ -18,6 +18,11 @@ class Messaging(
         limit: UInt,
     ) = texts.texts(offset, limit)
 
+    override fun textPart(
+        part: ULong,
+        px: UShort,
+    ) = texts.part(part, px)
+
     override fun sendText(
         to: String,
         body: String,

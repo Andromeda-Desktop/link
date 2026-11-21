@@ -58,8 +58,8 @@ pub(super) fn send_calls(events: &UnboundedSender<Event>, calls: HashMap<String,
     let _ = events.send(Event::Calls(calls));
 }
 
-/// (id, thread, address, body, date in Unix ms, sent), as `Texts` gives each text.
-type RawText = (u64, u64, String, String, u64, bool);
+/// (id, thread, address, body, date in Unix ms, status, image parts), as `Texts` gives each text; status 0 is received.
+type RawText = (u64, u64, String, String, u64, u8, Vec<(u64, String)>);
 
 pub(super) fn send_texts(events: &UnboundedSender<Event>, texts: HashMap<String, Vec<RawText>>) {
     let texts = texts
@@ -67,7 +67,13 @@ pub(super) fn send_texts(events: &UnboundedSender<Event>, texts: HashMap<String,
         .map(|(id, texts)| {
             let texts = texts
                 .into_iter()
-                .map(|(_, thread, address, body, date, sent)| Text { thread, address, body, date, sent })
+                .map(|(_, thread, address, body, date, status, _)| Text {
+                    thread,
+                    address,
+                    body,
+                    date,
+                    sent: status != 0,
+                })
                 .collect();
             (id, texts)
         })

@@ -7,7 +7,7 @@ use std::time::Duration;
 use link_core::identity::DeviceId;
 use link_core::proto::message::{
     FsDelete, FsEntry, FsList, FsRead, FsRefusal, FsStat, FsThumb, FsWrite, MAX_FS_READ, Message, PhotosPage,
-    PhotosRecent, RecentPhoto,
+    PhotosRecent, RecentPhoto, TextPartThumb,
 };
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -33,6 +33,11 @@ pub enum Request {
     },
     Thumb {
         path: String,
+        px: u16,
+    },
+    /// An MMS image part as a PNG; needs `feature:texts-mms`.
+    TextPart {
+        part: u64,
         px: u16,
     },
     Write {
@@ -63,7 +68,10 @@ impl Request {
 
     /// Whether it moves file contents or pictures, which Bluetooth carries too slowly: photos and file reads.
     pub fn bulk(&self) -> bool {
-        matches!(self, Self::Read { .. } | Self::Thumb { .. } | Self::Write { .. } | Self::Recent { .. })
+        matches!(
+            self,
+            Self::Read { .. } | Self::Thumb { .. } | Self::TextPart { .. } | Self::Write { .. } | Self::Recent { .. }
+        )
     }
 
     /// What a phone from before `fs-stat` understands: a stat lists the parent, a thumbnail has no stand-in.
@@ -179,6 +187,10 @@ impl Browsing {
             Request::Thumb { path, px } => {
                 let message = Message::FsThumb(FsThumb { req, path: path.clone(), px });
                 (path, Gathered::Data { data: Vec::new(), want: MAX_FS_READ as usize }, message)
+            }
+            Request::TextPart { part, px } => {
+                let message = Message::TextPartThumb(TextPartThumb { req, part, px });
+                (String::new(), Gathered::Data { data: Vec::new(), want: MAX_FS_READ as usize }, message)
             }
         };
         let wait = if matches!(message, Message::FsDelete(_)) { DELETE_TIMEOUT } else { ANSWER_TIMEOUT };

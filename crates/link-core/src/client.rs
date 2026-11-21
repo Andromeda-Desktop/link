@@ -13,8 +13,8 @@ use link_proto::message::{
     LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
     MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
     NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX,
-    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TransferId,
-    WIFI_DIRECT_JOIN,
+    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TEXTS_MMS,
+    TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -1414,12 +1414,13 @@ impl ClientActor {
     }
 
     /// Answers a contacts or texts request off the actor, when this desktop's messages switch is on.
-    async fn messages_request(&mut self, from: &DeviceId, request: messages::Request) {
+    async fn messages_request(&mut self, from: &DeviceId, mut request: messages::Request) {
         let Some(handle) = self.sessions.get(from).cloned() else { return };
-        let allowed =
-            self.phone.desktops().iter().any(|peer| {
-                peer.id == *from && if request.is_call() { peer.grants.calls } else { peer.grants.messages }
-            });
+        let peer = self.phone.desktops().iter().find(|peer| peer.id == *from);
+        let allowed = peer.is_some_and(|peer| if request.is_call() { peer.grants.calls } else { peer.grants.messages });
+        if let messages::Request::Texts(_, rich) = &mut request {
+            *rich = peer.is_some_and(|peer| peer.has(TEXTS_MMS));
+        }
         let refusal = match &self.messages {
             _ if !allowed => MessagesRefusal::NotAllowed,
             None => MessagesRefusal::Denied,
@@ -1600,6 +1601,7 @@ impl ClientActor {
                 message:
                     request @ (Message::ContactsList(_)
                     | Message::TextsList(_)
+                    | Message::TextPartThumb(_)
                     | Message::TextSend(_)
                     | Message::CallsList(_)
                     | Message::Dial(_)),

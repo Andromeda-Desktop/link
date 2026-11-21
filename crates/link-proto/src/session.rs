@@ -121,6 +121,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::FsRead(_)
         | Message::FsStat(_)
         | Message::FsThumb(_)
+        | Message::TextPartThumb(_)
         | Message::FsWrite(_)
         | Message::FsDelete(_)
         | Message::PhotoRequest(_)
@@ -476,6 +477,50 @@ mod tests {
         assert_eq!(
             SessionState::new(Role::Phone).on_message(envelope(1, Message::Unpair)),
             Err(SessionError::Unexpected("unpair"))
+        );
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    fn mms_texts_round_trip_and_keep_their_limits() {
+        use crate::message::{MAX_TEXT_PARTS, MMS_ID, Text, TextPart, TextPartThumb, TextState, Texts};
+        let part = |id: u64| TextPart { id, mime: "image/jpeg".to_owned() };
+        let text = |sent: bool, state: Option<TextState>, parts: Vec<TextPart>| Text {
+            id: MMS_ID + 7,
+            thread: 2,
+            address: "+15550100".to_owned(),
+            body: String::new(),
+            date: 1,
+            sent,
+            state,
+            parts,
+        };
+        let page = |texts: Vec<Text>| Message::Texts(Texts { req: 1, texts, next: None, refused: None });
+        let good = [
+            page(vec![text(false, None, vec![part(3)]), text(true, Some(TextState::Delivered), Vec::new())]),
+            page(vec![text(true, Some(TextState::Failed), (0..MAX_TEXT_PARTS as u64).map(part).collect())]),
+            Message::TextPartThumb(TextPartThumb { req: 2, part: 3, px: 240 }),
+        ];
+        for message in good {
+            let decoded = Envelope::from_cbor(&Envelope::new(5, message.clone()).to_cbor());
+            assert_eq!(decoded.expect("valid").message, message);
+        }
+        let bad = [
+            page(vec![text(false, Some(TextState::Delivered), Vec::new())]),
+            page(vec![text(true, None, (0..=MAX_TEXT_PARTS as u64).map(part).collect())]),
+            page(vec![text(true, None, vec![TextPart { id: 1, mime: String::new() }])]),
+            Message::TextPartThumb(TextPartThumb { req: 2, part: 3, px: 0 }),
+        ];
+        for message in bad {
+            let kind = message.kind();
+            let decoded = Envelope::from_cbor(&Envelope::new(1, message).to_cbor());
+            assert!(matches!(decoded, Err(DecodeError::Invalid(k)) if k == kind), "{kind} decoded as {decoded:?}");
+        }
+        let ask = Message::TextPartThumb(TextPartThumb { req: 1, part: 3, px: 240 });
+        assert!(SessionState::new(Role::Phone).on_message(envelope(1, ask.clone())).is_ok());
+        assert_eq!(
+            SessionState::new(Role::Desktop).on_message(envelope(1, ask)),
+            Err(SessionError::Unexpected("text-part"))
         );
     }
 

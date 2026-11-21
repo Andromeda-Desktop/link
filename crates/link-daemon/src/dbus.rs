@@ -469,6 +469,17 @@ impl Link {
         }
     }
 
+    /// A PNG of an MMS image part on a connected phone, at most `size` pixels (1 to 1024) on its longer side.
+    async fn text_image(&self, device_id: String, part: u64, size: u16) -> Result<Vec<u8>, LinkError> {
+        if !(1..=link_core::proto::message::MAX_FS_THUMB_PX).contains(&size) {
+            return Err(LinkError::Rejected("a size outside 1 to 1024".to_owned()));
+        }
+        match self.browse(&device_id, browse::Request::TextPart { part, px: size }).await? {
+            browse::Answer::Data(png) => Ok(png),
+            _ => Err(LinkError::Failed("the phone answered an image with a listing".to_owned())),
+        }
+    }
+
     /// The `count` (1 to 64) newest photos on a connected phone, newest first, as (path, name, time in Unix seconds).
     /// The path goes to `Thumbnail`, `ReadFile`, and `SavePhoto`. `.Refused("denied")` while Android withholds photo
     /// access on the phone; `.Refused("not-found")` from a phone that lacks the feature.

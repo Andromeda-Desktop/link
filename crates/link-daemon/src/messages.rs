@@ -9,7 +9,7 @@ use std::time::Duration;
 use link_core::identity::DeviceId;
 use link_core::proto::message::{
     self, CallsList, Contact, ContactsList, Dial, Dialed, LoggedCall, Message, MessagesRefusal, PhotoRefusal,
-    PhotoRequest, PhotoTaken, Text, TextSend, TextSent, TextsList,
+    PhotoRequest, PhotoTaken, Text, TextSend, TextSent, TextState, TextsList,
 };
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -29,8 +29,9 @@ const MAX_CALLS: usize = 256;
 
 /// Contacts as `(name, numbers)`.
 pub type Contacts = Vec<(String, Vec<String>)>;
-/// Texts as `(id, thread, address, body, date in Unix ms, sent)`, newest first.
-pub type Texts = Vec<(u64, u64, String, String, u64, bool)>;
+/// Texts as `(id, thread, address, body, date in Unix ms, status, image parts as (part, mime))`, newest first;
+/// status 0 received, 1 sent, 2 sending, 3 delivered, 4 failed.
+pub type Texts = Vec<(u64, u64, String, String, u64, u8, Vec<(u64, String)>)>;
 /// Calls as `(number, name or "", date in Unix ms, duration in s, kind)`, newest first.
 pub type Calls = Vec<(String, String, u64, u32, String)>;
 
@@ -290,7 +291,17 @@ impl Messages {
             .map(|(id, texts)| {
                 let list = texts
                     .iter()
-                    .map(|text| (text.id, text.thread, text.address.clone(), text.body.clone(), text.date, text.sent))
+                    .map(|text| {
+                        let status = match (text.sent, text.state) {
+                            (false, _) => 0,
+                            (true, None) => 1,
+                            (true, Some(TextState::Sending)) => 2,
+                            (true, Some(TextState::Delivered)) => 3,
+                            (true, Some(TextState::Failed)) => 4,
+                        };
+                        let parts = text.parts.iter().map(|part| (part.id, part.mime.clone())).collect();
+                        (text.id, text.thread, text.address.clone(), text.body.clone(), text.date, status, parts)
+                    })
                     .collect();
                 (id.to_string(), list)
             })
