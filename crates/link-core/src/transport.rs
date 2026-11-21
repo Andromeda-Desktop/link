@@ -110,6 +110,7 @@ pub struct PathServer {
     pub puncher: Puncher,
     pub socket: Arc<PathSocket>,
     config: quinn::ServerConfig,
+    client: quinn::ClientConfig,
 }
 
 impl PathServer {
@@ -119,7 +120,23 @@ impl PathServer {
         let puncher = Puncher(Arc::new(udp.try_clone()?));
         let socket = PathSocket::new(udp)?;
         let endpoint = path_server_endpoint(identity, socket.clone())?;
-        Ok(Self { endpoint, puncher, socket, config })
+        Ok(Self { endpoint, puncher, socket, config, client: client_config(identity)? })
+    }
+
+    /// Dials out from the server's own socket, so `addr` sees the address phones reach; `tune` changes Link's
+    /// transport settings last.
+    pub async fn dial(
+        &self,
+        addr: SocketAddr,
+        pin: ServerPin,
+        tune: impl FnOnce(&mut quinn::TransportConfig),
+    ) -> Result<quinn::Connection, Error> {
+        let mut transport = transport_config_value(Some(KEEP_ALIVE));
+        tune(&mut transport);
+        let mut config = self.client.clone();
+        config.transport_config(Arc::new(transport));
+        let connecting = self.endpoint.connect_with(config, addr, &pin.server_name())?;
+        Ok(tokio::time::timeout(CONNECT_TIMEOUT, connecting).await??)
     }
 
     /// Accepts `incoming`, and returns its route, which the session updates (`Route::follow`) when the peer moves.

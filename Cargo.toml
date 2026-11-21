@@ -15,6 +15,7 @@ link-core = { path = "crates/link-core" }
 link-quickshare = { path = "crates/link-quickshare" }
 aes = "0.8"
 anyhow = "1"
+bytes = "1"
 base64 = "0.22"
 cddl = { version = "0.10", default-features = false, features = ["std", "ast-span", "ast-comments", "json", "cbor", "additional-controls", "ast-parent"] }
 cbc = { version = "0.1", features = ["alloc"] }

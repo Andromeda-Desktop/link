@@ -1980,6 +1980,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bluer",
+ "bytes",
  "if-addrs",
  "link-proto",
  "log",
@@ -2162,6 +2163,19 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "zbus 6.1.0",
+]
+
+[[package]]
+name = "link-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "link-core",
+ "log",
+ "quinn",
+ "rustls",
+ "tokio",
 ]
 
 [[package]]

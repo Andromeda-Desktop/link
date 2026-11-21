@@ -18,6 +18,7 @@ pub mod pairing;
 pub mod path;
 pub mod phone;
 pub mod reach;
+pub mod relay;
 pub mod session;
 pub mod slot;
 pub mod store;
