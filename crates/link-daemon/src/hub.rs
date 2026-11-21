@@ -1148,7 +1148,11 @@ impl Hub {
         if !self.sessions.contains_key(id) {
             return;
         }
-        log::info!("{id}: the session is on {}", if on_bluetooth { "Bluetooth" } else { "IP" });
+        if on_bluetooth {
+            log::info!("{id}: the session is on Bluetooth");
+        } else {
+            log::info!("{id}: the session is on IP from {}", self.sessions[id].connection().quic().remote_address());
+        }
         if on_bluetooth {
             self.leave_hotspot(id).await;
         } else {

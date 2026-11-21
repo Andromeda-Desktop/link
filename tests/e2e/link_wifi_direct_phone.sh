@@ -22,9 +22,10 @@ HOME_WIFI=$(nmcli -t -f NAME,TYPE con show --active | grep ':802-11-wireless$' |
 [[ -n $HOME_WIFI ]] || fail "the laptop is not on Wi-Fi"
 USER_LINKD=$(systemctl --user is-active andromeda-linkd || true)
 restore() {
-  forget_phone
+  # First: a failing step below would end the trap and leave these jobs holding the phone lock.
   kill $(jobs -p) 2>/dev/null || true
   wait 2>/dev/null
+  forget_phone || true
   nmcli -t -f NAME con show --active | grep -qxF "$HOME_WIFI" || nmcli con up id "$HOME_WIFI" > /dev/null || true
   [[ $USER_LINKD != active ]] || systemctl --user start andromeda-linkd
   rm -rf "$RUNTIME"
@@ -38,17 +39,19 @@ systemctl --user stop andromeda-linkd 2>/dev/null || true
 private_bus
 start_linkd
 wait_for 10 "BlueZ did not take Link's profile" grep -q 'Bluetooth: listening on' "$OUT/linkd.log"
-( nmcli monitor | stamp > "$OUT/nm.txt" ) &
+nmcli monitor > >(stamp > "$OUT/nm.txt") &
 
 install_app
 adb logcat -c
-adb logcat -v time > "$OUT/logcat.txt" 2>&1 &
+"$ADB" -s "$SERIAL" logcat -v time > "$OUT/logcat.txt" 2>&1 &
 HOST=$(ip -4 route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
 pair_phone "$HOST:$PORT"
 record "{\"step\":\"paired\",\"device\":\"$ID\",\"home_wifi\":\"$HOME_WIFI\"}"
 
-on_bluetooth() { grep "connected over" "$OUT/linkd.log" | tail -1 | grep -q "over Bluetooth"; }
-on_group() { grep "connected over" "$OUT/linkd.log" | tail -1 | grep -q "over IP from .*192\.168\.49\."; }
+# A new session logs "connected over", a session that moves logs "the session is on".
+last_path() { grep -E "connected over|the session is on" "$OUT/linkd.log" | tail -1; }
+on_bluetooth() { last_path | grep -q "Bluetooth$"; }
+on_group() { last_path | grep -q "IP from .*192\.168\.49\."; }
 delivered() {
   [[ $(adb shell sha256sum "/sdcard/Download/$1" 2>/dev/null | cut -d' ' -f1) == $(sha256sum < "$2" | cut -d' ' -f1) ]]
 }

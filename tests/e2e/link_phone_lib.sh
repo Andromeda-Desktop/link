@@ -50,6 +50,15 @@ CONF
 }
 
 start_linkd() {
+  # The firewall admits only Link's own port, so the user's daemon gives it up for the run; the EXIT trap (set before
+  # this call) starts it again.
+  if systemctl --user is-active -q andromeda-linkd; then
+    systemctl --user stop andromeda-linkd
+    eval "set -- $(trap -p EXIT)"
+    # set +e: a failing cleanup step must not skip the restart.
+    trap "set +e; ${3:-}
+systemctl --user start andromeda-linkd" EXIT
+  fi
   mkdir -p "$RUNTIME/downloads"
   XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$RUNTIME/downloads RUST_LOG=info,zbus=warn,tracing=warn \
     "$BIN/andromeda-linkd" 2>&1 | stamp > "$OUT/linkd.log" &

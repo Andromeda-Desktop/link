@@ -53,7 +53,7 @@ wait_for 10 "BlueZ did not take Link's profile: $(grep -i bluetooth "$OUT/linkd.
 
 install_app
 adb logcat -c
-adb logcat -v time > "$OUT/logcat.txt" 2>&1 &
+"$ADB" -s "$SERIAL" logcat -v time > "$OUT/logcat.txt" 2>&1 &
 HOST=$(ip -4 route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
 pair_phone "$HOST:$PORT"
 # Link reads the player's media session through its notification listener, which a fresh install lacks.

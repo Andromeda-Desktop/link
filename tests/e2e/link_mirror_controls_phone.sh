@@ -55,7 +55,7 @@ for pid in $(helpers); do adb shell kill "$pid" || true; done
 record '{"step":"helper","accessibility":"off"}'
 
 adb logcat -c
-adb logcat -v epoch ScreenCapture:I ScreenInput:I LinkFixture:I '*:S' > "$OUT/logcat.txt" &
+"$ADB" -s "$SERIAL" logcat -v epoch ScreenCapture:I ScreenInput:I LinkFixture:I '*:S' > "$OUT/logcat.txt" &
 adb shell am start -W -n org.andromeda.link.fixture/.MirrorProbeActivity > /dev/null
 "$BIN/andromeda-link-mirror" "$ID" --luma "$OUT/luma.tsv" --count 1000000 >> "$OUT/viewer.log" 2>&1 &
 allow_mirror controls
