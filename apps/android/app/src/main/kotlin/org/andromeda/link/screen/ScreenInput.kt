@@ -58,6 +58,7 @@ class ScreenInput : AccessibilityService() {
             MirrorAction.Back -> performGlobalAction(GLOBAL_ACTION_BACK)
             MirrorAction.Home -> performGlobalAction(GLOBAL_ACTION_HOME)
             MirrorAction.Recents -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+            MirrorAction.Screenshot -> performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
             MirrorAction.Text -> type(input.text.orEmpty())
             MirrorAction.TouchDown -> touch = Touch(Path().apply { moveTo(x, y) }, System.currentTimeMillis())
             MirrorAction.TouchMove -> touch?.path?.lineTo(x, y)
@@ -187,6 +188,7 @@ class ScreenInput : AccessibilityService() {
                 MirrorAction.Back -> key(KeyEvent.KEYCODE_BACK)
                 MirrorAction.Home -> key(KeyEvent.KEYCODE_HOME)
                 MirrorAction.Recents -> key(KeyEvent.KEYCODE_APP_SWITCH)
+                MirrorAction.Screenshot -> key(KeyEvent.KEYCODE_SYSRQ)
                 // The virtual keyboard map has keys for ASCII only; other text goes into the field through Accessibility.
                 MirrorAction.Text -> input.text.orEmpty().all { it in ' '..'~' } && send("text")
                 MirrorAction.Tap -> send("tap")

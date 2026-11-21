@@ -51,6 +51,7 @@ enum class MirrorAction {
     KeyUp,
     ScreenOff,
     ScreenOn,
+    Screenshot,
 }
 
 const val MIRROR_UNIT = 10_000

@@ -246,7 +246,8 @@ screen-shape-msg = { type: "screen-shape", id: uint, body: { corners: [4*4 0..50
 mirror-stop-msg = { type: "mirror-stop", id: uint, body: { ? reason: tstr .size (1..128) } }
 mirror-input-msg = { type: "mirror-input", id: uint, body: {
   action: "tap" / "long-press" / "swipe" / "scroll" / "back" / "home" / "recents" / "text" / "touch-down" /
-    "touch-move" / "touch-up" / "wheel" / "key-down" / "key-up" / "screen-off" / "screen-on",
+    "touch-move" / "touch-up" / "wheel" / "key-down" / "key-up" / "screen-off" / "screen-on" /
+    "screenshot",
   ? x: 0..10000, ? y: 0..10000,
   ? x2: -10000..10000, ? y2: -10000..10000,
   ? ms: 0..10000,

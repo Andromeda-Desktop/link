@@ -1012,6 +1012,7 @@ private fun FfiMirrorAction.toDomain(): MirrorAction =
         FfiMirrorAction.KEY_UP -> MirrorAction.KeyUp
         FfiMirrorAction.SCREEN_OFF -> MirrorAction.ScreenOff
         FfiMirrorAction.SCREEN_ON -> MirrorAction.ScreenOn
+        FfiMirrorAction.SCREENSHOT -> MirrorAction.Screenshot
     }
 
 private class FfiRemote(

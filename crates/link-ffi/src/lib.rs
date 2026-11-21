@@ -628,6 +628,7 @@ pub enum MirrorAction {
     KeyUp,
     ScreenOff,
     ScreenOn,
+    Screenshot,
 }
 
 impl From<message::MirrorAction> for MirrorAction {
@@ -649,6 +650,7 @@ impl From<message::MirrorAction> for MirrorAction {
             message::MirrorAction::KeyUp => Self::KeyUp,
             message::MirrorAction::ScreenOff => Self::ScreenOff,
             message::MirrorAction::ScreenOn => Self::ScreenOn,
+            message::MirrorAction::Screenshot => Self::Screenshot,
         }
     }
 }

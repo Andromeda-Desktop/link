@@ -536,6 +536,8 @@ pub enum MirrorAction {
     /// The phone's own panel off or on; mirroring goes on.
     ScreenOff,
     ScreenOn,
+    /// The phone takes a screenshot as its own screenshot key does.
+    Screenshot,
 }
 
 /// Desktop to phone: input on the mirrored screen. Coordinates are fractions of the video's width and height in
@@ -614,7 +616,8 @@ impl MirrorInput {
             | MirrorAction::Home
             | MirrorAction::Recents
             | MirrorAction::ScreenOff
-            | MirrorAction::ScreenOn => true,
+            | MirrorAction::ScreenOn
+            | MirrorAction::Screenshot => true,
             MirrorAction::Text => self.text.as_ref().is_some_and(|text| sized(text, 1, MAX_MIRROR_TEXT_LEN)),
             MirrorAction::KeyDown | MirrorAction::KeyUp => {
                 self.code.is_some_and(|code| (1..=MAX_KEY_CODE).contains(&code))
