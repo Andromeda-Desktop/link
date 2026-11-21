@@ -442,7 +442,7 @@ mod tests {
     use std::time::Duration;
 
     use link_proto::VERSION;
-    use link_proto::message::{HEARTBEAT, Hello};
+    use link_proto::message::{HEARTBEAT, Hello, ShareKind};
 
     use super::*;
     use crate::identity::Identity;
@@ -455,10 +455,25 @@ mod tests {
         Hello { version: VERSION, name: name.to_owned(), addresses: vec![HEARTBEAT.to_owned()] }
     }
 
-    /// A phone and a desktop session over QUIC; the desktop's actor stops being polled while `freeze`
-    /// is true, as a stuck peer whose transport stays open.
-    #[tokio::test]
-    async fn a_stuck_peer_turns_the_link_degraded_and_back() -> Result {
+    const PHONE: usize = 0;
+    const DESKTOP: usize = 1;
+
+    /// A phone (index 0) and a desktop (index 1) session over loopback QUIC, on a paused clock. Each actor stops
+    /// being polled while its `freeze` is true, as a stuck peer whose transport stays open.
+    struct Pair {
+        handles: [SessionHandle; 2],
+        events: [mpsc::Receiver<SessionEvent>; 2],
+        freeze: [watch::Sender<bool>; 2],
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for Pair {
+        fn drop(&mut self) {
+            drop(std::fs::remove_dir_all(&self.dir));
+        }
+    }
+
+    async fn pair(name: &str) -> std::result::Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
         let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
         let (phone_conn, desktop_conn) = crate::transport::connected(&phone_key, &desk_key).await?;
         let (phone_conn, desktop_conn) = (Connection::from(phone_conn), Connection::from(desktop_conn));
@@ -478,21 +493,28 @@ mod tests {
         // After the handshake: the paused clock would run its timeout out while packets cross the real socket.
         tokio::time::pause();
 
-        let dir = std::env::temp_dir().join(format!("link-session-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("link-session-{name}-{}", std::process::id()));
         let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
         let route = |peer: DeviceId| {
-            let (events, rx) = mpsc::channel(64);
+            let (events, rx) = mpsc::channel(1024);
             (Route { peer, events, transfers: transfers.clone(), heartbeat: true, path: None }, rx)
         };
-        let (phone_route, mut phone_events) = route(desk_key.spki().device_id());
-        let (desktop_route, _desktop_events) = route(phone_key.spki().device_id());
+        let (phone_route, phone_events) = route(desk_key.spki().device_id());
+        let (desktop_route, desktop_events) = route(phone_key.spki().device_id());
         let (phone, phone_actor) = session(phone_conn, phone_control, Role::Phone, phone_route);
         let (desktop, desktop_actor) = session(desktop_conn, desktop_control, Role::Desktop, desktop_route);
-        tokio::spawn(phone_actor.run());
-        let (freeze, frozen) = watch::channel(false);
+        Ok(Pair {
+            handles: [phone, desktop],
+            events: [phone_events, desktop_events],
+            freeze: [freezable(phone_actor), freezable(desktop_actor)],
+            dir,
+        })
+    }
+
+    fn freezable(actor: SessionActor) -> watch::Sender<bool> {
+        let (freeze, mut frozen) = watch::channel(false);
         tokio::spawn(async move {
-            let mut run = pin!(desktop_actor.run());
-            let mut frozen = frozen;
+            let mut run = pin!(actor.run());
             loop {
                 if *frozen.borrow() {
                     drop(frozen.changed().await);
@@ -500,10 +522,20 @@ mod tests {
                 }
                 tokio::select! {
                     _ = &mut run => return,
-                    _ = frozen.changed() => {}
+                    changed = frozen.changed() => if changed.is_err() {
+                        drop(run.await);
+                        return;
+                    },
                 }
             }
         });
+        freeze
+    }
+
+    #[tokio::test]
+    async fn a_stuck_peer_turns_the_link_degraded_and_back() -> Result {
+        let Pair { handles: [phone, desktop], events: [phone_events, _], freeze: [_, freeze], .. } =
+            &mut pair("stuck").await?;
 
         tokio::time::sleep(Duration::from_secs(15)).await;
         assert!(matches!(phone.link(), LinkState::Live { rtt: Some(_) }), "phone: {:?}", phone.link());
@@ -525,7 +557,175 @@ mod tests {
         tokio::time::sleep(ACTIVE_EVERY * 2).await;
         assert!(matches!(phone.link(), LinkState::Live { .. }), "phone after: {:?}", phone.link());
         assert!(matches!(desktop.link(), LinkState::Live { .. }), "desktop after: {:?}", desktop.link());
-        drop(std::fs::remove_dir_all(&dir));
+        Ok(())
+    }
+
+    struct Pending {
+        item: u64,
+        to: usize,
+        /// Either side was frozen at some time since the send.
+        stalled: bool,
+        reply: tokio::task::JoinHandle<std::result::Result<(), Error>>,
+    }
+
+    /// What the model test knows about one pair, and the invariants it checks against it.
+    struct Model {
+        pair: Pair,
+        sequence: u32,
+        frozen: [bool; 2],
+        /// The last time each side ran.
+        ran: [Instant; 2],
+        /// The last time each side came back from a freeze.
+        thawed: [Instant; 2],
+        sent: [Vec<u64>; 2],
+        received: [Vec<u64>; 2],
+        reported_live: [bool; 2],
+        pending: Vec<Pending>,
+    }
+
+    impl Model {
+        fn new(pair: Pair, sequence: u32) -> Self {
+            let start = Instant::now();
+            Self {
+                pair,
+                sequence,
+                frozen: [false; 2],
+                ran: [start; 2],
+                thawed: [start; 2],
+                sent: [Vec::new(), Vec::new()],
+                received: [Vec::new(), Vec::new()],
+                reported_live: [true; 2],
+                pending: Vec::new(),
+            }
+        }
+
+        fn share(&mut self, from: usize, item: u64) {
+            self.sent[from].push(item);
+            let share = Share { kind: ShareKind::Text, text: format!("share {item}"), item: Some(item) };
+            let handle = self.pair.handles[from].clone();
+            let reply = tokio::spawn(async move { handle.share(share).await });
+            self.pending.push(Pending { item, to: 1 - from, stalled: self.frozen.contains(&true), reply });
+        }
+
+        fn toggle(&mut self, side: usize) -> Result {
+            let now = Instant::now();
+            if self.frozen[side] {
+                self.thawed[side] = now;
+            } else {
+                for share in &mut self.pending {
+                    share.stalled = true;
+                }
+            }
+            self.ran[side] = now;
+            self.frozen[side] = !self.frozen[side];
+            self.pair.freeze[side].send(self.frozen[side])?;
+            Ok(())
+        }
+
+        fn drain(&mut self) {
+            let sequence = self.sequence;
+            for side in [PHONE, DESKTOP] {
+                while let Ok(event) = self.pair.events[side].try_recv() {
+                    match event {
+                        SessionEvent::Received { share, .. } => {
+                            let id = share.item.unwrap_or(0);
+                            assert!(!self.received[side].contains(&id), "{sequence}: share {id} received twice");
+                            self.received[side].push(id);
+                        }
+                        SessionEvent::Link { state, .. } => {
+                            let live = matches!(state, LinkState::Live { .. });
+                            assert_ne!(
+                                live, self.reported_live[side],
+                                "{sequence}: side {side} reported {state:?} twice"
+                            );
+                            self.reported_live[side] = live;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        async fn check(&mut self) -> Result {
+            let sequence = self.sequence;
+            let now = Instant::now();
+            for side in [PHONE, DESKTOP].into_iter().filter(|&side| !self.frozen[side]) {
+                self.ran[side] = now;
+            }
+            self.drain();
+            for side in [PHONE, DESKTOP] {
+                let last_beat = self.ran[1 - side].max(self.thawed[side]);
+                if now > last_beat + IDLE_EVERY + GRACE + Duration::from_secs(1) {
+                    let link = self.pair.handles[side].link();
+                    assert!(!matches!(link, LinkState::Live { .. }), "{sequence}: side {side} shows {link:?}");
+                }
+            }
+            for share in self.pending.iter_mut().filter(|share| share.reply.is_finished()) {
+                let reply = (&mut share.reply).await?;
+                if reply.is_ok() {
+                    let seen = self.received[share.to].contains(&share.item);
+                    assert!(seen, "{sequence}: share {} acked unseen", share.item);
+                } else {
+                    assert!(matches!(reply, Err(Error::Timeout)) && share.stalled, "{sequence}: {reply:?}");
+                }
+            }
+            self.pending.retain(|share| !share.reply.is_finished());
+            Ok(())
+        }
+
+        /// Both sides run again: both turn Live, every share arrives, and the last report matches `link()`.
+        async fn settle(mut self) -> Result {
+            let sequence = self.sequence;
+            for side in [PHONE, DESKTOP] {
+                self.pair.freeze[side].send(false)?;
+            }
+            self.pair.handles[PHONE].wake();
+            tokio::time::sleep(ACTIVE_EVERY * 2).await;
+            self.drain();
+            for side in [PHONE, DESKTOP] {
+                let link = self.pair.handles[side].link();
+                assert!(matches!(link, LinkState::Live { .. }), "{sequence}: side {side} after the thaw: {link:?}");
+                assert!(self.reported_live[side], "{sequence}: side {side} last reported degraded but shows {link:?}");
+                let mut got = self.received[side].clone();
+                got.sort_unstable();
+                assert_eq!(got, self.sent[1 - side], "{sequence}: side {side} received");
+            }
+            Ok(())
+        }
+    }
+
+    /// Random shares both ways, freezes, wakes and sleeps. Invariants: a side never shows Live once every heartbeat
+    /// the peer could have sent is past its longest promise plus GRACE; each share is received once, and an acked
+    /// one before its ack; shares fail only by timeout while a side stalled; Link reports alternate.
+    #[tokio::test]
+    async fn random_sequences_keep_the_invariants() -> Result {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        let mut item = 0;
+        for sequence in 0..25 {
+            let mut model = Model::new(pair("model").await?, sequence);
+            for _ in 0..40 {
+                match next(6) {
+                    0 | 1 => {
+                        item += 1;
+                        model.share(usize::try_from(next(2))?, item);
+                    }
+                    2 => model.toggle(usize::try_from(next(2))?)?,
+                    3 => model.pair.handles[usize::try_from(next(2))?].wake(),
+                    _ => tokio::time::sleep(Duration::from_millis(next(4000))).await,
+                }
+                tokio::task::yield_now().await;
+                model.check().await?;
+            }
+            model.settle().await?;
+            // The next pair's handshake needs real time.
+            tokio::time::resume();
+        }
         Ok(())
     }
 }
