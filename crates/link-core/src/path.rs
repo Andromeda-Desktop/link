@@ -429,7 +429,11 @@ impl PathSocket {
                         connection.close(0u32.into(), b"link closed");
                     }
                 }
-                _ = connection.closed() => socket.close_link(id),
+                _ = connection.closed() => {
+                    // The link carries the connection's own close packet first.
+                    tokio::time::sleep(connection.rtt() * 3).await;
+                    socket.close_link(id);
+                }
             }
         });
     }
