@@ -18,12 +18,16 @@ import android.util.Log
 class MessageActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        post(this, intent.getStringExtra(EXTRA_TEXT) ?: "Are we still on for dinner?", reply = null)
+        val text = intent.getStringExtra(EXTRA_TEXT) ?: "Are we still on for dinner?"
+        post(this, text, reply = null, choices = intent.getStringArrayExtra(EXTRA_CHOICES).orEmpty().toList())
         finish()
     }
 
     companion object {
         const val EXTRA_TEXT = "text"
+
+        /** Suggested replies of the Reply action (`am start --esa choices "Yes,No"`). */
+        const val EXTRA_CHOICES = "choices"
         const val TAG = "LinkFixture"
         private const val CHANNEL = "chat"
         private const val ID = 7
@@ -33,10 +37,16 @@ class MessageActivity : Activity() {
             text: String,
             reply: String?,
             publicText: String? = null,
+            choices: List<String> = emptyList(),
         ) {
             val manager = context.getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(NotificationChannel(CHANNEL, "Chat", NotificationManager.IMPORTANCE_HIGH))
-            val input = RemoteInput.Builder(ReplyReceiver.KEY).setLabel("Reply").build()
+            val input =
+                RemoteInput
+                    .Builder(ReplyReceiver.KEY)
+                    .setLabel("Reply")
+                    .apply { if (choices.isNotEmpty()) setChoices(choices.toTypedArray()) }
+                    .build()
             val intent =
                 PendingIntent.getBroadcast(
                     context,
