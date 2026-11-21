@@ -921,7 +921,7 @@ impl ClientActor {
             self.wifi_direct_failed.remove(id);
             self.next_probe = Some(Instant::now());
         } else {
-            log::info!("{id}: connected at {}", addr.map_or_else(String::new, |addr| addr.to_string()));
+            log::info!("{id}: connected at {}", addr.map_or_else(|| format!("{via:?}"), |addr| addr.to_string()));
             if matches!(via, Via::Hotspot | Via::WifiDirect) {
                 self.on_hotspot.insert(id.clone());
             } else {

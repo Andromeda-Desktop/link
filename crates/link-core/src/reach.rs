@@ -24,6 +24,8 @@ pub enum Via {
     Hotspot,
     /// The phone's Wi-Fi Direct group, likewise.
     WifiDirect,
+    /// The desktop's relay, when no direct path answers.
+    Relay,
 }
 
 pub struct Reached {

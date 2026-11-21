@@ -24,6 +24,7 @@ mod mpris;
 mod notifications;
 mod paths;
 mod quickshare;
+mod relay;
 mod remote;
 mod save;
 mod socket;
@@ -107,6 +108,10 @@ async fn run() -> anyhow::Result<()> {
     let bluetooth = bluetooth::Bluetooth::start().await;
     #[cfg(target_os = "linux")]
     l2cap::start(server.socket.clone(), bluetooth.on_radio()).await;
+    let relay = relay::spec(&state_dir.join("relay"));
+    if let Some(spec) = &relay {
+        relay::start(server.clone(), spec.clone());
+    }
     if let Some(address) = &bluetooth.address {
         hub.set_bluetooth(address.clone(), bluetooth.pairing_window());
     }
@@ -125,7 +130,7 @@ async fn run() -> anyhow::Result<()> {
         quick_share_watches: qs_watches,
         name: name.clone(),
     };
-    let listener = listener::Listener::new(server, bluetooth, handle.clone(), identity.spki().clone(), name);
+    let listener = listener::Listener::new(server, bluetooth, relay, handle.clone(), identity.spki().clone(), name);
     let mut terminate = signal(SignalKind::terminate())?;
     #[cfg(not(target_os = "linux"))]
     let replaced = std::future::pending::<()>;

@@ -20,6 +20,8 @@ pub const CONTROL: Tag = [0; 8];
 /// The relay connection's packet size: a whole inner packet (QUIC's 1200-byte minimum), its tag and the outer
 /// headers must fit one datagram.
 pub const MTU: u16 = 1300;
+/// Keep-alive on a relay connection, so the NAT mapping to the relay outlives quiet periods.
+pub const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(15);
 /// Inner packets waiting per link before the oldest arrivals drop, as a full socket buffer drops them.
 const QUEUE: usize = 1024;
 
@@ -37,6 +39,20 @@ pub fn frame(tag: &Tag, body: &[u8]) -> Bytes {
     out.put_slice(tag);
     out.put_slice(body);
     out.freeze()
+}
+
+/// The relay address and its key fingerprint in a `host:port#<64 hex>` spec, or None when malformed.
+#[must_use]
+pub fn parse(spec: &str) -> Option<(String, [u8; 32])> {
+    let (host, hex) = spec.split_once('#')?;
+    if hex.len() != 64 || !host.contains(':') {
+        return None;
+    }
+    let mut key = [0; 32];
+    for (byte, pair) in key.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some((host.to_owned(), key))
 }
 
 type Links = Arc<Mutex<HashMap<Tag, mpsc::Sender<Bytes>>>>;

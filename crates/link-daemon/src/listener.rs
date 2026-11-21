@@ -9,8 +9,8 @@ use link_core::path::{Route, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, HEARTBEAT, LATE_HASH,
-    MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, SCREEN_SHAPE, SHARE_OUTBOX,
-    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
+    MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, RELAY_SCHEME, SCREEN_SHAPE,
+    SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, WIFI_DIRECT_JOIN,
 };
 use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
@@ -42,12 +42,20 @@ struct Context {
     name: String,
     port: u16,
     bluetooth: Option<String>,
+    relay: Option<String>,
 }
 
 impl Listener {
-    pub fn new(server: Arc<PathServer>, bluetooth: Bluetooth, hub: HubHandle, own: Spki, name: String) -> Self {
+    pub fn new(
+        server: Arc<PathServer>,
+        bluetooth: Bluetooth,
+        relay: Option<String>,
+        hub: HubHandle,
+        own: Spki,
+        name: String,
+    ) -> Self {
         let port = server.endpoint.local_addr().map_or(0, |addr| addr.port());
-        let context = Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone() });
+        let context = Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone(), relay });
         Self { server, bluetooth, context }
     }
 
@@ -182,6 +190,7 @@ impl Context {
     fn hello(&self) -> Hello {
         let mut addresses: Vec<String> = net::local_addresses(self.port).iter().map(ToString::to_string).collect();
         addresses.extend(self.bluetooth.iter().map(|address| format!("{BLUETOOTH_SCHEME}{address}")));
+        addresses.extend(self.relay.iter().map(|spec| format!("{RELAY_SCHEME}{spec}")));
         if self.bluetooth.is_some() {
             addresses.push(BT_PAIRING.to_owned());
         }

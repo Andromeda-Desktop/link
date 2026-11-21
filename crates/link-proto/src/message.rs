@@ -22,6 +22,10 @@ pub struct Hello {
 /// Bluetooth skip it, since it is not a socket address.
 pub const BLUETOOTH_SCHEME: &str = "bt:";
 
+/// The desktop's relay among a hello's `addresses`: `relay:<host:port>#<64 hex key fingerprint>`. The phone dials the
+/// desktop through it when no IP or Bluetooth path answers; older phones skip it, since it is not a socket address.
+pub const RELAY_SCHEME: &str = "relay:";
+
 /// A desktop's hello carries this among its `addresses` when it joins a phone's Wi-Fi Direct group by the credentials
 /// in `wifi-direct`; phones send that message only then, since older desktops expect a different body.
 pub const WIFI_DIRECT_JOIN: &str = "feature:wifi-direct-join";
@@ -97,6 +101,12 @@ pub fn bluetooth_address(entry: &str) -> Option<String> {
     let valid = octets.len() == 6
         && octets.iter().all(|octet| octet.len() == 2 && octet.bytes().all(|b| b.is_ascii_hexdigit()));
     valid.then(|| address.to_ascii_uppercase())
+}
+
+/// The relay spec in a `relay:` entry, or None when `entry` is not one.
+#[must_use]
+pub fn relay_entry(entry: &str) -> Option<&str> {
+    entry.strip_prefix(RELAY_SCHEME)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

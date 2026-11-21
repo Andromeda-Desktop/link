@@ -3,11 +3,18 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use link_core::control::Control;
 use link_core::identity::Identity;
 use link_core::path::{Hop, PathSocket, link_address};
+use link_core::phone::Phone;
+use link_core::proto::message::Hello;
+use link_core::proto::{CloseCode, VERSION};
+use link_core::reach::Via;
 use link_core::relay::{MTU, Relay, tag};
+use link_core::store::{Peer, Store};
 use link_core::tls::ServerPin;
 use link_core::transport::{Dialer, PathServer};
+use link_core::wire::Connection;
 
 type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -80,6 +87,55 @@ async fn a_phone_reaches_its_desktop_through_the_relay() -> Result {
     assert_eq!(back, payload, "the stream did not cross the relay whole");
     inner.connection.close(0u8.into(), b"done");
     tokio::time::timeout(Duration::from_secs(5), echo).await???;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_without_a_direct_path_opens_its_session_through_the_relay() -> Result {
+    let (desk_key, phone_key) = (Identity::generate()?, Identity::generate()?);
+    let ids = [&desk_key, &phone_key].map(|key| key.spki().device_id().as_str().to_owned());
+    let (relay_addr, relay_key) = relay(ids.to_vec())?;
+    let fingerprint =
+        relay_key.spki().fingerprint().iter().fold(String::new(), |hex, byte| hex + &format!("{byte:02x}"));
+    let spec = format!("{relay_addr}#{fingerprint}");
+
+    let desk = PathServer::bind(&desk_key, "[::]:0".parse()?)?;
+    let desk_relay = desk
+        .dial(relay_addr, pin(&relay_key), |transport| {
+            transport.initial_mtu(MTU);
+        })
+        .await?;
+    let (_desk_relay, mut opened) = Relay::new(desk_relay);
+    let desktop = tokio::spawn(async move {
+        let link = opened.recv().await.ok_or("no link opened")?;
+        desk.socket.accept_link(link);
+        let incoming = desk.endpoint.accept().await.ok_or("no connection")?;
+        let (connecting, _route) = desk.accept(incoming)?;
+        let connection = Connection::from(connecting.await?);
+        let mut control = Control::accept(&connection, None).await?;
+        let hello = Hello { version: VERSION, name: "desk".to_owned(), addresses: Vec::new() };
+        control.hello_as_server(hello).await?;
+        connection.closed().await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let store_path = std::env::temp_dir().join(format!("link-relay-phone-{}.json", std::process::id()));
+    let mut store = Store::default();
+    let mut peer = Peer::new(desk_key.spki(), "desk".to_owned());
+    peer.relay = Some(spec);
+    store.upsert(peer);
+    store.save(&store_path)?;
+    let mut phone = Phone::new(phone_key, store_path.clone(), "phone".to_owned(), None)?;
+    let session = tokio::time::timeout(Duration::from_secs(15), phone.connect(&desk_key.spki().device_id()))
+        .await
+        .map_err(|_| "the session did not open")?;
+    drop(std::fs::remove_file(&store_path));
+    let session = session?;
+    assert_eq!(session.via, Via::Relay);
+    session.connection.close(CloseCode::Done);
+    tokio::time::timeout(Duration::from_secs(5), desktop)
+        .await
+        .map_err(|_| "the desktop did not see the close")???;
     Ok(())
 }
 

@@ -39,6 +39,10 @@ pub struct Peer {
     /// The desktop's Bluetooth adapter, from its hello; the phone dials it when no IP path answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bluetooth: Option<String>,
+    /// The desktop's relay spec (`host:port#fingerprint`), from its hello; the phone dials through it when no IP or
+    /// Bluetooth path answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
     /// The desktop's hello listed `feature:bt-pairing`: it confirms a Bluetooth pairing by the code the phone reports.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bt_pairing: bool,
@@ -300,6 +304,7 @@ impl Peer {
             auto_accept: false,
             grants: Grants::default(),
             bluetooth: None,
+            relay: None,
             bt_pairing: false,
             features: Vec::new(),
             paused: false,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
     Hello, Hotspot, LATE_HASH, MESSAGES, Message, PHOTOS_PAGE, PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SYSTEM,
-    SYSTEM_CONTROL, bluetooth_address,
+    SYSTEM_CONTROL, bluetooth_address, relay_entry,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -23,6 +23,7 @@ use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
 use crate::path::{FdLink, Hop, LinkId, MessageLink, PathSocket, Route, StreamLink, link_address};
 use crate::reach::{self, Reached, Via};
+use crate::relay::{self, Relay};
 use crate::store::{Feature, Peer, Store};
 use crate::tls::{self, ServerPin};
 use crate::transport::{Dialed, Dialer};
@@ -44,7 +45,7 @@ pub struct Session {
     pub connection: Connection,
     pub control: Control,
     pub desktop: Peer,
-    /// None over Bluetooth.
+    /// None over Bluetooth or the relay.
     pub addr: Option<SocketAddr>,
     pub via: Via,
     pub resumed: bool,
@@ -235,17 +236,46 @@ impl Phone {
     }
 
     /// Over IP when any address answers, else over Bluetooth when the desktop has an adapter and the platform can
-    /// open one.
+    /// open one, else through the desktop's relay when it has one.
     async fn open_session(&mut self, peer: &Peer) -> Result<Session, Error> {
-        let ip = match reach::reach(self.dialer(), peer).await {
+        let mut error = match reach::reach(self.dialer(), peer).await {
             Ok(reached) => return self.adopt_reached(peer, reached).await,
             Err(error) => error,
         };
-        if peer.bluetooth.is_none() || self.bluetooth.is_none() {
-            return Err(ip);
+        if peer.bluetooth.is_some() && self.bluetooth.is_some() {
+            log::info!("{}: no IP path ({error}); trying Bluetooth", peer.id);
+            match self.connect_bluetooth(peer).await {
+                Ok(session) => return Ok(session),
+                Err(bluetooth) => error = bluetooth,
+            }
         }
-        log::info!("{}: no IP path ({ip}); trying Bluetooth", peer.id);
-        self.connect_bluetooth(peer).await
+        let Some(spec) = peer.relay.clone() else { return Err(error) };
+        log::info!("{}: no direct path ({error}); trying the relay {spec}", peer.id);
+        self.connect_relay(peer, &spec).await
+    }
+
+    /// A session through the relay in `spec`, on a relay connection that ends with it.
+    async fn connect_relay(&mut self, peer: &Peer, spec: &str) -> Result<Session, Error> {
+        let (host, key) = relay::parse(spec).ok_or(Error::Unreachable)?;
+        let desktop = relay::tag(&peer.spki()?);
+        let addr = tokio::net::lookup_host(&host).await?.next().ok_or(Error::Unreachable)?;
+        let dialer = self.dialer().tuned(|transport| {
+            transport.initial_mtu(relay::MTU).keep_alive_interval(Some(relay::KEEP_ALIVE));
+        });
+        let outer = dialer.dial(addr, ServerPin::Key(key)).await?.connection;
+        let (relay, _) = Relay::new(outer.clone());
+        let session = self.connect_link(peer, relay.link(desktop), Via::Relay).await;
+        let inner = session.as_ref().ok().map(|session| session.connection.quic().clone());
+        tokio::spawn(async move {
+            if let Some(inner) = inner {
+                inner.closed().await;
+                // The inner close goes out as a datagram on `outer` once its link sends it; closing `outer` first
+                // would drop it.
+                tokio::time::sleep(inner.rtt() * 3 + outer.rtt() * 3).await;
+            }
+            Connection::from(outer).close(CloseCode::Done);
+        });
+        session
     }
 
     /// Opens an LE L2CAP channel to `peer` when run, a blocking call for a worker thread.
@@ -276,7 +306,7 @@ impl Phone {
         let le = (address.clone(), opener.clone());
         let l2cap = tokio::task::spawn_blocking(move || le.1.open_l2cap(&le.0)).await.map_err(|_| Error::Stopped)?;
         let tried = match l2cap {
-            Ok(fd) => self.connect_link(peer, FdLink::new(fd)?).await,
+            Ok(fd) => self.connect_link(peer, FdLink::new(fd)?, Via::Bluetooth).await,
             Err(error) => Err(error.into()),
         };
         match tried {
@@ -285,7 +315,7 @@ impl Phone {
         }
         let fd =
             tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
-        self.connect_link(peer, StreamLink::new(fd)?).await
+        self.connect_link(peer, StreamLink::new(fd)?, Via::Bluetooth).await
     }
 
     /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.
@@ -304,13 +334,13 @@ impl Phone {
         }
     }
 
-    async fn connect_link(&mut self, peer: &Peer, link: impl MessageLink) -> Result<Session, Error> {
+    async fn connect_link(&mut self, peer: &Peer, link: impl MessageLink, via: Via) -> Result<Session, Error> {
         let Dialed { connection, resumed, route } = self.dial_link(link, peer.spki()?.fingerprint()).await?;
         let connection = Connection::from(connection);
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         let desktop = self.remember(&peer.spki()?, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via: Via::Bluetooth, resumed, route })
+        Ok(Session { connection, control, desktop, addr: None, via, resumed, route })
     }
 
     /// Finishes a session to a desktop reached over IP, by this phone or by a probe running beside it.
@@ -368,6 +398,7 @@ impl Phone {
         if let Some(bluetooth) = hello.addresses.iter().find_map(|text| bluetooth_address(text)) {
             peer.bluetooth = Some(bluetooth);
         }
+        peer.relay = hello.addresses.iter().find_map(|entry| relay_entry(entry)).map(str::to_owned);
         peer.bt_pairing = hello.addresses.iter().any(|entry| entry == BT_PAIRING);
         peer.features = hello.addresses.iter().filter(|entry| entry.starts_with(FEATURE)).cloned().collect();
         peer.touch();

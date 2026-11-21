@@ -307,6 +307,7 @@ pub fn via_name(via: Via) -> &'static str {
         Via::Bluetooth => "bluetooth",
         Via::Hotspot => "hotspot",
         Via::WifiDirect => "wifi-direct",
+        Via::Relay => "relay",
     }
 }
 
