@@ -741,9 +741,9 @@ pub struct LinkClient {
 
 /// How the app reaches a desktop over Bluetooth: connect RFCOMM to `address` at Link's service UUID and return one
 /// end of a socket pair the app pumps that connection through, detached. Negative when it cannot connect: -2 without
-/// the Bluetooth permission, -3 with Bluetooth off, -4 when Bluetooth pairing failed, else -1. With `pair`, it
-/// first pairs Bluetooth with the desktop if they are not paired, which Link pairing alone asks for. Called off the
-/// main thread, and may block.
+/// the Bluetooth permission, -3 with Bluetooth off, -4 when Bluetooth pairing failed, -5 when an RFCOMM link to
+/// `address` is already open (Android would disconnect it), else -1. With `pair`, it first pairs Bluetooth with the
+/// desktop if they are not paired, which Link pairing alone asks for. Called off the main thread, and may block.
 #[uniffi::export(with_foreign)]
 pub trait BluetoothLink: Send + Sync {
     fn open(&self, address: String, pair: bool) -> i32;
@@ -781,6 +781,7 @@ fn adopt(fd: i32) -> std::io::Result<OwnedFd> {
         -2 => Some("the Nearby devices permission is off"),
         -3 => Some("Bluetooth is off on the phone"),
         -4 => Some("the Bluetooth pairing was not accepted"),
+        -5 => Some("an RFCOMM link to that address is already open"),
         _ => Some("the desktop did not answer"),
     };
     if let Some(reason) = reason {

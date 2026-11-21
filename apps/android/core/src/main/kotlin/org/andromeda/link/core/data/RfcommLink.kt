@@ -45,18 +45,27 @@ class RfcommLink(
         if (!allowed()) return NO_PERMISSION.also { Log.i(TAG, "RFCOMM to $address: no BLUETOOTH_CONNECT permission") }
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         if (adapter == null || !adapter.isEnabled) return BLUETOOTH_OFF.also { Log.i(TAG, "RFCOMM to $address: Bluetooth is off") }
+        // Android's RFCOMM connect to a device and channel that already carry a link disconnects that link.
+        if (!rfcommLive.add(address)) return IN_USE.also { Log.i(TAG, "RFCOMM to $address: a link already runs there") }
         val device = adapter.getRemoteDevice(address)
         val socket =
             try {
-                if (pair && !bonded(device)) return NOT_BONDED
-                connect(device) ?: return NOT_CONNECTED
+                if (pair && !bonded(device)) return NOT_BONDED.also { rfcommLive.remove(address) }
+                connect(device) ?: return NOT_CONNECTED.also { rfcommLive.remove(address) }
             } catch (error: SecurityException) {
                 Log.w(TAG, "RFCOMM to $address: ${error.message}")
+                rfcommLive.remove(address)
                 return NOT_CONNECTED
             }
         val (ours, theirs) = ParcelFileDescriptor.createSocketPair()
         val writer = ours.dup()
-        val closeAll = { listOf<Closeable>(socket, ours, writer).forEach { runCatching { it.close() } } }
+        val closed = AtomicBoolean(false)
+        val closeAll = {
+            if (closed.compareAndSet(false, true)) {
+                listOf<Closeable>(socket, ours, writer).forEach { runCatching { it.close() } }
+                rfcommLive.remove(address)
+            }
+        }
         pump("rfcomm-in", socket.inputStream, FileOutputStream(writer.fileDescriptor)) {
             // The core reads end-of-stream only once no end can write, so shut down ours before closing.
             runCatching { Os.shutdown(writer.fileDescriptor, OsConstants.SHUT_WR) }
@@ -270,11 +279,15 @@ class RfcommLink(
         const val NO_PERMISSION = -2
         const val BLUETOOTH_OFF = -3
         const val NOT_BONDED = -4
+        const val IN_USE = -5
         const val BUFFER = 16 * 1024
         const val L2CAP_CONNECT_MS = 5_000L
         const val ADDRESS_BYTES = 6
 
         /** The desktop's `bluetooth::SERVICE_UUID`. */
         val SERVICE: UUID = UUID.fromString("5c3b1e5a-7d2f-4a8e-9b61-3f0c2d4e8a17")
+
+        /** Addresses with an open RFCOMM link, process-wide since every link shares Android's one connection per device. */
+        val rfcommLive: MutableSet<String> = ConcurrentHashMap.newKeySet()
     }
 }
