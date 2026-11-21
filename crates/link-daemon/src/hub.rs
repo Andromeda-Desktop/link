@@ -360,6 +360,8 @@ pub struct Hub {
     bt_pairing: Option<(u32, Instant)>,
     /// This desktop's Bluetooth adapter, named in the QR code, and the deadline that keeps it open to pairing.
     bluetooth: Option<(String, watch::Sender<Option<Instant>>)>,
+    /// True while the adapter advertises the pairing window over LE.
+    beacon: Option<watch::Sender<bool>>,
     /// Work too large for Bluetooth, waiting for the phone's session to move to its hotspot.
     waiting: Vec<Waiting>,
     /// Phones on Bluetooth already asked for their hotspot by browsing, which does not wait for it.
@@ -494,6 +496,7 @@ impl Hub {
             joining: JoinSet::new(),
             bt_pairing: None,
             bluetooth: None,
+            beacon: None,
             waiting: Vec::new(),
             hotspot_asked: HashSet::new(),
             browsing: browse::Browsing::default(),
@@ -991,8 +994,14 @@ impl Hub {
     }
 
     /// Names the adapter in pairing QR codes and opens it to pairing during each window; before [`Self::run`].
-    pub fn set_bluetooth(&mut self, address: String, open: watch::Sender<Option<Instant>>) {
+    pub fn set_bluetooth(
+        &mut self,
+        address: String,
+        open: watch::Sender<Option<Instant>>,
+        beacon: watch::Sender<bool>,
+    ) {
         self.bluetooth = Some((address, open));
+        self.beacon = Some(beacon);
     }
 
     /// Keeps the adapter accepting unpaired devices until at least `until`.
@@ -1826,6 +1835,9 @@ impl Hub {
     fn refresh(&mut self) {
         self.publish();
         let pairing = self.window.is_some();
+        if let Some(beacon) = &self.beacon {
+            beacon.send_if_modified(|on| std::mem::replace(on, pairing) != pairing);
+        }
         if !pairing && self.store.peers.is_empty() {
             self.advertiser = None;
             return;

@@ -263,7 +263,8 @@ fn open(state: &Path, name: String, transcript: Option<&Path>) -> anyhow::Result
     Ok(Phone::new(identity, state.join("devices.json"), name, tap)?)
 }
 
-/// Connects the stand-ins for a desktop's RFCOMM and L2CAP channels, whatever the address.
+/// Connects the stand-ins for a desktop's RFCOMM and L2CAP channels, whatever the address. Its LE scan finds the
+/// test desktop's adapter, as if it always advertised a pairing window.
 struct SocketOpener {
     rfcomm: PathBuf,
     l2cap: Option<PathBuf>,
@@ -280,6 +281,10 @@ impl link_core::bluetooth::BluetoothOpener for SocketOpener {
         let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
         rustix::net::connect(&fd, &SocketAddrUnix::new(path)?)?;
         Ok(fd)
+    }
+
+    fn scan_pairing(&self) -> std::io::Result<Vec<String>> {
+        Ok(vec!["00:00:00:00:00:01".to_owned()])
     }
 }
 

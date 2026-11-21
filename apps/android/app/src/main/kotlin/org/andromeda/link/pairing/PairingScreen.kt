@@ -124,10 +124,11 @@ private fun ColumnScope.Scan(
     var granted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
-    // Pairing falls back to Bluetooth when no IP path answers, which needs Nearby devices from Android 12.
+    // Pairing falls back to Bluetooth when no IP path answers, and a typed code scans for the desktop over
+    // Bluetooth LE: both need Nearby devices from Android 12.
     val wanted =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.CAMERA, Manifest.permission.BLUETOOTH_CONNECT)
+            arrayOf(Manifest.permission.CAMERA, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
         } else {
             arrayOf(Manifest.permission.CAMERA)
         }

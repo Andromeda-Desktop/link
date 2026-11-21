@@ -14,8 +14,7 @@ use zbus::{OwnedObjectPath, OwnedVariant, Variant};
 #[path = "bluetooth_mac.rs"]
 mod mac;
 
-/// The Link service in SDP, which the phone looks up to find the RFCOMM channel.
-pub const SERVICE_UUID: &str = "5c3b1e5a-7d2f-4a8e-9b61-3f0c2d4e8a17";
+pub use link_core::bluetooth::SERVICE_UUID;
 #[cfg(target_os = "linux")]
 const PROFILE_PATH: &str = "/org/andromeda/Link1/Bluetooth";
 /// The RFCOMM channel the service record names; fixed, since the record must name the channel it listens on.
@@ -37,6 +36,8 @@ const SERVICE_RECORD: &str = r#"<?xml version="1.0" encoding="UTF-8" ?>
 </record>"#;
 #[cfg(target_os = "linux")]
 const ADAPTER: &str = "/org/bluez/hci0";
+#[cfg(target_os = "linux")]
+const BEACON_PATH: &str = "/org/andromeda/Link1/Bluetooth/beacon";
 /// E2E only: a Unix socket stands in for RFCOMM, so the RFCOMM path runs without radios.
 const TEST_SOCKET: &str = "ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET";
 const TEST_ADDRESS: &str = "00:00:00:00:00:01";
@@ -68,6 +69,19 @@ impl Bluetooth {
         }
         // macOS asks the user itself when an unpaired device connects.
         watch::channel(None).0
+    }
+
+    /// Advertises over Bluetooth LE while it holds true, so a phone that types the pairing code finds this desktop
+    /// with no shared network. The advertisement's service data under [`SERVICE_UUID`] is the adapter address.
+    pub fn pairing_beacon(&self) -> watch::Sender<bool> {
+        let (tx, rx) = watch::channel(false);
+        #[cfg(target_os = "linux")]
+        if let (Some(_), Some(address)) = (&self.registration, &self.address) {
+            tokio::spawn(beacon(address.clone(), rx));
+        }
+        #[cfg(not(target_os = "linux"))]
+        drop(rx);
+        tx
     }
 
     /// Whether `BlueZ` serves Link on the adapter, not the test socket.
@@ -204,6 +218,66 @@ async fn connectable(on: bool) -> zbus::Result<bool> {
         );
     }
     Ok(was)
+}
+
+#[cfg(target_os = "linux")]
+async fn beacon(address: String, mut on: watch::Receiver<bool>) {
+    let mut advertising: Option<zbus::Connection> = None;
+    loop {
+        let want = *on.borrow_and_update();
+        if want && advertising.is_none() {
+            advertising = advertise(&address)
+                .await
+                .inspect_err(|error| log::info!("Bluetooth: no pairing advertisement: {error}"))
+                .ok();
+        } else if let Some(bus) = advertising.take_if(|_| !want) {
+            // BlueZ drops a client's advertisements when its bus connection closes.
+            drop(bus);
+            log::info!("Bluetooth: pairing advertisement stopped");
+        }
+        if on.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn advertise(address: &str) -> zbus::Result<zbus::Connection> {
+    let data = address
+        .split(':')
+        .map(|byte| u8::from_str_radix(byte, 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| zbus::Error::Failure(format!("adapter address {address}")))?;
+    let bus = zbus::Connection::system().await?;
+    bus.object_server().at(BEACON_PATH, Beacon { data }).await?;
+    let manager = zbus::Proxy::new(&bus, "org.bluez", ADAPTER, "org.bluez.LEAdvertisingManager1").await?;
+    let path = zbus::ObjectPath::try_from(BEACON_PATH)?;
+    manager.call::<_, _, ()>("RegisterAdvertisement", &(path, HashMap::<&str, Variant<'_>>::new())).await?;
+    log::info!("Bluetooth: advertising the pairing window");
+    Ok(bus)
+}
+
+/// A non-connectable LE advertisement: [`SERVICE_UUID`] with the adapter address as service data. 24 of the 31 bytes.
+#[cfg(target_os = "linux")]
+struct Beacon {
+    data: Vec<u8>,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::unused_self)]
+#[zbus::interface(name = "org.bluez.LEAdvertisement1")]
+impl Beacon {
+    fn release(&self) {}
+
+    #[zbus(property, name = "Type")]
+    fn kind(&self) -> &'static str {
+        "broadcast"
+    }
+
+    #[zbus(property)]
+    fn service_data(&self) -> HashMap<String, Variant<'static>> {
+        HashMap::from([(SERVICE_UUID.to_owned(), Variant::from(self.data.clone()))])
+    }
 }
 
 fn test_socket(path: &std::path::Path, tx: mpsc::Sender<OwnedFd>) -> std::io::Result<()> {

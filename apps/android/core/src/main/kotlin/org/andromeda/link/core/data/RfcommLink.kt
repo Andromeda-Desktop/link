@@ -4,10 +4,15 @@ import android.Manifest
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.ParcelUuid
 import android.os.SystemClock
 import android.system.Os
 import android.system.OsConstants
@@ -21,6 +26,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -185,6 +191,48 @@ class RfcommLink(
         return device.bondState == BluetoothDevice.BOND_BONDED
     }
 
+    /** Desktops advertising an open pairing window: their adapter address is the service data under [service]. */
+    override fun scanPairing(
+        service: String,
+        millis: UInt,
+    ): List<String> {
+        if (!scanAllowed()) return emptyList<String>().also { Log.i(TAG, "pairing scan: no permission") }
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+        val scanner = adapter?.takeIf { it.isEnabled }?.bluetoothLeScanner ?: return emptyList()
+        val uuid = ParcelUuid(UUID.fromString(service))
+        val found = ConcurrentHashMap.newKeySet<String>()
+        val callback =
+            object : ScanCallback() {
+                override fun onScanResult(
+                    callbackType: Int,
+                    result: ScanResult,
+                ) {
+                    val data = result.scanRecord?.getServiceData(uuid)
+                    if (data?.size == ADDRESS_BYTES) found += data.joinToString(":") { "%02X".format(it) }
+                }
+            }
+        val filter = ScanFilter.Builder().setServiceData(uuid, ByteArray(0)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        try {
+            scanner.startScan(listOf(filter), settings, callback)
+            SystemClock.sleep(millis.toLong())
+            scanner.stopScan(callback)
+        } catch (error: SecurityException) {
+            Log.w(TAG, "pairing scan: ${error.message}")
+        }
+        Log.i(TAG, "pairing scan: ${found.size} desktop(s)")
+        return found.toList()
+    }
+
+    private fun scanAllowed(): Boolean =
+        context.checkSelfPermission(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Manifest.permission.BLUETOOTH_SCAN
+            } else {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            },
+        ) == PackageManager.PERMISSION_GRANTED
+
     private fun allowed(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
@@ -224,6 +272,7 @@ class RfcommLink(
         const val NOT_BONDED = -4
         const val BUFFER = 16 * 1024
         const val L2CAP_CONNECT_MS = 5_000L
+        const val ADDRESS_BYTES = 6
 
         /** The desktop's `bluetooth::SERVICE_UUID`. */
         val SERVICE: UUID = UUID.fromString("5c3b1e5a-7d2f-4a8e-9b61-3f0c2d4e8a17")

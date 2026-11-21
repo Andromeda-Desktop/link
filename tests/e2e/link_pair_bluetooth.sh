@@ -8,6 +8,7 @@
 #    phone's first session is over Bluetooth (a share arrives).
 # 3. A QR code with the wrong secret fails over Bluetooth too, and the desktop lists no new phone.
 # 4. A QR code with a parameter the phone does not know still parses.
+# 5. A typed code pairs over Bluetooth when mDNS finds no desktop and the LE scan finds the adapter.
 # Every control message is validated against api/messages.cddl.
 # Writes results.jsonl, transcript.jsonl, linkd.log to $OUT (default ./artifacts/link-pair-bluetooth).
 set -euo pipefail
@@ -107,6 +108,14 @@ wait_for 5 "dbus-monitor did not start" test -s "$RUNTIME/signals.txt"
 phone share --kind text --text "hello over bluetooth" > /dev/null || fail "share over Bluetooth"
 wait_for 10 "no Received for the share" grep -q 'string "hello over bluetooth"' "$RUNTIME/signals.txt"
 record '{"step":"first-session-over-bluetooth"}'
+
+CODE=$(link StartPairing | sed -E "s/^\('([0-9]+)', .*/\1/")
+OUTPUT=$(in_phone "$BIN/andromeda-link-phone" --state "$RUNTIME/phone2" --name phone2 --downloads "$PHONE_DL" \
+  --transcript "$OUT/transcript.jsonl" --bluetooth-socket "$RFCOMM" pair --code "$CODE") \
+  || fail "code pairing over Bluetooth: $OUTPUT"
+echo "$OUTPUT" | grep -q '"addr":null' || fail "code pairing reported an IP address: $OUTPUT"
+wait_for 10 "the desktop does not list phone2: $(devices)" eval 'devices | grep -q "'"'"'phone2'"'"'"'
+record '{"step":"code-pairs-over-bluetooth"}'
 
 CHECK=$("$BIN/andromeda-link-phone" check-transcript "$ROOT/api/messages.cddl" "$OUT/transcript.jsonl") \
   || fail "transcript violates the schema"

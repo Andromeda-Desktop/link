@@ -149,22 +149,27 @@ impl Phone {
         &self.store.peers
     }
 
-    /// Pairs over IP when any address answers, else over Bluetooth when the QR code names the desktop's adapter.
+    /// Pairs over IP when any address answers, else over Bluetooth when the QR code names the desktop's adapter, or,
+    /// for a typed code, when one desktop advertises its window over Bluetooth LE.
     pub async fn pair(&mut self, target: PairTarget) -> Result<Session, Error> {
         let (candidates, pin, secret, method, bluetooth) = match target {
             PairTarget::Code { code, candidates } => {
                 if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err(Error::BadCode);
                 }
-                let candidates = if candidates.is_empty() { pairing_desktop().await? } else { candidates };
-                (candidates, ServerPin::Any, Secret::new(code.into_bytes()), PairMethod::Code, None)
+                let (candidates, bluetooth) = if candidates.is_empty() {
+                    self.pairing_desktop().await?
+                } else {
+                    (candidates, PairBluetooth::None)
+                };
+                (candidates, ServerPin::Any, Secret::new(code.into_bytes()), PairMethod::Code, bluetooth)
             }
             PairTarget::Uri(uri) => (
                 uri.addresses,
                 ServerPin::Key(uri.fingerprint),
                 Secret::new(uri.secret.to_vec()),
                 PairMethod::Qr,
-                uri.bluetooth,
+                uri.bluetooth.map_or(PairBluetooth::None, PairBluetooth::Known),
             ),
         };
         let (connection, server, addr, route) = match reach::race(self.dialer(), &candidates, pin).await {
@@ -173,11 +178,18 @@ impl Phone {
                 (Connection::from(dialed.connection), server, Some(addr), dialed.route)
             }
             Err(ip) => {
-                let (Some(address), Some(opener), ServerPin::Key(fingerprint)) =
-                    (bluetooth, self.bluetooth.clone(), pin)
-                else {
-                    return Err(ip);
+                let address = match bluetooth {
+                    PairBluetooth::None => return Err(ip),
+                    PairBluetooth::Known(address) => address,
+                    PairBluetooth::Scan(scan) => match scanned(scan).await?.as_slice() {
+                        [address] => address.clone(),
+                        [] if candidates.is_empty() => return Err(Error::NoPairingDesktop),
+                        [] => return Err(ip),
+                        _ => return Err(Error::ManyPairingDesktops),
+                    },
                 };
+                let Some(opener) = self.bluetooth.clone() else { return Err(ip) };
+
                 log::info!("pairing: no IP path ({ip}); trying Bluetooth");
                 let fd = match tokio::task::spawn_blocking(move || opener.open(&address, true))
                     .await
@@ -190,7 +202,7 @@ impl Phone {
                         return Err(Error::PairUnreached { ip, bluetooth: bluetooth.to_string() });
                     }
                 };
-                let dialed = self.dial_link(StreamLink::new(fd)?, fingerprint).await?;
+                let dialed = self.dial_link(StreamLink::new(fd)?, pin).await?;
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
                 (Connection::from(dialed.connection), server, None, dialed.route)
             }
@@ -201,6 +213,24 @@ impl Phone {
         let desktop = self.remember(&server, &hello, addr)?;
         let via = if addr.is_some() { Via::LastKnown } else { Via::Bluetooth };
         Ok(Session { connection, control, desktop, addr, via, resumed: false, route })
+    }
+
+    /// The one desktop with an open pairing window by mDNS, if any, and an LE scan for desktops that advertise one,
+    /// which runs meanwhile and counts only when IP fails. Never two desktops: a wrong code spends the other's window.
+    async fn pairing_desktop(&self) -> Result<(Vec<SocketAddr>, PairBluetooth), Error> {
+        let opener = self.bluetooth.clone();
+        let scan = tokio::task::spawn_blocking(move || opener.map(|opener| opener.scan_pairing()));
+        // With no network, mDNS fails: the scan may still find the desktop.
+        let browsed = discovery::browse(reach::MDNS_WINDOW, None).await.unwrap_or_else(|error| {
+            log::info!("pairing: no mDNS browse: {error}");
+            Vec::new()
+        });
+        let open: Vec<_> = browsed.into_iter().filter(|desktop| desktop.pairing).collect();
+        match open.as_slice() {
+            [desktop] => Ok((desktop.addresses.clone(), PairBluetooth::Scan(scan))),
+            [] => Ok((Vec::new(), PairBluetooth::Scan(scan))),
+            _ => Err(Error::ManyPairingDesktops),
+        }
     }
 
     /// Reaches a paired desktop. A desktop that answers `unpaired` is forgotten, as the protocol requires.
@@ -319,10 +349,10 @@ impl Phone {
     }
 
     /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.
-    async fn dial_link(&mut self, link: impl MessageLink, fingerprint: [u8; 32]) -> Result<Dialed, Error> {
+    async fn dial_link(&mut self, link: impl MessageLink, pin: ServerPin) -> Result<Dialed, Error> {
         self.links = self.links.wrapping_add(1);
         let link = self.socket.add_link(link, link_address(self.links));
-        match self.dialer().dial_hop(Hop::Link(link), ServerPin::Key(fingerprint)).await {
+        match self.dialer().dial_hop(Hop::Link(link), pin).await {
             Ok(dialed) => {
                 self.socket.tie(link, dialed.connection.clone());
                 Ok(dialed)
@@ -335,7 +365,8 @@ impl Phone {
     }
 
     async fn connect_link(&mut self, peer: &Peer, link: impl MessageLink, via: Via) -> Result<Session, Error> {
-        let Dialed { connection, resumed, route } = self.dial_link(link, peer.spki()?.fingerprint()).await?;
+        let Dialed { connection, resumed, route } =
+            self.dial_link(link, ServerPin::Key(peer.spki()?.fingerprint())).await?;
         let connection = Connection::from(connection);
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
@@ -438,15 +469,28 @@ impl Session {
     }
 }
 
-/// Addresses of the one desktop advertising an open pairing window.
-async fn pairing_desktop() -> Result<Vec<SocketAddr>, Error> {
-    let open: Vec<_> =
-        discovery::browse(reach::MDNS_WINDOW, None).await?.into_iter().filter(|desktop| desktop.pairing).collect();
-    match open.as_slice() {
-        [desktop] => Ok(desktop.addresses.clone()),
-        [] => Err(Error::NoPairingDesktop),
-        _ => Err(Error::ManyPairingDesktops),
-    }
+/// Where pairing goes over Bluetooth when no IP path answers.
+enum PairBluetooth {
+    None,
+    /// The adapter the QR code names.
+    Known(String),
+    /// The LE scan for desktops advertising a window: none without a platform opener.
+    Scan(tokio::task::JoinHandle<Option<std::io::Result<Vec<String>>>>),
+}
+
+/// The distinct addresses the scan found.
+async fn scanned(scan: tokio::task::JoinHandle<Option<std::io::Result<Vec<String>>>>) -> Result<Vec<String>, Error> {
+    let mut found = match scan.await.map_err(|_| Error::Stopped)? {
+        Some(Ok(found)) => found,
+        Some(Err(error)) => {
+            log::info!("pairing: no Bluetooth scan: {error}");
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
+    found.sort();
+    found.dedup();
+    Ok(found)
 }
 
 /// `length` characters without look-alikes, which Android accepts in a group name and passphrase.

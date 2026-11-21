@@ -14,6 +14,12 @@ pub const BLUETOOTH_UPGRADE_ABOVE: u64 = 1024 * 1024;
 /// names it.
 pub const L2CAP_PSM: u16 = 0xC5;
 
+/// The Link service: in SDP, where the phone finds the RFCOMM channel, and in the desktop's LE pairing advertisement.
+pub const SERVICE_UUID: &str = "5c3b1e5a-7d2f-4a8e-9b61-3f0c2d4e8a17";
+
+/// How long a phone pairing with a typed code scans Bluetooth LE for the desktop.
+pub const PAIRING_SCAN: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Opens a link to a desktop's Bluetooth adapter (`AA:BB:CC:DD:EE:FF`). Blocking, since the platforms connect
 /// synchronously; the phone calls it off the runtime.
 pub trait BluetoothOpener: Send + Sync {
@@ -26,5 +32,12 @@ pub trait BluetoothOpener: Send + Sync {
     /// message. Platforms without LE channels keep the default.
     fn open_l2cap(&self, _address: &str) -> io::Result<OwnedFd> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Scans Bluetooth LE for [`PAIRING_SCAN`] and returns the adapter addresses of desktops that advertise an open
+    /// pairing window: service data under the Link service UUID, six address bytes. Platforms without a scan keep
+    /// the default.
+    fn scan_pairing(&self) -> io::Result<Vec<String>> {
+        Ok(Vec::new())
     }
 }

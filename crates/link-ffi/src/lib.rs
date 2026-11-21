@@ -751,6 +751,10 @@ pub trait BluetoothLink: Send + Sync {
     /// Like `open`, but an LE L2CAP channel to `psm` at the desktop's public address, pumped through a
     /// `SOCK_SEQPACKET` socket pair so each message stays one SDU. -1 also where the phone has no LE channels.
     fn open_l2cap(&self, address: String, psm: u16) -> i32;
+
+    /// Scans Bluetooth LE for `millis` and returns each address found as service data (six bytes) under the
+    /// `service` UUID, as `AA:BB:CC:DD:EE:FF`. Empty without the permission or with Bluetooth off.
+    fn scan_pairing(&self, service: String, millis: u32) -> Vec<String>;
 }
 
 struct Opener(Arc<dyn BluetoothLink>);
@@ -762,6 +766,11 @@ impl link_core::bluetooth::BluetoothOpener for Opener {
 
     fn open_l2cap(&self, address: &str) -> std::io::Result<OwnedFd> {
         adopt(self.0.open_l2cap(address.to_owned(), link_core::bluetooth::L2CAP_PSM))
+    }
+
+    fn scan_pairing(&self) -> std::io::Result<Vec<String>> {
+        let millis = u32::try_from(link_core::bluetooth::PAIRING_SCAN.as_millis()).unwrap_or(u32::MAX);
+        Ok(self.0.scan_pairing(link_core::bluetooth::SERVICE_UUID.to_owned(), millis))
     }
 }
 

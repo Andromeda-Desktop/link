@@ -113,7 +113,7 @@ async fn run() -> anyhow::Result<()> {
         relay::start(server.clone(), spec.clone());
     }
     if let Some(address) = &bluetooth.address {
-        hub.set_bluetooth(address.clone(), bluetooth.pairing_window());
+        hub.set_bluetooth(address.clone(), bluetooth.pairing_window(), bluetooth.pairing_beacon());
     }
     if let Transport::Bus(bus) = &transport {
         dbus::serve(bus, handle.clone(), snapshots.clone(), nearby.clone()).await?;
