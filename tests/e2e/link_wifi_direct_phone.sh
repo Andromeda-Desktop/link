@@ -70,7 +70,11 @@ wait_for 90 "the session did not move to a Wi-Fi Direct group: $(grep -E 'Direct
 JOINED=$(( $(now_ms) - T0 ))
 # Without auto-accept on the phone, its offer notification takes the tap.
 arrived=""
-for _ in $(seq 20); do delivered direct-8m.bin "$RUNTIME/direct-8m.bin" && { arrived=1; break; }; sleep 1; done
+for _ in $(seq 30); do
+  delivered direct-8m.bin "$RUNTIME/direct-8m.bin" && { arrived=1; break; }
+  adb shell dumpsys notification --noredact | grep -q "wants to send" && break
+  sleep 1
+done
 if [[ -z $arrived ]]; then
   wait_for 30 "no offer notification" eval 'adb shell dumpsys notification --noredact | grep -q "wants to send"'
   adb shell cmd statusbar expand-notifications
@@ -83,7 +87,20 @@ fi
 JOIN_PATH=leave-wifi
 grep -q "the Wi-Fi device is idle" "$OUT/linkd.log" && JOIN_PATH=idle-wifi
 grep -q "added linkwifi0" "$OUT/linkd.log" && JOIN_PATH=second-interface
-record "{\"step\":\"8mib-over-wifi-direct\",\"path\":\"$JOIN_PATH\",\"join_ms\":$JOINED,\"done_ms\":$(( $(now_ms) - T0 ))}"
+MHZ=$(grep -o 'wifi-direct group on [0-9]* MHz' "$OUT/logcat.txt" | tail -1 | grep -o '[0-9]\+' || echo 0)
+# The bytes' own time: from the phone's accept to its last byte, by the phone's clock.
+XFER_MS=$(python3 - "$OUT/logcat.txt" <<'PY'
+import re, sys
+from datetime import datetime
+times = {}
+for line in open(sys.argv[1], errors="replace"):
+    m = re.match(r"(\d\d-\d\d \d\d:\d\d:\d\d\.\d+).*link_core::transfer: \w+: (accepted transfer|transfer \w+ from it: done)", line)
+    if m:
+        times["accepted" if m.group(2).startswith("accepted") else "done"] = datetime.strptime("2000-" + m.group(1), "%Y-%m-%d %H:%M:%S.%f")
+print(int((times["done"] - times["accepted"]).total_seconds() * 1000) if len(times) == 2 else 0)
+PY
+)
+record "{\"step\":\"8mib-over-wifi-direct\",\"path\":\"$JOIN_PATH\",\"mhz\":$MHZ,\"join_ms\":$JOINED,\"xfer_ms\":$XFER_MS,\"done_ms\":$(( $(now_ms) - T0 ))}"
 adb shell rm -f /sdcard/Download/direct-8m.bin
 cat "$OUT/results.jsonl"
 echo "PASS; artifacts: $OUT"

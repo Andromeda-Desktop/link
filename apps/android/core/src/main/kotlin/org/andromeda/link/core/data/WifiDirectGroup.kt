@@ -33,18 +33,32 @@ class WifiDirectGroup(
     /** Forms [group], the same name and passphrase each time for one desktop, so the desktop knows it again. */
     override fun start(group: HotspotCredentials): HotspotCredentials? {
         val (manager, channel) = ready() ?: return null
+        // On 2.4 GHz the group shares airtime with Bluetooth, which stays up beside it: 5 GHz first.
+        val formed =
+            form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
+                ?: form(manager, channel, group, WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                ?: return null.also { Log.i(TAG, "the group did not come up") }
+        Log.i(TAG, "wifi-direct group on ${formed.frequency} MHz")
+        return HotspotCredentials(formed.networkName, formed.passphrase ?: return null)
+    }
+
+    private fun form(
+        manager: WifiP2pManager,
+        channel: WifiP2pManager.Channel,
+        group: HotspotCredentials,
+        band: Int,
+    ): WifiP2pGroup? {
         val config =
             WifiP2pConfig
                 .Builder()
                 .setNetworkName(group.ssid)
                 .setPassphrase(group.passphrase)
-                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                .setGroupOperatingBand(band)
                 .build()
         // A group left from an earlier attempt would make Android refuse a new one.
         call(manager, channel, "removing the group", manager::removeGroup)
         if (!created(manager, channel, config)) return null
-        val formed = group(manager, channel) ?: return null.also { Log.i(TAG, "the group did not come up") }
-        return HotspotCredentials(formed.networkName, formed.passphrase ?: return null)
+        return group(manager, channel)
     }
 
     override fun stop() {
