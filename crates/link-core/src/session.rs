@@ -90,12 +90,12 @@ pub struct SessionHandle {
 
 pub struct SessionActor {
     reader: ControlReader,
-    commands: mpsc::Receiver<Command>,
     live: Live,
 }
 
 struct Live {
     connection: Connection,
+    commands: mpsc::Receiver<Command>,
     writer: ControlWriter,
     state: SessionState,
     /// Applied to what a phone sends a desktop.
@@ -145,9 +145,17 @@ pub fn session(connection: Connection, control: Control, role: Role, route: Rout
         active_until: now + ACTIVE_FOR,
         reported_live: true,
     };
-    let live =
-        Live { connection, writer, state: SessionState::new(role), limits, route, waiting: HashMap::new(), beat };
-    (handle, SessionActor { reader, commands, live })
+    let live = Live {
+        connection,
+        commands,
+        writer,
+        state: SessionState::new(role),
+        limits,
+        route,
+        waiting: HashMap::new(),
+        beat,
+    };
+    (handle, SessionActor { reader, live })
 }
 
 impl SessionHandle {
@@ -235,7 +243,7 @@ impl SessionHandle {
 impl SessionActor {
     /// Runs until the connection ends. The error says how; a protocol violation is the caller's to close with.
     pub async fn run(self) -> Result<(), Error> {
-        let Self { reader, mut commands, mut live } = self;
+        let Self { reader, mut live } = self;
         let (inbox_tx, mut inbox) = mpsc::channel(8);
         let mut reading = pin!(reader.pump(inbox_tx));
         let connection = live.connection.clone();
@@ -250,7 +258,7 @@ impl SessionActor {
                             return Ok(());
                         }
                     }
-                    Some(command) = commands.recv() => live.on_command(command).await?,
+                    Some(command) = live.commands.recv() => live.on_command(command).await?,
                     stream = connection.accept_uni() => {
                         if !live.route.transfers.stream(live.route.peer.clone(), stream?) {
                             return Err(Error::Flooded);
@@ -323,15 +331,16 @@ impl Live {
             self.beat.sent.insert(seq, now);
             self.beat.due = now + next;
         }
-        self.report(now).await;
+        self.report(now).await?;
         Ok(())
     }
 
-    async fn report(&mut self, now: Instant) {
+    async fn report(&mut self, now: Instant) -> Result<(), Error> {
         if let Some(state) = self.beat.changed(now) {
             log::info!("{}: link {state:?}", self.route.peer);
-            self.emit(SessionEvent::Link { from: self.route.peer.clone(), state }).await;
+            self.emit(SessionEvent::Link { from: self.route.peer.clone(), state }).await?;
         }
+        Ok(())
     }
 
     /// Handles one message from the peer; true when the session is over.
@@ -341,20 +350,20 @@ impl Live {
             && path.follow_connection(self.connection.quic())
         {
             let on_bluetooth = path.on_bluetooth();
-            self.emit(SessionEvent::Path { from: self.route.peer.clone(), on_bluetooth }).await;
+            self.emit(SessionEvent::Path { from: self.route.peer.clone(), on_bluetooth }).await?;
         }
         match envelope.message {
             Message::Heartbeat(Heartbeat { seq, next_ms }) if self.beat.on => {
                 self.writer.send(Message::HeartbeatAck(HeartbeatAck { seq })).await?;
                 self.beat.apply(LinkEvent::Heard { next: std::time::Duration::from_millis(next_ms.into()) }, now);
-                self.report(now).await;
+                self.report(now).await?;
                 return Ok(false);
             }
             Message::HeartbeatAck(HeartbeatAck { seq }) if self.beat.on => {
                 if let Some(sent) = self.beat.sent.remove(&seq) {
                     let next = self.beat.due.saturating_duration_since(now);
                     self.beat.apply(LinkEvent::Acked { sent, next }, now);
-                    self.report(now).await;
+                    self.report(now).await?;
                 }
                 return Ok(false);
             }
@@ -375,7 +384,7 @@ impl Live {
                 let end = HotspotEnd { reason: Some("too many hotspots in a short time".to_owned()) };
                 self.writer.send(Message::HotspotEnd(end.clone())).await?;
                 let from = peer.clone();
-                self.emit(SessionEvent::Message { from, message: Message::HotspotEnd(end) }).await;
+                self.emit(SessionEvent::Message { from, message: Message::HotspotEnd(end) }).await?;
             }
             return Ok(false);
         }
@@ -383,7 +392,7 @@ impl Live {
         match self.state.on_message(envelope)? {
             Inbound::Share { id, share } => {
                 log::info!("{peer}: share {:016x} received ({})", share.item.unwrap_or(0), share.kind.as_str());
-                self.emit(SessionEvent::Received { from: peer.clone(), share }).await;
+                self.emit(SessionEvent::Received { from: peer.clone(), share }).await?;
                 self.writer.send(Message::ShareAck(ShareAck { of: id })).await?;
             }
             Inbound::Acked { of } => {
@@ -392,14 +401,14 @@ impl Live {
                 }
             }
             Inbound::Unpair => {
-                self.emit(SessionEvent::Unpaired { from: peer.clone() }).await;
+                self.emit(SessionEvent::Unpaired { from: peer.clone() }).await?;
                 return Ok(true);
             }
             Inbound::Deliver(Message::SystemCommand(command)) => {
-                self.emit(SessionEvent::SystemCommand { from: peer.clone(), id: message_id, command }).await;
+                self.emit(SessionEvent::SystemCommand { from: peer.clone(), id: message_id, command }).await?;
             }
-            Inbound::Deliver(message) => self.emit(SessionEvent::Message { from: peer.clone(), message }).await,
-            Inbound::Status(status) => self.emit(SessionEvent::Status { from: peer.clone(), status }).await,
+            Inbound::Deliver(message) => self.emit(SessionEvent::Message { from: peer.clone(), message }).await?,
+            Inbound::Status(status) => self.emit(SessionEvent::Status { from: peer.clone(), status }).await?,
             Inbound::Transfer(message) => {
                 if !self.route.transfers.control(peer.clone(), message) {
                     return Err(Error::Flooded);
@@ -430,9 +439,23 @@ impl Live {
         Ok(())
     }
 
-    async fn emit(&self, event: SessionEvent) {
-        if self.route.events.send(event).await.is_err() {
-            log::debug!("{}: nobody receives session events", self.route.peer);
+    /// Waits for room in the owner's event queue while it serves commands: an owner that sends through this
+    /// session before it drains events would otherwise wait on this session forever.
+    async fn emit(&mut self, event: SessionEvent) -> Result<(), Error> {
+        let events = self.route.events.clone();
+        let mut room = pin!(events.reserve());
+        loop {
+            tokio::select! {
+                biased;
+                permit = &mut room => {
+                    match permit {
+                        Ok(permit) => permit.send(event),
+                        Err(_) => log::debug!("{}: nobody receives session events", self.route.peer),
+                    }
+                    return Ok(());
+                }
+                Some(command) = self.commands.recv() => self.on_command(command).await?,
+            }
         }
     }
 }
@@ -474,6 +497,13 @@ mod tests {
     }
 
     async fn pair(name: &str) -> std::result::Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
+        pair_with_events(name, 1024).await
+    }
+
+    async fn pair_with_events(
+        name: &str,
+        events: usize,
+    ) -> std::result::Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
         let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
         let (phone_conn, desktop_conn) = crate::transport::connected(&phone_key, &desk_key).await?;
         let (phone_conn, desktop_conn) = (Connection::from(phone_conn), Connection::from(desktop_conn));
@@ -496,7 +526,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("link-session-{name}-{}", std::process::id()));
         let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
         let route = |peer: DeviceId| {
-            let (events, rx) = mpsc::channel(1024);
+            let (events, rx) = mpsc::channel(events);
             (Route { peer, events, transfers: transfers.clone(), heartbeat: true, path: None }, rx)
         };
         let (phone_route, phone_events) = route(desk_key.spki().device_id());
@@ -530,6 +560,35 @@ mod tests {
             }
         });
         freeze
+    }
+
+    /// The session's owner sends through it while its events wait for room; the owner drains events only after.
+    #[tokio::test]
+    async fn a_send_completes_while_the_owner_has_not_drained_events() -> Result {
+        let Pair { handles: [phone, desktop], events: [_, desktop_events], .. } =
+            &mut pair_with_events("full", 1).await?;
+        for item in 0..4 {
+            let phone = phone.clone();
+            let share = Share { kind: ShareKind::Text, text: format!("share {item}"), item: Some(item) };
+            tokio::spawn(async move { phone.share(share).await });
+        }
+        let first = desktop_events.recv().await;
+        assert!(matches!(first, Some(SessionEvent::Received { .. })), "first event: {first:?}");
+        // Real time for the other shares to cross loopback, so the actor waits in emit with one event queued.
+        tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(300))).await?;
+
+        let sent = tokio::time::timeout(Duration::from_secs(30), desktop.send(Message::ContactsChanged)).await;
+        assert!(matches!(sent, Ok(Ok(()))), "send while events are full: {sent:?}");
+        let mut received = 1;
+        while received < 4 {
+            match tokio::time::timeout(Duration::from_secs(30), desktop_events.recv()).await? {
+                Some(SessionEvent::Received { .. }) => received += 1,
+                Some(_) => {}
+                None => break,
+            }
+        }
+        assert_eq!(received, 4);
+        Ok(())
     }
 
     #[tokio::test]
