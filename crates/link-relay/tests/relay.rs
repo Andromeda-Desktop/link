@@ -28,8 +28,43 @@ fn relay(
     let identity = Identity::generate()?;
     let endpoint = link_relay::endpoint(&identity, "127.0.0.1:0".parse()?)?;
     let addr = endpoint.local_addr()?;
-    tokio::spawn(link_relay::serve(endpoint, move |device| allowed.iter().any(|id| id == device.as_str())));
+    tokio::spawn(link_relay::serve(endpoint, Duration::from_secs(30), move |device| {
+        allowed.iter().any(|id| id == device.as_str())
+    }));
     Ok((addr, identity))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_removed_from_the_allow_list_is_closed_while_connected() -> Result {
+    let desk_key = Identity::generate()?;
+    let allow = std::sync::Arc::new(std::sync::Mutex::new(vec![desk_key.spki().device_id().as_str().to_owned()]));
+    let relay_key = Identity::generate()?;
+    let endpoint = link_relay::endpoint(&relay_key, "127.0.0.1:0".parse()?)?;
+    let relay_addr = endpoint.local_addr()?;
+    let list = allow.clone();
+    tokio::spawn(link_relay::serve(endpoint, Duration::from_millis(100), move |device| {
+        list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|id| id == device.as_str())
+    }));
+
+    let desk = PathServer::bind(&desk_key, "[::]:0".parse()?)?;
+    let connection = desk
+        .dial(relay_addr, pin(&relay_key), |transport| {
+            transport.initial_mtu(MTU);
+            transport.keep_alive_interval(Some(Duration::from_millis(50)));
+        })
+        .await?;
+    let (mut desk_relay, _opened) = Relay::new(connection.clone());
+    desk_relay.wait_observed().await.ok_or("the relay did not admit the desktop")?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(connection.close_reason().is_none(), "an allowed device was closed");
+
+    allow.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed()).await;
+    assert!(
+        matches!(&closed, Ok(quinn::ConnectionError::ApplicationClosed(close)) if close.error_code == 1u32.into()),
+        "removed device: {closed:?}"
+    );
+    Ok(())
 }
 
 fn phone_dialer(

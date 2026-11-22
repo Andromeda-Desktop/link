@@ -34,13 +34,17 @@ pub fn endpoint(identity: &Identity, listen: SocketAddr) -> anyhow::Result<quinn
 
 type Peers = Arc<Mutex<HashMap<Tag, quinn::Connection>>>;
 
-/// Serves until the endpoint closes; `allowed` is asked once per connection.
-pub async fn serve(endpoint: quinn::Endpoint, allowed: impl Fn(&DeviceId) -> bool + Send + Sync + 'static) {
+/// Serves until the endpoint closes; `allowed` is asked at connect and every `recheck`, so a removed device leaves.
+pub async fn serve(
+    endpoint: quinn::Endpoint,
+    recheck: Duration,
+    allowed: impl Fn(&DeviceId) -> bool + Send + Sync + 'static,
+) {
     let (peers, allowed) = (Peers::default(), Arc::new(allowed));
     while let Some(incoming) = endpoint.accept().await {
         let (peers, allowed) = (peers.clone(), allowed.clone());
         tokio::spawn(async move {
-            if let Err(error) = relay(incoming, &peers, &*allowed).await {
+            if let Err(error) = relay(incoming, &peers, recheck, &*allowed).await {
                 log::info!("relay: {error}");
             }
         });
@@ -50,6 +54,7 @@ pub async fn serve(endpoint: quinn::Endpoint, allowed: impl Fn(&DeviceId) -> boo
 async fn relay(
     incoming: quinn::Incoming,
     peers: &Peers,
+    recheck: Duration,
     allowed: &(dyn Fn(&DeviceId) -> bool + Send + Sync),
 ) -> anyhow::Result<()> {
     let connection = incoming.await?;
@@ -63,10 +68,20 @@ async fn relay(
     log::info!("relay: {device} from {seen}");
     connection.send_datagram(frame(&CONTROL, seen.to_string().as_bytes()))?;
     lock(peers).insert(source, connection.clone());
+    let mut check = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
     let ended = loop {
-        let datagram = match connection.read_datagram().await {
-            Ok(datagram) => datagram,
-            Err(error) => break error,
+        let datagram = tokio::select! {
+            datagram = connection.read_datagram() => match datagram {
+                Ok(datagram) => datagram,
+                Err(error) => break error.to_string(),
+            },
+            _ = check.tick() => {
+                if allowed(&device) {
+                    continue;
+                }
+                connection.close(NOT_ALLOWED.into(), b"not allowed");
+                break "it is no longer allowed".to_owned();
+            }
         };
         let Some((destination, body)) = datagram.split_first_chunk::<8>() else { continue };
         let target = lock(peers).get(destination).cloned();

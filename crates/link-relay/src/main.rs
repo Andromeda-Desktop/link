@@ -1,5 +1,6 @@
 //! andromeda-link-relay [--listen ADDR] [--state DIR]: relays Link connections between networks. DIR holds the relay
-//! key (`relay.key`, made on first start) and `allow`: one device id per line, `#` starts a comment; read per connection.
+//! key (`relay.key`, made on first start) and `allow`: one device id per line, `#` starts a comment; read per connection
+//! and every 30 s for each connected device.
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -9,6 +10,8 @@ use anyhow::Context;
 use link_core::identity::{DeviceId, Identity};
 
 const LISTEN: &str = "[::]:4433";
+/// How often a connected device's place in `allow` is checked again.
+const RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     });
     log::info!("relay on {listen}, key {fingerprint}");
     let allow = state.join("allow");
-    link_relay::serve(endpoint, move |device| allowed(&allow, device)).await;
+    link_relay::serve(endpoint, RECHECK, move |device| allowed(&allow, device)).await;
     Ok(())
 }
 
