@@ -180,7 +180,11 @@ fun OnboardingScreen(
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.refresh() }
+    val request =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            viewModel.refresh()
+            container.refreshBrowseRoots()
+        }
     val last = pager.currentPage == PAGES.lastIndex
     // The scroll runs in the screen's scope: an effect keyed on currentPage would cancel it halfway, where currentPage
     // changes, and leave the pager between two pages. It counts from the settled page, so a tap during a scroll does not

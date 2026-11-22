@@ -138,7 +138,7 @@ class AppContainer(
     }
 
     /** `Storage` needs All files access; `Photos`, the media store by album, needs only the media permissions. */
-    private fun refreshBrowseRoots() {
+    fun refreshBrowseRoots() {
         val roots = if (files.allFiles()) mapOf("Storage" to files.root.absolutePath) else emptyMap()
         val library = library.takeIf { files.mediaAccess() != MediaAccess.None }
         scope.launch { repository.setBrowseRoots(roots, library) }

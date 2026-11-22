@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +43,7 @@ import org.andromeda.link.R
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.Feature
+import org.andromeda.link.files.MediaAccess
 import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.screen.ScreenInput
 import org.andromeda.link.ui.kit.BackKey
@@ -66,6 +69,8 @@ import org.andromeda.link.ui.theme.Tok
 @Composable
 fun DeviceScreen(
     viewModel: DeviceViewModel,
+    files: PhoneFiles,
+    onMediaGrant: () -> Unit,
     onBack: () -> Unit,
     onMirrorApps: () -> Unit,
     onRemote: () -> Unit,
@@ -79,9 +84,16 @@ fun DeviceScreen(
     var controlEnabled by rememberSaveable { mutableStateOf(ScreenInput.enabled || LogAccess.helperPossible()) }
     val context = LocalContext.current
     var allFiles by rememberSaveable { mutableStateOf(PhoneFiles.allFiles(context)) }
+    var media by rememberSaveable { mutableStateOf(files.mediaAccess()) }
+    val askMedia =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            media = files.mediaAccess()
+            onMediaGrant()
+        }
     LifecycleResumeEffect(Unit) {
         controlEnabled = ScreenInput.enabled || LogAccess.helperPossible()
         allFiles = PhoneFiles.allFiles(context)
+        media = files.mediaAccess()
         onPauseOrDispose {}
     }
     val back by rememberUpdatedState(onBack)
@@ -128,10 +140,12 @@ fun DeviceScreen(
                         desktop,
                         state,
                         allFiles,
+                        media,
                         controlEnabled,
                         viewModel::setSharing,
                         onMirrorApps,
                         { context.startActivity(allFilesSettings(context)) },
+                        { askMedia.launch(PhoneFiles.mediaPermissions) },
                         { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     )
                     Control(desktop, state, onRemote, onPresenter, onViewer, viewModel::ping)
@@ -220,10 +234,12 @@ private fun Grants(
     desktop: Desktop,
     state: DeviceState,
     allFiles: Boolean,
+    media: MediaAccess,
     controlEnabled: Boolean,
     onShare: (Feature, Boolean) -> Unit,
     onMirrorApps: () -> Unit,
     onAllFiles: () -> Unit,
+    onMedia: () -> Unit,
     onAccessibility: () -> Unit,
 ) {
     val sharing = desktop.sharing
@@ -275,6 +291,14 @@ private fun Grants(
         val rows =
             buildList<@Composable () -> Unit> {
                 add { Toggle(Feature.Browse, R.string.device_open_files, Icons.Folder) }
+                if (sharing.browse && media == MediaAccess.None) {
+                    add {
+                        ValueRow(
+                            stringResource(R.string.device_browse_no_photos, desktop.name),
+                            Modifier.padding(start = SUB_INDENT),
+                        ) { Pill(stringResource(R.string.settings_turn_on), onMedia) }
+                    }
+                }
                 if (sharing.browse && !allFiles) {
                     add {
                         ValueRow(

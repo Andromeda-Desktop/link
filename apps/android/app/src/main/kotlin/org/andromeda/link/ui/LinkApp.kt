@@ -220,6 +220,8 @@ fun LinkApp(
                         desktopId?.let { id ->
                             DeviceScreen(
                                 viewModel(key = "device-$id") { DeviceViewModel(container.repository, id) },
+                                files = container.files,
+                                onMediaGrant = container::refreshBrowseRoots,
                                 onBack = { screen = returnScreen },
                                 onMirrorApps = { screen = Screen.MirrorApps },
                                 onRemote = {
