@@ -60,7 +60,11 @@ pub async fn join(
     let hotspot = scanned(bus, &station_proxy, ssid, scan_timeout).await?;
     let before = ipv4_addresses(&interface);
 
-    bus.object_server().at(AGENT_PATH, Agent { passphrase: passphrase.to_owned() }).await.map_err(text)?;
+    // One agent path: a second join at once would answer iwd with the first join's passphrase.
+    let agent = Agent { passphrase: passphrase.to_owned() };
+    if bus.object_server().at(AGENT_PATH, agent).await.map_err(text)?.is_some() {
+        return Err("another hotspot join is in progress".to_owned());
+    }
     let agents = zbus::Proxy::new(bus, IWD, "/net/connman/iwd", "net.connman.iwd.AgentManager").await.map_err(text)?;
     let agent = OwnedObjectPath::try_from(AGENT_PATH).map_err(text)?;
     let connected = match agents.call::<_, _, ()>("RegisterAgent", &(&agent,)).await {
@@ -169,6 +173,37 @@ mod tests {
     use super::*;
 
     /// A failed join leaves the desktop where it was: the hotspot forgotten and the earlier network joined again.
+    #[tokio::test]
+    async fn a_join_while_another_holds_the_agent_fails_without_touching_iwd() {
+        let mut daemon = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("dbus-daemon");
+        let mut address = String::new();
+        BufReader::new(daemon.stdout.take().expect("stdout")).read_line(&mut address).expect("address");
+        let address = address.trim().to_owned();
+        let mut mock = Command::new("python3")
+            .args([concat!(env!("CARGO_MANIFEST_DIR"), "/tests/iwd_mock.py"), &address])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("iwd mock");
+        let mut calls = BufReader::new(mock.stdout.take().expect("stdout")).lines();
+        assert_eq!(calls.next().expect("a line").expect("ready"), "ready");
+
+        let bus = zbus::connection::Builder::address(address.as_str()).build().await.expect("bus");
+        bus.object_server().at(AGENT_PATH, Agent { passphrase: "first".to_owned() }).await.expect("first agent");
+        let joined = join(&bus, "Phone-AP", "second", Duration::from_secs(5), Duration::from_secs(1)).await;
+        for child in [&mut mock, &mut daemon] {
+            drop(child.kill());
+            drop(child.wait());
+        }
+
+        assert_eq!(joined.err().as_deref(), Some("another hotspot join is in progress"));
+        let calls: Vec<String> = calls.map_while(Result::ok).filter(|line| !line.starts_with("Scan")).collect();
+        assert_eq!(calls, Vec::<String>::new());
+    }
+
     #[tokio::test]
     async fn a_join_that_gets_no_address_forgets_the_hotspot_and_rejoins_home() {
         let mut daemon = Command::new("dbus-daemon")

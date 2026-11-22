@@ -847,14 +847,14 @@ impl Link {
             return Ok(());
         }
         let owner = header.sender().ok_or_else(|| fdo::Error::Failed("no sender".to_owned()))?.to_owned();
+        let bus = fdo::DBusProxy::new(connection).await?;
+        // Subscribed before the owner check, so a caller that leaves meanwhile is not missed.
+        let mut gone = bus.receive_name_owner_changed_with_args(&[(0, owner.as_str())]).await?;
         // One watcher per caller: a caller that reports again keeps the one it has.
         if !self.watched.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owner.to_string()) {
             self.hub.set_capabilities(owner.to_string(), capabilities).await;
             return Ok(());
         }
-        let bus = fdo::DBusProxy::new(connection).await?;
-        // Subscribed before the owner check, so a caller that leaves meanwhile is not missed.
-        let mut gone = bus.receive_name_owner_changed_with_args(&[(0, owner.as_str())]).await?;
         self.hub.set_capabilities(owner.to_string(), capabilities).await;
         let (hub, watched) = (self.hub.clone(), self.watched.clone());
         let present = bus.name_has_owner(owner.as_ref().into()).await.unwrap_or(false);

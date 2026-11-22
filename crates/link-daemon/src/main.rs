@@ -3,6 +3,7 @@
 
 mod bluetooth;
 mod browse;
+mod capabilities;
 mod control;
 mod dbus;
 mod desktop_media;
@@ -140,17 +141,21 @@ async fn run() -> anyhow::Result<()> {
     let replaced = std::future::pending::<()>;
     #[cfg(not(target_os = "linux"))]
     let follow_addresses = |_| std::future::pending::<()>();
+    let stop = async {
+        tokio::select! {
+            () = replaced() => Err(anyhow::anyhow!("an upgrade replaced andromeda-linkd; exiting to run the new one")),
+            _ = terminate.recv() => Ok(()),
+            _ = tokio::signal::ctrl_c() => Ok(()),
+        }
+    };
     let result = tokio::select! {
-        result = hub.run() => result,
+        result = hub.run(stop) => result,
         () = follow_addresses(mdns) => Ok(()),
-        () = replaced() => Err(anyhow::anyhow!("an upgrade replaced andromeda-linkd; exiting to run the new one")),
         () = transfer_actor.run() => Ok(()),
         result = listener.run() => result,
         result = serve_api(transport, api, (events, qs_events), media_requests) => result,
         () = localsend_actor.run() => Ok(()),
         result = quick_share.run() => result,
-        _ = terminate.recv() => Ok(()),
-        _ = tokio::signal::ctrl_c() => Ok(()),
     };
     endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
     endpoint.wait_idle().await;

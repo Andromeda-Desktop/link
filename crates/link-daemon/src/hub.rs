@@ -43,6 +43,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::browse;
+use crate::capabilities;
 use crate::desktop_media::{DesktopMediaHandle, Request};
 use crate::hotspot;
 use crate::localsend::LocalSendHandle;
@@ -369,8 +370,7 @@ pub struct Hub {
     browsing: browse::Browsing,
     /// Each connected phone's `feature:` entries from its hello.
     features: HashMap<DeviceId, Vec<String>>,
-    /// The D-Bus unique name of the `link-session` that last reported, and what it can do.
-    capabilities: Option<(String, Vec<String>)>,
+    capabilities: capabilities::Reports,
     /// The desktop's state as `link-session` last reported it.
     desktop_status: Option<DesktopStatus>,
     /// When `desktop_status` last went to phones, and when a change held back by [`DESKTOP_STATUS_EVERY`] goes.
@@ -504,7 +504,7 @@ impl Hub {
             outbox,
             outbox_actor: Some(outbox_actor),
             seen: Seen::default(),
-            capabilities: None,
+            capabilities: capabilities::Reports::default(),
             desktop_status: None,
             status_sent: None,
             status_due: None,
@@ -519,7 +519,9 @@ impl Hub {
         (hub, handle, snapshots_rx, events_rx)
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    /// Runs until `shutdown` ends, then leaves any phone hotspot or group this desktop joined.
+    pub async fn run(mut self, shutdown: impl std::future::Future<Output = anyhow::Result<()>>) -> anyhow::Result<()> {
+        tokio::pin!(shutdown);
         if let Some(outbox) = self.outbox_actor.take() {
             tokio::spawn(outbox.run());
         }
@@ -534,6 +536,14 @@ impl Hub {
             let mirror_deadline = self.mirrors.deadline();
             let status_due = self.status_due;
             tokio::select! {
+                result = &mut shutdown => {
+                    for (_, nearby) in self.nearby.drain() {
+                        if let Nearby::Joined(active) = nearby {
+                            hotspot::leave(&active).await;
+                        }
+                    }
+                    return result;
+                }
                 () = sleep_until(status_due) => self.flush_desktop_status().await,
                 () = sleep_until(mirror_deadline) => {
                     for id in self.mirrors.expire() {
@@ -615,13 +625,14 @@ impl Hub {
             Command::ServeRemote { id, stream, reply } => drop(reply.send(self.serve_remote(id, stream).await)),
             Command::StopRemote { id, reason } => self.stop_remote(&id, &reason).await,
             Command::SetCommands { commands, reply } => drop(reply.send(self.set_commands(commands).await)),
-            Command::SetCapabilities { owner, can } => self.set_capabilities(Some((owner, can))).await,
+            Command::SetCapabilities { owner, can } => {
+                self.change_capabilities(|reports| reports.report(owner, can)).await;
+            }
             Command::SetDesktopStatus { status } => self.set_desktop_status(status).await,
             Command::SystemResult { id, serial, error } => self.answer_system(&id, serial, error).await,
             Command::SystemToPhone { id, command, reply } => self.send_system_command(id, command, reply).await,
             Command::CapabilitiesGone { owner } => {
-                if self.capabilities.as_ref().is_some_and(|(current, _)| *current == owner) {
-                    self.set_capabilities(None).await;
+                if self.change_capabilities(|reports| reports.gone(&owner)).await {
                     // The session that captured the screen is gone.
                     for id in self.remotes.stop_all() {
                         self.tell_remote_stop(&id, "the desktop stopped sharing its screen").await;
@@ -1300,23 +1311,24 @@ impl Hub {
     }
 
     fn capabilities(&self) -> &[String] {
-        self.capabilities.as_ref().map_or(&[], |(_, can)| can.as_slice())
+        self.capabilities.current()
     }
 
-    async fn set_capabilities(&mut self, capabilities: Option<(String, Vec<String>)>) {
-        let changed = self.capabilities().to_vec() != capabilities.as_ref().map_or(&[][..], |(_, can)| can.as_slice());
-        self.capabilities = capabilities;
+    async fn change_capabilities<T>(&mut self, change: impl FnOnce(&mut capabilities::Reports) -> T) -> T {
+        let before = self.capabilities().to_vec();
+        let result = change(&mut self.capabilities);
         // A state no session reports any more is not sent to phones that connect later.
-        if self.capabilities.is_none() {
+        if self.capabilities.is_empty() {
             self.desktop_status = None;
         }
-        if !changed {
-            return;
+        if before == self.capabilities() {
+            return result;
         }
         self.publish();
         for id in self.sessions.keys().cloned().collect::<Vec<_>>() {
             self.send_capabilities(&id).await;
         }
+        result
     }
 
     async fn send_capabilities(&self, id: &DeviceId) {
@@ -1633,9 +1645,14 @@ impl Hub {
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or_else(|| format!("{id} is not connected"))?;
         session.send(Message::RemoteStarted(stream.started)).await.map_err(|error| error.to_string())?;
-        let sender = link_core::mirror::MirrorSender::open(&session, stream.width, stream.height, false)
-            .await
-            .map_err(|error| error.to_string())?;
+        let sender = match link_core::mirror::MirrorSender::open(&session, stream.width, stream.height, false).await {
+            Ok(sender) => sender,
+            Err(error) => {
+                // The phone already shows remote control as started.
+                self.tell_remote_stop(&id, "the desktop could not open the screen stream").await;
+                return Err(error.to_string());
+            }
+        };
         log::info!("{id}: showing the screen at {}x{}", stream.width, stream.height);
         self.remotes.serve(id, stream.socket, sender).map_err(|error| error.to_string())
     }
@@ -1707,6 +1724,10 @@ impl Hub {
         let on_bluetooth = self.sessions.get(&id).is_some_and(SessionHandle::on_bluetooth);
         if !on_bluetooth {
             return log::info!("{id}: ignoring a hotspot this session does not need");
+        }
+        // A join in flight answers the phone once; a second ask would orphan the first one's answer.
+        if matches!(self.nearby.get(&id), Some(Nearby::Joining { kind: NearbyKind::Hotspot, .. })) {
+            return log::info!("{id}: ignoring a hotspot offer while one is being joined");
         }
         // The phone offers its hotspot only after giving up on a group, which this desktop may have joined anyway.
         let abandoned = match self.nearby.remove(&id) {
