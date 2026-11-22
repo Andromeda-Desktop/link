@@ -1538,9 +1538,13 @@ impl ClientActor {
         self.busy.contains(id) || self.keeping.contains(id) || self.mirroring.contains(id)
     }
 
-    /// The hotspot stays up while the screen streams over it, and idles out after.
+    /// The hotspot stays up while the screen streams over it, and idles out after. Mirroring lives only as long as
+    /// its session: an `on` that arrives after [`Self::ended`] removed the session is dropped.
     fn set_mirroring(&mut self, id: &DeviceId, on: bool) {
         if on {
+            if !self.sessions.contains_key(id) {
+                return;
+            }
             self.mirroring.insert(id.clone());
         } else {
             self.mirroring.remove(id);
@@ -1803,6 +1807,27 @@ mod tests {
     use link_proto::message::NotificationButton;
 
     use super::*;
+
+    /// A `Mirroring { on }` that reaches the actor after its session ended leaves no mirroring behind, so the slot
+    /// is not held busy (SM-156).
+    #[tokio::test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    async fn mirroring_without_a_session_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("link-client-mirroring-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let phone = Phone::new(
+            crate::identity::Identity::generate().expect("key"),
+            dir.join("store.json"),
+            "phone".to_owned(),
+            None,
+        )
+        .expect("phone");
+        let (_client, mut actor, _events) = client(phone, Inbox::new(dir.clone(), &dir).expect("inbox"));
+        let id = crate::identity::Identity::generate().expect("key").device_id();
+        actor.set_mirroring(&id, true);
+        assert!(!actor.is_busy(&id));
+        drop(std::fs::remove_dir_all(&dir));
+    }
 
     /// For every desktop feature mix, a snapshot's hash matches what the desktop computes over the post it gets, and
     /// the post carries no field the desktop does not take.
