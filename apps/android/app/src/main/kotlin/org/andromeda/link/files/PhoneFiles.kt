@@ -47,18 +47,18 @@ class PhoneFiles(
 
     val root: File get() = Environment.getExternalStorageDirectory()
 
+    /** The photo grants MediaLibrary checks; All files access does not count, since the library asks only for these. */
     fun mediaAccess(): MediaAccess =
         when {
-            allFiles() ||
-                granted(
-                    if (Build.VERSION.SDK_INT >=
-                        33
-                    ) {
-                        Manifest.permission.READ_MEDIA_IMAGES
-                    } else {
-                        Manifest.permission.READ_EXTERNAL_STORAGE
-                    },
-                ) ->
+            granted(
+                if (Build.VERSION.SDK_INT >=
+                    33
+                ) {
+                    Manifest.permission.READ_MEDIA_IMAGES
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                },
+            ) ->
                 MediaAccess.Full
             Build.VERSION.SDK_INT >= 34 && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> MediaAccess.Partial
             else -> MediaAccess.None
