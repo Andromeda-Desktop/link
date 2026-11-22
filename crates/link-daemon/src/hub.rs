@@ -1679,8 +1679,8 @@ impl Hub {
     /// Joins the group on a spare interface beside this desktop's network, or without one asks to leave that network.
     async fn join_group(&mut self, id: DeviceId, group: Hotspot, spare: Option<crate::wifi_direct::Spare>) {
         if !matches!(self.nearby.get(&id), Some(Nearby::Joining { kind: NearbyKind::Group, .. })) {
-            if let Some(crate::wifi_direct::Spare::Added(interface)) = spare {
-                tokio::spawn(async move { crate::wifi_direct::remove(&interface).await });
+            if let Some(spare) = spare {
+                tokio::spawn(crate::wifi_direct::release(spare));
             }
             return log::info!("{id}: dropping a Wi-Fi Direct group nobody waits for");
         }

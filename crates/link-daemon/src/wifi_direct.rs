@@ -80,6 +80,13 @@ pub async fn join(spare: Spare, ssid: &str, passphrase: &str, mhz: Option<u32>) 
     }
 }
 
+/// Drops a spare no group uses: an interface added for it goes.
+pub async fn release(spare: Spare) {
+    if let Spare::Added(interface) = spare {
+        remove(&interface).await;
+    }
+}
+
 pub async fn remove(interface: &str) {
     if let Err(error) = iw(&["dev", interface, "del"]).await {
         log::info!("removing {interface}: {error}");

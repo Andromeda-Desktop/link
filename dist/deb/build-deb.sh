@@ -44,7 +44,7 @@ Package: andromeda-link
 Version: $VERSION
 Architecture: amd64
 Maintainer: Andromeda <sitish@akintechnologies.com>
-Depends: libc6, libgcc-s1, dbus, fuse3, gstreamer1.0-plugins-base, gstreamer1.0-plugins-bad
+Depends: libc6, libgcc-s1, libxkbcommon0, dbus, fuse3, gstreamer1.0-plugins-base, gstreamer1.0-plugins-bad
 Replaces: andromeda-link-app (<< 1)
 Breaks: andromeda-link-app (<< 1)
 Recommends: andromeda-link-app, xdg-desktop-portal-gnome | xdg-desktop-portal-kde

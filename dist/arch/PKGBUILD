@@ -8,7 +8,7 @@ pkgdesc='Andromeda Link: your Android phone and your Linux desktop as one'
 arch=(x86_64)
 url='https://github.com/Andromeda-Desktop/link'
 license=(GPL-3.0-or-later)
-depends=(glibc gcc-libs dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-bad)
+depends=(glibc gcc-libs libxkbcommon dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-bad)
 makedepends=(cargo protobuf clang lld)
 optdepends=('iw: Wi-Fi power save off while mirroring, for a faster picture'
   'bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
