@@ -141,6 +141,11 @@ enum Command {
         id: DeviceId,
         reply: oneshot::Sender<Result<SessionHandle, Error>>,
     },
+    /// The session already open to `id`, if any; unlike [`Command::Session`], it never dials.
+    Live {
+        id: DeviceId,
+        reply: oneshot::Sender<Option<SessionHandle>>,
+    },
     SetPresent {
         present: bool,
     },
@@ -513,11 +518,13 @@ impl Client {
 
     /// Tells the desktop, then forgets it. Returns whether the desktop was told; it is forgotten either way.
     pub async fn unpair(&self, id: DeviceId) -> Result<bool, Error> {
-        // Telling the desktop is a courtesy: one that went away without closing would hold this until QUIC times out.
+        // Telling the desktop is a courtesy, over an open session only: a dial would hold the actor, and the forget
+        // queued behind it, for up to a connect and a hello; one that went away without closing holds until QUIC
+        // times out.
         let tell = async {
-            match self.session(id.clone()).await {
-                Ok(handle) => handle.unpair().await,
-                Err(error) => Err(error),
+            match self.request(|reply| Command::Live { id: id.clone(), reply }).await? {
+                Some(handle) => handle.unpair().await,
+                None => Err(Error::NotConnected),
             }
         };
         let told = tokio::time::timeout(UNPAIR_TELL_TIMEOUT, tell).await.unwrap_or(Err(Error::NotConnected));
@@ -665,6 +672,9 @@ impl ClientActor {
             Command::Session { id, reply } => {
                 let result = self.live_session(&id).await;
                 drop(reply.send(result));
+            }
+            Command::Live { id, reply } => {
+                drop(reply.send(self.sessions.get(&id).filter(|handle| handle.is_live()).cloned()));
             }
             Command::SetPresent { present } => self.set_present(present),
             Command::SetScreenOn { on } => {
