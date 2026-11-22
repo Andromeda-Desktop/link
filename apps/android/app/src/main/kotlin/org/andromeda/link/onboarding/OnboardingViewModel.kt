@@ -39,6 +39,9 @@ data class OnboardingState(
     val missing: List<Grant> get() = Grant.entries - OPTIONAL - granted
 
     val required: Int get() = Grant.entries.size - OPTIONAL.size
+
+    /** Optional grants not given yet that Settings offers; automatic clipboard has its own row there. */
+    val choices: List<Grant> get() = listOf(Grant.Texts, Grant.Photos) - granted
 }
 
 /** The permission onboarding: what is granted, rechecked whenever the app returns from Settings or a prompt. */

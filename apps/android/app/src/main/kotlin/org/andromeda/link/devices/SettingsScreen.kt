@@ -75,11 +75,14 @@ fun SettingsScreen(
     autoClipboard: Boolean,
     /** Required grants not given yet. */
     missing: List<Grant>,
+    /** Optional grants not given yet. */
+    choices: List<Grant>,
     onBack: () -> Unit,
     onDesktop: (Desktop) -> Unit,
     onPair: () -> Unit,
     onMirrorApps: () -> Unit,
     onSetup: () -> Unit,
+    onFix: (Grant) -> Unit,
     onClipboardSetup: () -> Unit,
     /** The log access method sheet; open, the app hides its tab bar as for Home's picker. */
     methodSheet: Boolean,
@@ -155,11 +158,13 @@ fun SettingsScreen(
                             prefs,
                             autoClipboard,
                             missing,
+                            choices,
                             viewModel::setStayConnected,
                             onDesktop,
                             onPair,
                             onMirrorApps,
                             onSetup,
+                            onFix,
                             onClipboardSetup,
                         ) { page = SettingsPage.Advanced }
                     }
@@ -176,11 +181,13 @@ private fun ColumnScope.Main(
     prefs: NotificationPrefs,
     autoClipboard: Boolean,
     missing: List<Grant>,
+    choices: List<Grant>,
     onStay: (Boolean) -> Unit,
     onDesktop: (Desktop) -> Unit,
     onPair: () -> Unit,
     onMirrorApps: () -> Unit,
     onSetup: () -> Unit,
+    onFix: (Grant) -> Unit,
     onClipboardSetup: () -> Unit,
     onMore: () -> Unit,
 ) {
@@ -228,9 +235,9 @@ private fun ColumnScope.Main(
         detail = stringResource(R.string.settings_grants_on, required.size - missing.size, required.size),
     )
     GroupCard {
-        for (grant in required.filter { it in missing }) {
+        for (grant in required.filter { it in missing } + choices) {
             ValueRow(stringResource(grant.title()), icon = grant.icon()) {
-                Pill(stringResource(R.string.settings_turn_on), onSetup)
+                Pill(stringResource(R.string.settings_turn_on), { onFix(grant) })
             }
             Separator()
         }
@@ -391,8 +398,8 @@ internal fun Grant.title(): Int =
         Grant.Battery -> R.string.settings_grant_battery
         Grant.Calls -> R.string.settings_grant_calls
         Grant.Bluetooth -> R.string.settings_grant_bluetooth
-        Grant.Texts -> R.string.onboarding_texts_title
-        Grant.Photos -> R.string.onboarding_photos_title
+        Grant.Texts -> R.string.settings_grant_texts
+        Grant.Photos -> R.string.settings_grant_photos
         Grant.AutoClipboard -> R.string.clipboard_auto_row
     }
 

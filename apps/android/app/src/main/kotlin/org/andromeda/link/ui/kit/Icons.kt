@@ -75,6 +75,7 @@ object Icons {
     }
     val Dnd by lazy { icon("dnd", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0z M8 12h8") }
     val Vol by lazy { icon("vol", "M11 5 6 9H3v6h3l5 4z M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14") }
+    val VolOff by lazy { icon("vol-off", "M11 5 6 9H3v6h3l5 4z M16 9l6 6M22 9l-6 6") }
     val Sun by lazy {
         icon(
             "sun",

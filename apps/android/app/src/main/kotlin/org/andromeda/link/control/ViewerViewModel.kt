@@ -24,6 +24,8 @@ data class ViewerState(
     val stopped: String? = null,
     val failure: LinkFailure? = null,
     val muted: Boolean = false,
+    /** The picture moves the pointer and clicks where it is, as the pad does, instead of clicking where it is touched. */
+    val touchpad: Boolean = false,
 ) {
     /** A window's place on the desktop is unknown: the picture takes no clicks, and the pad moves the desktop's pointer. */
     val window get() = sources.getOrNull(current)?.window == true
@@ -87,6 +89,8 @@ class ViewerViewModel(
     }
 
     fun toggleMute() = _state.update { it.copy(muted = !it.muted) }
+
+    fun setTouchpad(on: Boolean) = _state.update { it.copy(touchpad = on) }
 
     fun failureShown() = _state.update { it.copy(failure = null) }
 

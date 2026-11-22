@@ -207,11 +207,17 @@ fun LinkApp(
                             container,
                             Grant.AutoClipboard in setup.granted,
                             setup.missing,
+                            setup.choices,
                             { screen = Screen.Home },
                             openDesktop,
                             openPair,
                             openNotifications,
                             openSetup,
+                            {
+                                returnScreen = screen
+                                setupStart = it
+                                screen = Screen.Setup
+                            },
                             openClipboardSetup,
                             methodSheet,
                             { methodSheet = it },

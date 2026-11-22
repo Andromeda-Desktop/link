@@ -110,6 +110,11 @@ interface DeskControls {
         percent: Int,
     )
 
+    fun setMuted(
+        desktop: Desktop,
+        muted: Boolean,
+    )
+
     fun setDnd(
         desktop: Desktop,
         on: Boolean,
@@ -241,7 +246,7 @@ class HomeViewModel(
         repository.setDesktopVolume(desktop.id, percent)
     }
 
-    fun setMuted(
+    override fun setMuted(
         desktop: Desktop,
         muted: Boolean,
     ) = act { repository.setDesktopMuted(desktop.id, muted) }

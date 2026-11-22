@@ -1,6 +1,7 @@
 package org.andromeda.link.ui.kit
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
@@ -50,6 +52,8 @@ fun CapsuleSlider(
     onChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
     large: Boolean = true,
+    /** A tap on the symbol, which then does not set the level; null leaves the symbol part of the track. */
+    onIcon: Pair<String, () -> Unit>? = null,
 ) {
     val s = LinkTheme.scheme
     val t = LinkTheme.phoneType
@@ -74,12 +78,16 @@ fun CapsuleSlider(
                 .clip(CircleShape)
                 .background(s.accent),
         )
-        Symbol(
-            icon,
-            s.onAccent,
-            size = if (large) Tok.Phone.symbol.dp else Tok.Size.symbolL.dp - Tok.Space.p2.dp,
-            modifier = Modifier.padding(start = if (large) Tok.Space.p16.dp else Tok.Space.p12.dp),
-        )
+        val start = if (large) Tok.Space.p16.dp else Tok.Space.p12.dp
+        val tap =
+            onIcon?.let { (label, action) ->
+                Modifier
+                    .clip(CircleShape)
+                    .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = action)
+            } ?: Modifier
+        Box(tap.fillMaxHeight().padding(horizontal = start), contentAlignment = Alignment.Center) {
+            Symbol(icon, s.onAccent, size = if (large) Tok.Phone.symbol.dp else Tok.Size.symbolL.dp - Tok.Space.p2.dp)
+        }
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
             Text(
                 "${(value * 100).toInt()}",

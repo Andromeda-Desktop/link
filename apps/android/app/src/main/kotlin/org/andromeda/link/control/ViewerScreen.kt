@@ -107,6 +107,7 @@ import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.RoundKey
+import org.andromeda.link.ui.kit.Segmented
 import org.andromeda.link.ui.kit.Sheet
 import org.andromeda.link.ui.kit.SwitchRow
 import org.andromeda.link.ui.kit.Symbol
@@ -324,6 +325,7 @@ fun ViewerScreen(
                 camera = camera,
                 pointer = if (state.window) null else pointer,
                 clicks = canInput && !state.window,
+                pad = if (canInput && state.touchpad) padMove else null,
                 input = actions,
                 onCamera = { camera = it },
                 onAim = { aimTo(it) },
@@ -405,7 +407,7 @@ fun ViewerScreen(
                         )
                     else -> Unit
                 }
-                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute)
+                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute, viewModel::setTouchpad)
             }
         } else {
             Box(Modifier.fillMaxSize()) {
@@ -432,6 +434,7 @@ fun ViewerScreen(
                                 input = actions,
                                 deskName = desk.name,
                                 canInput = canInput,
+                                pictureIsPad = state.touchpad,
                                 move = padMove,
                                 modifier = Modifier.weight(1f).fillMaxWidth(),
                             ) {
@@ -439,7 +442,7 @@ fun ViewerScreen(
                             }
                     }
                 }
-                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute)
+                Sheets(state, mode, go, leave, viewModel::select, viewModel::toggleMute, viewModel::setTouchpad)
             }
         }
     }
@@ -504,6 +507,8 @@ private fun Picture(
     camera: Camera?,
     pointer: Offset?,
     clicks: Boolean,
+    /** Set in touchpad mode: the picture is a pad that moves the pointer by this. */
+    pad: ((Float, Float) -> Unit)?,
     input: RemoteActions,
     onCamera: (Camera) -> Unit,
     onAim: (Offset) -> Unit,
@@ -521,6 +526,7 @@ private fun Picture(
     var aim by remember { mutableStateOf<Offset?>(null) }
     var grabbed by remember { mutableStateOf(false) }
     val currentCamera by rememberUpdatedState(camera)
+    val currentPad by rememberUpdatedState(pad)
     val minimap = lens != null && camera != null && !lens.isWhole(camera) && aim == null
     val minimapShown by rememberUpdatedState(minimap)
     // The minimap's picture: the whole stream, copied small from the TextureView at most every THUMB_MS, only while shown.
@@ -596,7 +602,11 @@ private fun Picture(
                 Modifier
                     .fillMaxSize()
                     .semantics { contentDescription = description }
-                    .pointerInput(lens, clicks) {
+                    .pointerInput(lens, clicks, pad != null) {
+                        if (currentPad != null) {
+                            interpret(input) { dx, dy -> currentPad?.invoke(dx, dy) }
+                            return@pointerInput
+                        }
                         pictureGestures(
                             lens = lens,
                             clicks = clicks,
@@ -1021,6 +1031,7 @@ private fun Pad(
     input: RemoteActions,
     deskName: String,
     canInput: Boolean,
+    pictureIsPad: Boolean,
     move: (Float, Float) -> Unit,
     modifier: Modifier = Modifier,
     keys: @Composable () -> Unit,
@@ -1042,7 +1053,7 @@ private fun Pad(
                 Modifier.padding(start = Tok.Space.p24.dp, end = Tok.Space.p48.dp, top = Tok.Space.p24.dp),
                 verticalArrangement = Arrangement.spacedBy((Tok.Space.p4 + Tok.Space.p2).dp),
             ) {
-                Tip("", stringResource(R.string.viewer_tip_picture), Icons.Screen)
+                if (!pictureIsPad) Tip("", stringResource(R.string.viewer_tip_picture), Icons.Screen)
                 Tip("1", stringResource(R.string.viewer_tip_pad))
                 Tip("2", stringResource(R.string.viewer_tip_two))
             }
@@ -1171,6 +1182,7 @@ private fun BoxScope.Sheets(
     leave: () -> Unit,
     onSelect: (Int) -> Unit,
     onMute: () -> Unit,
+    onTouchpad: (Boolean) -> Unit,
 ) {
     val s = LinkTheme.scheme
     Sheet(mode == ViewerMode.Sources, { go(ViewerMode.Pad) }, stringResource(R.string.viewer_sources)) {
@@ -1189,6 +1201,12 @@ private fun BoxScope.Sheets(
         if (state.window) Text(stringResource(R.string.viewer_window_touchpad), LinkTheme.phoneType.footnote, color = s.label2)
     }
     Sheet(mode == ViewerMode.More, { go(ViewerMode.Pad) }, stringResource(R.string.viewer_more)) {
+        Segmented(
+            listOf(true to stringResource(R.string.viewer_touchpad), false to stringResource(R.string.viewer_direct)),
+            state.touchpad,
+            onTouchpad,
+            Modifier.fillMaxWidth(),
+        )
         GroupCard { SwitchRow(stringResource(R.string.viewer_sound), !state.muted, { onMute() }) }
         Capsule(stringResource(R.string.viewer_end), leave, Modifier.fillMaxWidth(), kind = CapsuleKind.Danger, large = true)
     }

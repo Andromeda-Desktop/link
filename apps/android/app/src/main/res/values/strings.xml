@@ -305,7 +305,7 @@
     <string name="viewer_tip_pad">Pad: move to point, tap to click</string>
     <string name="viewer_tip_two">Two fingers: right click, scroll</string>
     <string name="viewer_sources">Monitor or window</string>
-    <string name="viewer_more">Mute, end</string>
+    <string name="viewer_more">Touch, sound, end</string>
     <string name="viewer_waiting">Waiting for the picture from %1$s</string>
     <string name="viewer_stopped">%1$s stopped sharing the screen</string>
     <string name="viewer_off_pad">%1$s lets this phone watch, not click. Turn on \"Allow input\" in Link on the desktop.</string>
@@ -315,6 +315,8 @@
     <string name="viewer_title">Remote control</string>
     <string name="device_viewer_hint">See the desktop\'s screen and use it from here</string>
     <string name="viewer_picture">Desktop screen</string>
+    <string name="viewer_touchpad">Touchpad</string>
+    <string name="viewer_direct">Direct touch</string>
     <string name="viewer_window_touchpad">On one window, only the touchpad moves the pointer.</string>
     <string name="presenter_title">Presenter</string>
     <string name="presenter_tap">Tap anywhere: next</string>
@@ -334,6 +336,8 @@
     <string name="home_locked">Locked</string>
     <string name="home_unlocked">Unlocked</string>
     <string name="home_volume">Volume</string>
+    <string name="home_mute">Mute</string>
+    <string name="home_unmute">Unmute</string>
     <string name="home_brightness">Brightness</string>
     <string name="home_play">Play</string>
     <string name="home_pause">Pause</string>
@@ -402,6 +406,8 @@
     <string name="settings_grant_battery">No battery optimisation</string>
     <string name="settings_grant_calls">Calls</string>
     <string name="settings_grant_bluetooth">Bluetooth</string>
+    <string name="settings_grant_texts">Texts</string>
+    <string name="settings_grant_photos">Photos</string>
     <string name="settings_advanced">Advanced</string>
     <string name="log_method">Log access method</string>
     <string name="log_method_hint">How Link sees what you copy</string>

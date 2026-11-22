@@ -676,11 +676,14 @@ private fun Levels(
         if (volume != null) {
             CapsuleSlider(
                 volume.percent,
-                Icons.Vol,
+                if (volume.muted) Icons.VolOff else Icons.Vol,
                 stringResource(R.string.home_volume),
                 volumeEnabled,
                 { controls.setVolume(desktop, it, unmute = volume.muted) },
                 Modifier.padding(top = Tok.Space.p8.dp),
+                onIcon =
+                    stringResource(if (volume.muted) R.string.home_unmute else R.string.home_mute) to
+                        { controls.setMuted(desktop, !volume.muted) },
             )
         }
         val brightness = status?.brightness
