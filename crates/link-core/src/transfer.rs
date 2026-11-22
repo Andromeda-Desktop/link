@@ -824,13 +824,23 @@ impl TransferActor {
                 if out.running.get(&file).is_some_and(|(_, running)| *running == seq) {
                     out.running.remove(&file);
                 }
+                let peer = out.peer.clone();
                 match result {
                     Ok(Some(sha256)) => {
-                        let (peer, hash) = (out.peer.clone(), FileHash { transfer: id, file, sha256 });
-                        self.send_to(&peer, Message::FileHash(hash)).await;
+                        self.send_to(&peer, Message::FileHash(FileHash { transfer: id, file, sha256 })).await;
                     }
                     Ok(None) => {}
-                    Err(error) => log::info!("{}: sending file {file} of {id} stopped: {error}", out.peer),
+                    // A lost connection resumes the file on reconnect; resume runs only then, so any other
+                    // failure would leave the file unfinished on a live session forever.
+                    Err(Error::Closed(_) | Error::Timeout | Error::Connection(_)) => {
+                        log::info!("{peer}: sending file {file} of {id} stopped with the connection");
+                    }
+                    Err(error) => {
+                        log::info!("{peer}: sending file {file} of {id} failed: {error}");
+                        self.send_to(&peer, Message::Cancel(TransferRef { transfer: id })).await;
+                        self.finish_outgoing(id, Status::Failed);
+                        return;
+                    }
                 }
                 self.pump(id);
             }
@@ -1362,5 +1372,54 @@ async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file send that ends with the connection keeps the accepted transfer for the reconnect's resume; any other
+    /// failure ends the transfer as failed, so it never stays accepted with an unfinished file on a live session.
+    #[tokio::test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    async fn a_failed_file_send_ends_the_transfer_unless_the_connection_dropped() {
+        let dir = std::env::temp_dir().join(format!("link-transfer-send-failed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let (_handle, mut actor, mut events) = transfers(Inbox::new(dir.clone(), &dir).expect("inbox"));
+        let peer = crate::identity::Identity::generate().expect("key").device_id();
+        let cases = [
+            (Error::Timeout, true),
+            (Error::Closed(CloseCode::Done), true),
+            (Error::StreamEnded, false),
+            (Error::Io(std::io::Error::other("source gone")), false),
+        ];
+        for (index, (error, kept)) in (0u8..).zip(cases) {
+            let id = TransferId([index; 16]);
+            let out = Out {
+                peer: peer.clone(),
+                sources: HashMap::new(),
+                offer: None,
+                state: None,
+                deadline: None,
+                created: Instant::now(),
+                queue: VecDeque::new(),
+                running: HashMap::new(),
+                sent: HashMap::new(),
+                last_progress: None,
+                late_hash: false,
+            };
+            actor.outgoing.insert(id, out);
+            let message = error.to_string();
+            actor.task_ended(TaskEnd::Sent { id, file: 0, seq: 1, result: Err(error) }).await;
+            assert_eq!(actor.outgoing.contains_key(&id), kept, "{message}");
+            let mut failed = false;
+            while let Ok(event) = events.try_recv() {
+                failed |=
+                    matches!(event, TransferEvent::Finished { id: done, status: Status::Failed, .. } if done == id);
+            }
+            assert_eq!(failed, !kept, "{message}");
+        }
+        drop(std::fs::remove_dir_all(&dir));
     }
 }
