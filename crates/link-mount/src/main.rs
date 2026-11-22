@@ -56,9 +56,10 @@ fn main() -> anyhow::Result<()> {
     })?;
     thumbnailer.abort();
     // The unmount is lazy: a join would wait for every process to leave the mount. Exiting closes the FUSE
-    // connection, so programs still in it get ENOTCONN.
+    // connection, so programs still in it get ENOTCONN. FUSE threads still in a call use the runtime, so the
+    // process exits without dropping it.
     drop(session);
-    Ok(())
+    std::process::exit(0);
 }
 
 /// Creates the mount point, or clears a mount left by a process that died.
