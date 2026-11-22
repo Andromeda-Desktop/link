@@ -60,8 +60,10 @@ class DeviceViewModel(
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), DeviceState())
 
-    /** True once the desktop is unpaired, so the screen leaves. */
-    val unpaired: StateFlow<Boolean> = _unpaired
+    /** True once the desktop is unpaired, from here or from the desktop, so the screen leaves. */
+    val unpaired: StateFlow<Boolean> =
+        combine(_unpaired, repository.desktops) { here, desktops -> here || desktops.none { it.id == desktopId } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun setSharing(
         feature: Feature,
