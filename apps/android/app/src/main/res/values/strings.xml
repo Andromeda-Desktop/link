@@ -230,6 +230,10 @@
     <string name="onboarding_bluetooth_p2">It uses no mobile data</string>
     <string name="onboarding_texts_p1">Only for a desktop whose Contacts and texts switch is on</string>
     <string name="onboarding_texts_p2">Link sends a text only when you send it there</string>
+    <string name="onboarding_photos_title">Photos on your desktop</string>
+    <string name="onboarding_photos_body">Optional. Browse and copy this phone\'s photos and videos from your desktop.</string>
+    <string name="onboarding_photos_p1">Only for a paired desktop, over your own connection</string>
+    <string name="onboarding_photos_p2">Allow all photos, or pick the ones Link may see</string>
     <string name="onboarding_foot_notifications">Android opens Notification access. Turn on Andromeda Link, then come back.</string>
     <string name="onboarding_foot_dnd">Android opens Do Not Disturb access. Turn on Andromeda Link, then come back.</string>
     <string name="onboarding_foot_battery">Android asks to let Andromeda Link run in the background. Tap Allow.</string>

@@ -47,6 +47,7 @@ import org.andromeda.link.clipboard.LogAccess.Method
 import org.andromeda.link.clipboard.title
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.onboarding.Grant
+import org.andromeda.link.onboarding.OPTIONAL
 import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.GroupCard
@@ -221,7 +222,7 @@ private fun ColumnScope.Main(
         ValueRow(stringResource(R.string.pair_action), icon = Icons.Plus, accent = true, onClick = onPair)
     }
 
-    val required = Grant.entries.filter { it != Grant.Texts && it != Grant.AutoClipboard }
+    val required = Grant.entries - OPTIONAL
     SectionTitle(
         stringResource(R.string.setup_title),
         detail = stringResource(R.string.settings_grants_on, required.size - missing.size, required.size),
@@ -391,6 +392,7 @@ internal fun Grant.title(): Int =
         Grant.Calls -> R.string.settings_grant_calls
         Grant.Bluetooth -> R.string.settings_grant_bluetooth
         Grant.Texts -> R.string.onboarding_texts_title
+        Grant.Photos -> R.string.onboarding_photos_title
         Grant.AutoClipboard -> R.string.clipboard_auto_row
     }
 
@@ -401,6 +403,7 @@ private fun Grant.icon(): ImageVector =
         Grant.Battery -> Icons.Battery
         Grant.Calls, Grant.Texts -> Icons.Call
         Grant.Bluetooth -> Icons.Bt
+        Grant.Photos -> Icons.Photo
         Grant.AutoClipboard -> Icons.Clip
     }
 

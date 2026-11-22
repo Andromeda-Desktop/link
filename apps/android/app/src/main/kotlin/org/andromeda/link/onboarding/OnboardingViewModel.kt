@@ -19,14 +19,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import org.andromeda.link.clipboard.ClipboardWatcher
 import org.andromeda.link.clipboard.LogAccess
+import org.andromeda.link.files.MediaAccess
+import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.notifications.NotificationMirror
 import org.andromeda.link.ring.Ringer
 
 /** One grant the app asks for, and how it is given: a Settings page, or runtime permissions. */
-enum class Grant { NotificationAccess, DoNotDisturb, PostNotifications, Battery, Calls, Bluetooth, Texts, AutoClipboard }
+enum class Grant { NotificationAccess, DoNotDisturb, PostNotifications, Battery, Calls, Bluetooth, Texts, Photos, AutoClipboard }
 
-/** Grants the setup banner does not ask for: automatic clipboard needs a computer once, and texts are a choice. */
-private val OPTIONAL = setOf(Grant.Texts, Grant.AutoClipboard)
+/** Grants the setup banner does not ask for: automatic clipboard needs a computer once, and texts and photos are a choice. */
+internal val OPTIONAL = setOf(Grant.Texts, Grant.Photos, Grant.AutoClipboard)
 
 data class OnboardingState(
     val granted: Set<Grant> = emptySet(),
@@ -44,6 +46,7 @@ class OnboardingViewModel(
     private val application: Application,
     mirror: NotificationMirror,
     private val ringer: Ringer,
+    private val files: PhoneFiles,
 ) : ViewModel() {
     private val checked = MutableStateFlow(check())
 
@@ -75,6 +78,7 @@ class OnboardingViewModel(
                 }
             Grant.Calls -> CALL_PERMISSIONS
             Grant.Texts -> arrayOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS)
+            Grant.Photos -> PhoneFiles.mediaPermissions
             Grant.Bluetooth ->
                 when {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
@@ -113,6 +117,7 @@ class OnboardingViewModel(
             if (CALL_PERMISSIONS.all(::held)) add(Grant.Calls)
             if (permissions(Grant.Bluetooth).all(::held)) add(Grant.Bluetooth)
             if (permissions(Grant.Texts).all(::held)) add(Grant.Texts)
+            if (files.mediaAccess() != MediaAccess.None) add(Grant.Photos)
             if (ClipboardWatcher.granted(application)) add(Grant.AutoClipboard)
         }
 

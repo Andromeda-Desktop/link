@@ -142,6 +142,14 @@ private val PAGES =
             R.string.onboarding_foot_ask,
         ),
         Page(
+            Grant.Photos,
+            R.string.onboarding_photos_title,
+            R.string.onboarding_photos_body,
+            Icons.Photo,
+            listOf(R.string.onboarding_photos_p1, R.string.onboarding_photos_p2),
+            R.string.onboarding_foot_ask,
+        ),
+        Page(
             Grant.AutoClipboard,
             R.string.onboarding_clipboard_title,
             R.string.onboarding_clipboard_body,
@@ -159,7 +167,8 @@ fun OnboardingScreen(
     start: Grant?,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: OnboardingViewModel = viewModel { OnboardingViewModel(container.application, container.mirror, container.ringer) },
+    viewModel: OnboardingViewModel =
+        viewModel { OnboardingViewModel(container.application, container.mirror, container.ringer, container.files) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pager = rememberPagerState(PAGES.indexOfFirst { it.grant == start }.coerceAtLeast(0)) { PAGES.size }

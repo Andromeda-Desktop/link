@@ -66,7 +66,8 @@ fun LinkApp(
     home: HomeViewModel = viewModel { HomeViewModel(container.repository, container.presence, container.mirror, container.clipboard) },
     pairing: PairingViewModel = viewModel { PairingViewModel(container.repository) },
     picker: PickerViewModel = viewModel { PickerViewModel(container.files) },
-    onboarding: OnboardingViewModel = viewModel { OnboardingViewModel(container.application, container.mirror, container.ringer) },
+    onboarding: OnboardingViewModel =
+        viewModel { OnboardingViewModel(container.application, container.mirror, container.ringer, container.files) },
 ) {
     val linkHandle by rememberUpdatedState(onLinkHandle)
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
