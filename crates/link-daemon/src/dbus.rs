@@ -32,7 +32,7 @@ const MAX_SAVED_PHOTO: u64 = 256 * 1024 * 1024;
 /// One `SavePhoto` at a time, and none longer than this.
 static SAVES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 const SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-const NAME: &str = "org.andromeda.Link1";
+pub const NAME: &str = "org.andromeda.Link1";
 /// The shell passes descriptors, not types; the receiver's platform types files by name.
 const OCTET_STREAM: &str = "application/octet-stream";
 
@@ -1191,7 +1191,6 @@ pub async fn serve(
     nearby: watch::Receiver<Vec<(String, String)>>,
 ) -> anyhow::Result<()> {
     bus.object_server().at(PATH, Link::new(hub, snapshots, nearby, None)).await?;
-    bus.request_name(NAME).await?;
     Ok(())
 }
 

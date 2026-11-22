@@ -122,6 +122,8 @@ async fn run() -> anyhow::Result<()> {
     let (quick_share, qs_handle, qs_watches, qs_events) = quickshare::QuickShare::new(&name, &state_dir, mdns.clone())?;
     if let Transport::Bus(bus) = &transport {
         quickshare::serve(bus, qs_handle.clone(), qs_watches.clone(), name.clone()).await?;
+        // Clients query on NameOwnerChanged: every interface is exported before the name is owned.
+        bus.request_name(dbus::NAME).await?;
     }
     let api = socket::Api {
         hub: handle.clone(),
