@@ -1001,7 +1001,7 @@ mod tests {
         assert_eq!(on_desktop.remote_address(), link_address(1), "the desktop did not follow the move");
 
         desktop.close_link(desk_link);
-        tokio::time::timeout(Duration::from_secs(2), on_desktop.closed()).await?;
+        tokio::time::timeout(LINK_GRACE + Duration::from_secs(2), on_desktop.closed()).await?;
         Ok(())
     }
 
@@ -1030,8 +1030,8 @@ mod tests {
         let (_server, on_desktop) = accepted.await??;
 
         phone.close_link(phone_link);
-        tokio::time::timeout(Duration::from_secs(2), dialed.connection.closed()).await?;
-        tokio::time::timeout(Duration::from_secs(2), on_desktop.closed()).await?;
+        tokio::time::timeout(LINK_GRACE + Duration::from_secs(2), dialed.connection.closed()).await?;
+        tokio::time::timeout(LINK_GRACE + Duration::from_secs(2), on_desktop.closed()).await?;
         Ok(())
     }
 
