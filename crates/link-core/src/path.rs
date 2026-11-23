@@ -971,7 +971,8 @@ mod tests {
         Ok(())
     }
 
-    /// A desktop connection that moved onto a link ends when that link ends, not at the idle timeout.
+    /// A desktop connection that moved onto a link ends when that link ends and the phone's last UDP address is
+    /// gone, not at the idle timeout.
     #[tokio::test]
     async fn a_connection_that_moved_onto_a_link_ends_with_it() -> Result {
         let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
@@ -993,7 +994,10 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>((server, connection))
         });
         let dialed = Dialer::on_path(&Identity::generate()?, phone.clone())?.dial(server_addr, ServerPin::Any).await?;
-        dialed.route.as_ref().ok_or("a path dialer gives a route")?.set(Hop::Link(phone_link));
+        let route = dialed.route.as_ref().ok_or("a path dialer gives a route")?;
+        let gone = std::net::UdpSocket::bind("[::1]:0")?;
+        route.set(Hop::Udp(gone.local_addr()?));
+        route.set(Hop::Link(phone_link));
         let mut send = dialed.connection.open_uni().await?;
         send.write_all(b"over the link").await?;
         send.finish()?;
