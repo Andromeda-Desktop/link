@@ -1053,7 +1053,10 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(reply.send(Err(browse::Failure::NotConnected)));
         };
-        if !self.shares(&id, Feature::Browse) {
+        // The phone answers a text's picture part under Messages (phone_requires), every other request under Browse.
+        let needs =
+            if matches!(request, browse::Request::TextPart { .. }) { Feature::Messages } else { Feature::Browse };
+        if !self.shares(&id, needs) {
             return drop(reply.send(Err(browse::Failure::Refused(FsRefusal::NotAllowed))));
         }
         if request.bulk() && session.on_bluetooth() {
