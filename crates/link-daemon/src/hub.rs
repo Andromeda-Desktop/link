@@ -266,7 +266,7 @@ enum Backend {
 enum Command {
     StartPairing { reply: oneshot::Sender<anyhow::Result<(String, String)>> },
     CancelPairing,
-    UsbReady,
+    UsbCables(usize),
     Unpair { id: DeviceId, reply: oneshot::Sender<bool> },
     SetPaused { id: DeviceId, paused: bool, reply: oneshot::Sender<bool> },
     AnswerHotspot { id: DeviceId, allow: bool },
@@ -387,6 +387,8 @@ pub struct Hub {
     /// Phones on Bluetooth already asked for their hotspot by browsing, which does not wait for it.
     hotspot_asked: HashSet<DeviceId>,
     browsing: browse::Browsing,
+    /// Phones whose `adb reverse` reaches this desktop's USB listener; a phone that connects meanwhile gets usb-ready.
+    usb_cables: usize,
     /// Each connected phone's `feature:` entries from its hello.
     features: HashMap<DeviceId, Vec<String>>,
     /// What each connected phone lets this desktop use, from its last `sharing`; none yet (an older phone): every
@@ -522,6 +524,7 @@ impl Hub {
             waiting: Vec::new(),
             hotspot_asked: HashSet::new(),
             browsing: browse::Browsing::default(),
+            usb_cables: 0,
             features: HashMap::new(),
             sharing: HashMap::new(),
             outbox,
@@ -606,7 +609,7 @@ impl Hub {
         match command {
             Command::StartPairing { reply } => drop(reply.send(self.start_pairing())),
             Command::CancelPairing => self.close_window(),
-            Command::UsbReady => self.usb_ready().await,
+            Command::UsbCables(cables) => self.usb_cables(cables).await,
             Command::ConfirmBtPairing { passkey, reply } => {
                 let confirmed =
                     self.bt_pairing.take().is_some_and(|(code, until)| code == passkey && Instant::now() < until);
@@ -994,11 +997,19 @@ impl Hub {
         self.send_commands(&id).await;
         self.send_capabilities(&id).await;
         self.send_desktop_status(&id).await;
+        if self.usb_cables > 0 && self.phone_has(&id, USB) {
+            self.send_to(&id, Message::UsbReady).await;
+        }
         self.moved(&id, !on_ip).await;
     }
 
-    /// A phone on this desktop's USB cable now reaches it over the cable; each live phone that takes `usb-ready` tries.
-    async fn usb_ready(&mut self) {
+    /// A new cable reaches this desktop: each live phone that takes `usb-ready` tries it, since a cable has no phone id.
+    async fn usb_cables(&mut self, cables: usize) {
+        let added = cables > self.usb_cables;
+        self.usb_cables = cables;
+        if !added {
+            return;
+        }
         let phones: Vec<(DeviceId, SessionHandle)> = self
             .sessions
             .iter()

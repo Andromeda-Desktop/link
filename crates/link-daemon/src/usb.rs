@@ -58,7 +58,9 @@ async fn track(port: u16, hub: HubHandle) {
     let mut wait = FIRST_RESTART;
     loop {
         let started = tokio::time::Instant::now();
-        match follow(port, &hub).await {
+        let ended = follow(port, &hub).await;
+        hub.usb_cables(0).await;
+        match ended {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return log::info!("USB: no adb"),
             Err(error) => log::info!("USB: adb track-devices: {error}"),
             Ok(()) => log::info!("USB: adb track-devices ended"),
@@ -81,6 +83,7 @@ async fn follow(port: u16, hub: &HubHandle) -> std::io::Result<()> {
         .spawn()?;
     let mut out = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
     let mut ready = std::collections::HashSet::new();
+    let mut reversed = std::collections::HashSet::new();
     loop {
         let mut len = [0; 4];
         if out.read_exact(&mut len).await.is_err() {
@@ -98,10 +101,15 @@ async fn follow(port: u16, hub: &HubHandle) -> std::io::Result<()> {
             .filter(|(_, state)| *state == "device")
             .map(|(serial, _)| serial.to_owned())
             .collect();
+        let before = reversed.len();
+        reversed.retain(|serial| now.contains(serial));
         for serial in now.difference(&ready) {
             if reverse(serial, port).await {
-                hub.usb_ready().await;
+                reversed.insert(serial.clone());
             }
+        }
+        if reversed.len() != before {
+            hub.usb_cables(reversed.len()).await;
         }
         ready = now;
     }

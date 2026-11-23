@@ -156,8 +156,8 @@ impl Phone {
         &self.store.peers
     }
 
-    /// Pairs over IP when any address answers, else over Bluetooth when the QR code names the desktop's adapter, or,
-    /// for a typed code, when one desktop advertises its window over Bluetooth LE.
+    /// Pairs over IP when any address answers, else over the USB cable, else over Bluetooth when the QR code names the
+    /// desktop's adapter, or, for a typed code, when one desktop advertises its window over Bluetooth LE.
     pub async fn pair(&mut self, target: PairTarget) -> Result<Session, Error> {
         let (candidates, pin, secret, method, bluetooth) = match target {
             PairTarget::Code { code, candidates } => {
@@ -179,12 +179,19 @@ impl Phone {
                 uri.bluetooth.map_or(PairBluetooth::None, PairBluetooth::Known),
             ),
         };
-        let (connection, server, addr, route) = match reach::race(self.dialer(), &candidates, pin).await {
-            Ok((dialed, addr)) => {
+        let raced = reach::race(self.dialer(), &candidates, pin).await;
+        let usb = if raced.is_err() { self.pair_usb(pin).await } else { None };
+        let (connection, server, addr, route, via) = match (raced, usb) {
+            (Ok((dialed, addr)), _) => {
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
-                (Connection::from(dialed.connection), server, Some(addr), dialed.route)
+                (Connection::from(dialed.connection), server, Some(addr), dialed.route, Via::LastKnown)
             }
-            Err(ip) => {
+            (Err(ip), Some(dialed)) => {
+                log::info!("pairing: no IP path ({ip}); paired over USB");
+                let server = tls::peer_spki(dialed.connection.peer_identity())?;
+                (Connection::from(dialed.connection), server, None, dialed.route, Via::Usb)
+            }
+            (Err(ip), None) => {
                 let address = match bluetooth {
                     PairBluetooth::None => return Err(ip),
                     PairBluetooth::Known(address) => address,
@@ -210,15 +217,20 @@ impl Phone {
                 };
                 let dialed = self.dial_link(StreamLink::new(fd, LinkKind::Bluetooth)?, pin).await?;
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
-                (Connection::from(dialed.connection), server, None, dialed.route)
+                (Connection::from(dialed.connection), server, None, dialed.route, Via::Bluetooth)
             }
         };
         let mut control = Control::open(&connection, self.tap.clone()).await?;
         let hello = control.hello_as_client(self.hello()).await?;
         pair_as_client(&connection, &server, &mut control, &secret, method, self.identity.spki()).await?;
         let desktop = self.remember(&server, &hello, addr)?;
-        let via = if addr.is_some() { Via::LastKnown } else { Via::Bluetooth };
         Ok(Session { connection, control, desktop, addr, via, resumed: false, route, relay: None })
+    }
+
+    /// A pairing dial over the USB cable; none when no desktop's `adb reverse` reaches this phone.
+    async fn pair_usb(&mut self, pin: ServerPin) -> Option<Dialed> {
+        let link = StreamLink::new(usb_stream().await.ok()?, LinkKind::Usb).ok()?;
+        self.dial_link(link, pin).await.inspect_err(|error| log::info!("pairing: USB: {error}")).ok()
     }
 
     /// The one desktop with an open pairing window by mDNS, if any, and an LE scan for desktops that advertise one,
