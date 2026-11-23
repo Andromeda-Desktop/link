@@ -113,10 +113,16 @@ impl Identity {
             Err(_) => {}
         }
         let identity = Self::generate()?;
-        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
-        file.write_all(&identity.pkcs8)?;
-        file.sync_all()?;
+        identity.save(path)?;
         Ok(identity)
+    }
+
+    /// Writes the key to a new file at `path` with mode 0600.
+    pub fn save(&self, path: &Path) -> Result<(), Error> {
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        file.write_all(&self.pkcs8)?;
+        file.sync_all()?;
+        Ok(())
     }
 
     pub fn pkcs8(&self) -> &[u8] {

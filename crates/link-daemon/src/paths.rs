@@ -12,6 +12,7 @@ const HOME_STATE: &str = ".local/state/andromeda-link";
 pub struct Paths {
     pub state: PathBuf,
     pub identity: PathBuf,
+    pub sealed_identity: PathBuf,
     pub devices: PathBuf,
     pub downloads: PathBuf,
     /// Artwork of phone players, for their MPRIS `mpris:artUrl`; created on first use.
@@ -38,6 +39,7 @@ impl Paths {
         let downloads = download_dir(home.as_deref()).context("no download directory: set HOME")?;
         Ok(Self {
             identity: dir.join("identity.pk8"),
+            sealed_identity: dir.join("identity.cred"),
             devices: dir.join("devices.json"),
             art: dir.join("art"),
             notifications: dir.join("notifications"),
@@ -51,7 +53,7 @@ impl Paths {
 /// It copies and does not move, because the sandbox mounts home read-only.
 fn adopt_umbriel_state(dir: &Path) -> anyhow::Result<()> {
     let Some(old) = dir.parent().map(|parent| parent.join("umbriel-link")) else { return Ok(()) };
-    if dir.join("identity.pk8").exists() || !old.join("identity.pk8").exists() {
+    if dir.join("identity.pk8").exists() || dir.join("identity.cred").exists() || !old.join("identity.pk8").exists() {
         return Ok(());
     }
     for name in ["devices.json", "identity.pk8"] {

@@ -28,6 +28,7 @@ mod quickshare;
 mod relay;
 mod remote;
 mod save;
+mod sealed;
 mod socket;
 #[cfg_attr(target_os = "macos", path = "wifi_direct_none.rs")]
 mod wifi_direct;
@@ -78,7 +79,7 @@ async fn doctor() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let paths = paths::Paths::create()?;
     save::sweep(&paths.downloads);
-    let identity = Identity::load_or_create(&paths.identity).context("loading the device key")?;
+    let identity = sealed::load(&paths.sealed_identity, &paths.identity).context("loading the device key")?;
     let mut store = Store::load(&paths.devices).context("loading the device store")?;
     let server = Arc::new(bind(&identity, store.port)?);
     let (endpoint, puncher) = (server.endpoint.clone(), server.puncher.clone());
