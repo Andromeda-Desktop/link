@@ -290,15 +290,26 @@ pub(crate) async fn connected_through(
     bytes_per_second: Option<u32>,
 ) -> Result<(quinn::Connection, quinn::Connection), Error> {
     let server = server_endpoint(desktop, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let to = match bytes_per_second {
+        Some(rate) => bottleneck(server.local_addr()?, rate).await?,
+        None => server.local_addr()?,
+    };
+    connect(&server, to, phone, desktop).await
+}
+
+/// [`connected`] to `server`, the endpoint of `desktop`, reached at `to`; one server takes any number of phones.
+#[cfg(test)]
+pub(crate) async fn connect(
+    server: &quinn::Endpoint,
+    to: SocketAddr,
+    phone: &Identity,
+    desktop: &Identity,
+) -> Result<(quinn::Connection, quinn::Connection), Error> {
     let pin = ServerPin::Key(desktop.spki().fingerprint());
     let accept = async { Ok::<_, Error>(server.accept().await.ok_or(Error::NotConnected)?.await?) };
     let dialer = Dialer::new(phone)?.tuned(|t| {
         t.send_window(1 << 20);
     });
-    let to = match bytes_per_second {
-        Some(rate) => bottleneck(server.local_addr()?, rate).await?,
-        None => server.local_addr()?,
-    };
     let (phone_side, desktop_side) = tokio::join!(dialer.dial(to, pin), accept);
     Ok((phone_side?.connection, desktop_side?))
 }

@@ -519,19 +519,7 @@ mod tests {
         let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
         let (phone_conn, desktop_conn) = crate::transport::connected_through(&phone_key, &desk_key, bottleneck).await?;
         let (phone_conn, desktop_conn) = (Connection::from(phone_conn), Connection::from(desktop_conn));
-        // QUIC announces a stream with its first bytes, so the desktop accepts the control stream only after the hello.
-        let (phone_control, desktop_control) = tokio::try_join!(
-            async {
-                let mut control = Control::open(&phone_conn, None).await?;
-                control.hello_as_client(hello("phone")).await?;
-                Ok::<_, Error>(control)
-            },
-            async {
-                let mut control = Control::accept(&desktop_conn, None).await?;
-                control.hello_as_server(hello("desk")).await?;
-                Ok(control)
-            }
-        )?;
+        let (phone_control, desktop_control) = handshake(&phone_conn, &desktop_conn).await?;
         // After the handshake: the paused clock would run its timeout out while packets cross the real socket.
         if bottleneck.is_none() {
             tokio::time::pause();
@@ -558,6 +546,23 @@ mod tests {
             dir,
             transfers: transfer_events,
         })
+    }
+
+    /// The hello on a new connection's control stream: (phone side, desktop side).
+    async fn handshake(phone: &Connection, desktop: &Connection) -> std::result::Result<(Control, Control), Error> {
+        // QUIC announces a stream with its first bytes, so the desktop accepts the control stream only after the hello.
+        tokio::try_join!(
+            async {
+                let mut control = Control::open(phone, None).await?;
+                control.hello_as_client(hello("phone")).await?;
+                Ok::<_, Error>(control)
+            },
+            async {
+                let mut control = Control::accept(desktop, None).await?;
+                control.hello_as_server(hello("desk")).await?;
+                Ok(control)
+            }
+        )
     }
 
     fn freezable(actor: SessionActor) -> watch::Sender<bool> {
@@ -691,6 +696,102 @@ mod tests {
         drop(pair);
         let bytes = read.await?;
         assert!(bytes > 1_000_000, "only {bytes} bytes of video crossed, so the path was not full");
+        Ok(())
+    }
+
+    /// Two phones on one desktop endpoint and one desktop transfer actor, as linkd runs them: phone A's mirror video
+    /// stalls because the desktop never reads it, and phone B's file still arrives while both links stay live.
+    #[tokio::test]
+    async fn a_stalled_mirror_from_one_phone_does_not_hold_another_phones_file() -> Result {
+        use crate::mirror::{MirrorSender, Unit};
+        use crate::transfer::{ClipPeer, Source, Status, TransferEvent, transfers};
+        use link_proto::message::MIRROR_KEYFRAME;
+
+        let dir = std::env::temp_dir().join(format!("link-session-two-phones-{}", std::process::id()));
+        let inbox = |name: &str| Inbox::new(dir.join(name), &dir.join(name));
+        let desk_key = Identity::generate()?;
+        let server = crate::transport::server_endpoint(&desk_key, std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        let (desk_transfers, desk_actor, mut desk_events) = transfers(inbox("desk")?);
+        tokio::spawn(desk_actor.run());
+        let mut phones = Vec::new();
+        for name in ["a", "b"] {
+            let phone_key = Identity::generate()?;
+            let (phone_conn, desk_conn) =
+                crate::transport::connect(&server, server.local_addr()?, &phone_key, &desk_key).await?;
+            let (phone_conn, desk_conn) = (Connection::from(phone_conn), Connection::from(desk_conn));
+            let (phone_control, desk_control) = handshake(&phone_conn, &desk_conn).await?;
+            let (phone_transfers, phone_actor, phone_events) = transfers(inbox(name)?);
+            tokio::spawn(phone_actor.run());
+            let (events, phone_session_events) = mpsc::channel(1024);
+            let route = Route {
+                peer: desk_key.spki().device_id(),
+                events,
+                transfers: phone_transfers.clone(),
+                heartbeat: true,
+                path: None,
+            };
+            let (phone, actor) = session(phone_conn, phone_control, Role::Phone, route);
+            tokio::spawn(actor.run());
+            let (events, desk_session_events) = mpsc::channel(1024);
+            let peer = phone_key.spki().device_id();
+            let route =
+                Route { peer: peer.clone(), events, transfers: desk_transfers.clone(), heartbeat: true, path: None };
+            let (desk, actor) = session(desk_conn, desk_control, Role::Desktop, route);
+            tokio::spawn(actor.run());
+            phone_transfers.attach(desk_key.spki().device_id(), phone.clone(), ClipPeer::default(), false).await;
+            desk_transfers.attach(peer.clone(), desk.clone(), ClipPeer::default(), false).await;
+            phones.push((peer, phone, desk, phone_transfers, phone_events, phone_session_events, desk_session_events));
+        }
+        let [(a_id, a_phone, a_desk, ..), (_, b_phone, b_desk, b_transfers, ..)] = phones.as_slice() else {
+            return Err("two phones".into());
+        };
+
+        let sender = MirrorSender::open(a_phone, 16, 16, true).await?;
+        let video = tokio::spawn(async move {
+            sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
+            for pts_us in 1.. {
+                sender.send(&Unit { pts_us, flags: 0, data: vec![2; 128 * 1024] }).await?;
+            }
+            Ok::<_, Error>(())
+        });
+        // Held unread, so phone A's video fills its flow-control window and stops.
+        let _stalled = loop {
+            match tokio::time::timeout(Duration::from_secs(10), desk_events.recv()).await? {
+                Some(TransferEvent::Mirror { from, stream }) if from == *a_id => break stream,
+                Some(_) => {}
+                None => return Err("the desktop transfer actor ended".into()),
+            }
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!video.is_finished(), "the video stopped: {:?}", video.await);
+
+        let path = dir.join("payload");
+        std::fs::write(&path, vec![3u8; 8 << 20])?;
+        let source =
+            Source::new(std::fs::File::open(&path)?, "payload".to_owned(), "application/octet-stream".to_owned())?;
+        let desk_id = desk_key.spki().device_id();
+        b_transfers.send(desk_id, vec![source]).await?;
+        let end = Instant::now() + Duration::from_secs(20);
+        loop {
+            for (side, handle) in [("A phone", a_phone), ("A desk", a_desk), ("B phone", b_phone), ("B desk", b_desk)] {
+                assert!(matches!(handle.link(), LinkState::Live { .. }), "{side}: {:?}", handle.link());
+            }
+            let event =
+                tokio::time::timeout_at(end, desk_events.recv()).await.map_err(|_| "phone B's file did not arrive")?;
+            match event {
+                Some(TransferEvent::Offered { id, .. }) => assert!(desk_transfers.decide(id, true).await?),
+                Some(TransferEvent::Finished { incoming: true, status, files, .. }) => {
+                    assert_eq!(status, Status::Done);
+                    assert_eq!(std::fs::metadata(&files.first().ok_or("no file")?.path)?.len(), 8 << 20);
+                    break;
+                }
+                Some(_) => {}
+                None => return Err("the desktop transfer actor ended".into()),
+            }
+        }
+        assert!(!video.is_finished(), "the video stopped: {:?}", video.await);
+        video.abort();
+        drop(std::fs::remove_dir_all(&dir));
         Ok(())
     }
 
