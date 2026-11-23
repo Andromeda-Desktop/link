@@ -6,7 +6,7 @@ use std::sync::Arc;
 use link_core::control::Control;
 use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
-use link_core::path::{Route, StreamLink};
+use link_core::path::{LinkKind, Route, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, GROUP_CHANNEL,
@@ -82,7 +82,7 @@ impl Listener {
                     }
                 }
                 // An RFCOMM link: its QUIC connection arrives on the endpoint like any other.
-                Some(fd) = self.bluetooth.incoming.recv() => match StreamLink::new(fd) {
+                Some(fd) = self.bluetooth.incoming.recv() => match StreamLink::new(fd, LinkKind::Bluetooth) {
                     Ok(link) => log::info!("Bluetooth RFCOMM link {}", self.server.socket.accept_link(link)),
                     Err(error) => log::info!("Bluetooth: {error}"),
                 },

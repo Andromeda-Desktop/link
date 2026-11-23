@@ -6,6 +6,7 @@
 # `--shot`, which saves light-/dark-connected.png and light-/dark-disconnected.png to $OUT (default
 # ./artifacts/link-desk-ui) with app.log, linkd.log, signals.txt. Run under flock /tmp/link-emulator.lock.
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-desk-ui}
 BIN=${LINK_BIN:-$ROOT/target/debug}

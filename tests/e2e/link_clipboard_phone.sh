@@ -15,6 +15,7 @@
 # its desktops. Holds /tmp/andromeda-link-phone.lock, as other phone runs do. Writes steps.txt, signals.txt, phone.log,
 # linkd.log, and screenshots to $OUT (default ./artifacts/link-clipboard/phone).
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-clipboard/phone}
 BIN=${LINK_BIN:-$ROOT/target/debug}

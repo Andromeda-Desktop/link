@@ -154,7 +154,9 @@ impl RelayLink {
 }
 
 impl MessageLink for RelayLink {
-    const KIND: LinkKind = LinkKind::Relay;
+    fn kind(&self) -> LinkKind {
+        LinkKind::Relay
+    }
 
     fn send(&self, packet: &[u8]) -> impl Future<Output = io::Result<()>> + Send {
         std::future::ready(match self.connection.send_datagram(frame(&self.peer, packet)) {

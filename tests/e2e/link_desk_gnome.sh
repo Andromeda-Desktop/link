@@ -5,6 +5,7 @@
 # GNOME Shell refuses org.gnome.Shell.Screenshot to this script, so the shots show the app window only. The script also records whether a
 # StatusNotifierWatcher (needed for a tray icon) exists. Run under flock /tmp/link-emulator.lock.
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-desk-gnome}
 BIN=${LINK_BIN:-$ROOT/target/debug}

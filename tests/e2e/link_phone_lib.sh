@@ -8,6 +8,7 @@ SERIAL=${ANDROID_SERIAL:?set ANDROID_SERIAL to the phone}
 APK=${APK:-$ROOT/apps/android/app/build/outputs/apk/debug/app-debug.apk}
 FIXTURE=${FIXTURE:-$ROOT/apps/android/fixture/build/outputs/apk/debug/fixture-debug.apk}
 PACKAGE=org.andromeda.link
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }

@@ -14,6 +14,7 @@
 # Needs the debug APK and a running emulator. Writes results.jsonl, frames/, *.png, ui-*.xml, linkd.log, viewer.log
 # to $OUT (default ./artifacts/link-android-mirror).
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-android-mirror}
 BIN=${LINK_BIN:-$ROOT/target/debug}

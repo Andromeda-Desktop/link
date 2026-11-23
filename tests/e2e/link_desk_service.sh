@@ -5,6 +5,7 @@
 # script kills andromeda-linkd, the app (`--service-test`) shows serviceRunning false, calls Link.startService(),
 # and the phone is connected again within 60 s. Artifacts in $OUT. Run under flock /tmp/link-emulator.lock.
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-desk-service}
 BIN=${LINK_BIN:-$ROOT/target/debug}

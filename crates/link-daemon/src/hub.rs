@@ -16,6 +16,7 @@ use link_core::identity::{DeviceId, Spki};
 use link_core::link_state::LinkState;
 use link_core::net;
 use link_core::outbox::{self, Outbox, OutboxActor, Seen, Sent};
+use link_core::path::LinkKind;
 use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
@@ -1002,13 +1003,19 @@ impl Hub {
         if on_bluetooth {
             log::info!("{id}: the session is on Bluetooth");
         } else {
-            log::info!("{id}: the session is on IP from {}", self.sessions[id].connection().quic().remote_address());
+            let session = &self.sessions[id];
+            log::info!(
+                "{id}: the session is on {} from {}",
+                transport(session),
+                session.connection().quic().remote_address()
+            );
         }
         if on_bluetooth {
             self.leave_hotspot(id).await;
         } else {
             self.send_waiting(id).await;
         }
+        self.publish();
     }
 
     async fn browse(&mut self, id: DeviceId, request: browse::Request, reply: browse::Reply) {
@@ -1448,6 +1455,7 @@ impl Hub {
                     },
                     path: match session {
                         None => "",
+                        Some(session) if session.link_kind() == Some(LinkKind::Usb) => "usb",
                         Some(session) if session.on_bluetooth() => "bluetooth",
                         Some(_) if matches!(self.nearby.get(&peer.id), Some(Nearby::Joined(_))) => "nearby",
                         Some(_) => "wifi",
@@ -1472,10 +1480,7 @@ impl Hub {
             .peers
             .iter()
             .map(|peer| {
-                let transport = self
-                    .sessions
-                    .get(&peer.id)
-                    .map_or("", |session| if session.on_bluetooth() { "bluetooth" } else { "wifi" });
+                let transport = self.sessions.get(&peer.id).map_or("", transport);
                 DeviceInfo {
                     id: peer.id.to_string(),
                     last_seen: i64::try_from(peer.last_seen).unwrap_or(0),
@@ -1590,4 +1595,13 @@ fn generate_secrets() -> anyhow::Result<(String, [u8; QR_SECRET_LEN])> {
     let mut qr = [0; QR_SECRET_LEN];
     fill(&mut qr)?;
     Ok((format!("{code:06}"), qr))
+}
+
+/// What carries `session`, as D-Bus names it: "bluetooth", "usb" or "wifi" (any IP path, and the relay).
+fn transport(session: &SessionHandle) -> &'static str {
+    match session.link_kind() {
+        Some(LinkKind::Usb) => "usb",
+        _ if session.on_bluetooth() => "bluetooth",
+        _ => "wifi",
+    }
 }

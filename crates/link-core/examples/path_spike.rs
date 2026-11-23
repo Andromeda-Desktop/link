@@ -19,7 +19,9 @@ const L2CAP_MTU: u16 = 2048;
 struct L2cap(SeqPacket);
 
 impl MessageLink for L2cap {
-    const KIND: LinkKind = LinkKind::Bluetooth;
+    fn kind(&self) -> LinkKind {
+        LinkKind::Bluetooth
+    }
 
     async fn send(&self, packet: &[u8]) -> std::io::Result<()> {
         self.0.send(packet).await.map(drop)

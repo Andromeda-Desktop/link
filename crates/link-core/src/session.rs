@@ -234,6 +234,11 @@ impl SessionHandle {
         self.path.as_ref().map_or_else(|| self.connection.on_bluetooth(), crate::path::Route::on_bluetooth)
     }
 
+    /// The kind of link the session runs over now; None over UDP or off a `PathSocket`.
+    pub fn link_kind(&self) -> Option<crate::path::LinkKind> {
+        self.path.as_ref().and_then(crate::path::Route::link_kind)
+    }
+
     /// The transcript tap of this session's control stream, which bulk stream headers go through too.
     pub fn tap(&self) -> Option<&Tap> {
         self.tap.as_ref()

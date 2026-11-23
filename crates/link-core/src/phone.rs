@@ -21,7 +21,7 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, Hop, LinkId, MessageLink, PathSocket, Route, StreamLink, link_address};
+use crate::path::{FdLink, Hop, LinkId, LinkKind, MessageLink, PathSocket, Route, StreamLink, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::relay::{self, Relay};
 use crate::store::{Feature, Peer, Store};
@@ -208,7 +208,7 @@ impl Phone {
                         return Err(Error::PairUnreached { ip, bluetooth: bluetooth.to_string() });
                     }
                 };
-                let dialed = self.dial_link(StreamLink::new(fd)?, pin).await?;
+                let dialed = self.dial_link(StreamLink::new(fd, LinkKind::Bluetooth)?, pin).await?;
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
                 (Connection::from(dialed.connection), server, None, dialed.route)
             }
@@ -359,7 +359,7 @@ impl Phone {
         }
         let fd =
             tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
-        self.connect_link(peer, StreamLink::new(fd)?, Via::Bluetooth).await
+        self.connect_link(peer, StreamLink::new(fd, LinkKind::Bluetooth)?, Via::Bluetooth).await
     }
 
     /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.

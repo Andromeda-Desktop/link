@@ -9,7 +9,7 @@ use std::io::{self, IoSliceMut};
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker, ready};
 use std::time::{Duration, Instant};
@@ -44,11 +44,13 @@ pub enum LinkKind {
     Bluetooth,
     /// Datagrams through a relay server, over the internet.
     Relay,
+    /// A TCP stream over the phone's USB cable (`adb reverse`).
+    Usb,
 }
 
 /// A connected link that keeps message boundaries: one `send` is one `recv` on the other end.
 pub trait MessageLink: Send + Sync + 'static {
-    const KIND: LinkKind;
+    fn kind(&self) -> LinkKind;
     fn send(&self, packet: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
     /// One whole message; 0 bytes means the peer closed the link.
     fn recv(&self, buf: &mut [u8]) -> impl Future<Output = io::Result<usize>> + Send;
@@ -67,7 +69,9 @@ impl FdLink {
 }
 
 impl MessageLink for FdLink {
-    const KIND: LinkKind = LinkKind::Bluetooth;
+    fn kind(&self) -> LinkKind {
+        LinkKind::Bluetooth
+    }
 
     async fn send(&self, packet: &[u8]) -> io::Result<()> {
         self.0
@@ -83,14 +87,15 @@ impl MessageLink for FdLink {
 
 /// A byte-stream descriptor (`BlueZ`'s RFCOMM socket, one end of a platform's stream socket pair): each message is a
 /// big-endian u16 length, then that many bytes. One task sends and one receives, so frames never interleave.
-pub struct StreamLink(AsyncFd<OwnedFd>);
+pub struct StreamLink(AsyncFd<OwnedFd>, LinkKind);
 
 impl StreamLink {
-    pub fn new(fd: OwnedFd) -> io::Result<Self> {
+    /// `kind` is what carries the stream: an RFCOMM socket is Bluetooth, a TCP stream over `adb reverse` is USB.
+    pub fn new(fd: OwnedFd, kind: LinkKind) -> io::Result<Self> {
         rustix::io::ioctl_fionbio(&fd, true)?;
         // Sound for OwnedFd, whose descriptor never changes; `register` would need unsafe, which the workspace forbids.
         #[allow(deprecated)]
-        Ok(Self(AsyncFd::new(fd)?))
+        Ok(Self(AsyncFd::new(fd)?, kind))
     }
 
     /// Fills `buf` whole; false when the peer closed before its first byte.
@@ -112,7 +117,9 @@ impl StreamLink {
 }
 
 impl MessageLink for StreamLink {
-    const KIND: LinkKind = LinkKind::Bluetooth;
+    fn kind(&self) -> LinkKind {
+        self.1
+    }
 
     async fn send(&self, packet: &[u8]) -> io::Result<()> {
         let len = u16::try_from(packet.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -173,6 +180,8 @@ struct Routes {
     from: HashMap<SocketAddr, Vec<SocketAddr>>,
     /// Virtual addresses handed out and not yet released, routed or not.
     virtuals: HashSet<SocketAddr>,
+    /// The last UDP address each virtual address was routed to, where it goes back to when its link ends.
+    last_udp: HashMap<SocketAddr, SocketAddr>,
 }
 
 impl Routes {
@@ -184,6 +193,11 @@ impl Routes {
         }
         if source != peer || matches!(via, Hop::Link(_)) {
             self.to.insert(peer, via);
+        }
+        if let Hop::Udp(addr) = via
+            && self.virtuals.contains(&peer)
+        {
+            self.last_udp.insert(peer, addr);
         }
     }
 
@@ -209,7 +223,7 @@ impl Shared {
         lock(&self.links).get(id).cloned().flatten()
     }
 
-    /// Drops a link that closed or failed; its routes fall back to UDP.
+    /// Drops a link that closed or failed; its routes fall back to their last UDP address, or end without one.
     fn drop_link(&self, id: LinkId, why: &io::Error) {
         log::info!("path link {id}: {why}");
         if let Some(slot) = lock(&self.links).get_mut(id) {
@@ -219,7 +233,10 @@ impl Shared {
         let peers: Vec<SocketAddr> =
             routes.to.iter().filter(|&(_, via)| *via == Hop::Link(id)).map(|(&peer, _)| peer).collect();
         for peer in peers {
-            routes.remove(peer);
+            match routes.last_udp.get(&peer).copied() {
+                Some(udp) => routes.set(peer, Hop::Udp(udp), canonical(udp)),
+                None => routes.remove(peer),
+            }
         }
     }
 }
@@ -350,7 +367,7 @@ impl PathSocket {
             writable: Mutex::default(),
             ended: watch::Sender::new(()),
             addr: canonical(peer),
-            kind: L::KIND,
+            kind: link.kind(),
             tied: AtomicBool::new(false),
         });
         let ended = slot.ended.subscribe();
@@ -414,7 +431,8 @@ impl PathSocket {
 
     /// The path to `peer`, one connection's remote address, a real or a virtual one; UDP to `peer` until set.
     pub fn route_to(self: &Arc<Self>, peer: SocketAddr) -> Route {
-        Route { socket: self.clone(), peer: canonical(peer), state: Arc::default() }
+        let state = RouteState { shared: Arc::downgrade(&self.shared), ..Default::default() };
+        Route { socket: self.clone(), peer: canonical(peer), state: Arc::new(state) }
     }
 
     /// A route over `via` to a virtual address no other route uses. The address is freed when the last handle to
@@ -430,7 +448,11 @@ impl PathSocket {
         let route = Route {
             socket: self.clone(),
             peer,
-            state: Arc::new(RouteState { _release: Some(release), ..Default::default() }),
+            state: Arc::new(RouteState {
+                shared: Arc::downgrade(&self.shared),
+                _release: Some(release),
+                ..Default::default()
+            }),
         };
         route.set(via);
         route
@@ -446,11 +468,6 @@ impl PathSocket {
             Some(&Hop::Link(id)) => Some(id),
             _ => None,
         }
-    }
-
-    /// Whether `peer` is reached over a Bluetooth link now.
-    fn on_bluetooth(&self, peer: SocketAddr) -> bool {
-        self.link_to(peer).and_then(|id| self.shared.slot(id)).is_some_and(|slot| slot.kind == LinkKind::Bluetooth)
     }
 
     /// Ends link `id`; its routes fall back to UDP.
@@ -525,13 +542,22 @@ pub struct Route {
 
 #[derive(Default)]
 struct RouteState {
-    on_bluetooth: AtomicBool,
+    /// The link the route runs over plus one; 0 over UDP. Its kind comes from the link, so an ended link reads as UDP.
+    link: AtomicUsize,
+    shared: Weak<Shared>,
     /// Counts path changes; the controller starts afresh when it sees a new one.
     changes: AtomicU64,
     /// The last link a server's connection was tied to, so each move onto a link ties once.
     tied: Mutex<Option<LinkId>>,
     /// Held for its drop.
     _release: Option<Release>,
+}
+
+impl RouteState {
+    fn link_kind(&self) -> Option<LinkKind> {
+        let id = self.link.load(Ordering::Relaxed).checked_sub(1)?;
+        self.shared.upgrade()?.slot(id).map(|slot| slot.kind)
+    }
 }
 
 /// Frees a virtual address's route when its last user goes.
@@ -546,6 +572,7 @@ impl Drop for Release {
             let mut routes = lock(&shared.routes);
             routes.remove(self.peer);
             routes.virtuals.remove(&self.peer);
+            routes.last_udp.remove(&self.peer);
         }
     }
 }
@@ -562,16 +589,19 @@ impl Route {
             Hop::Link(_) => slot.as_ref().map_or(self.peer, |slot| slot.addr),
         };
         lock(&self.socket.shared.routes).set(self.peer, via, source);
-        let bluetooth = slot.is_some_and(|slot| slot.kind == LinkKind::Bluetooth);
-        self.state.on_bluetooth.store(bluetooth, Ordering::Relaxed);
+        let link = match via {
+            Hop::Link(id) if slot.is_some() => id + 1,
+            _ => 0,
+        };
+        self.state.link.store(link, Ordering::Relaxed);
         self.state.changes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A server's view: the peer moved the connection to `remote`, and quinn followed. Tells the controller whether
-    /// that is a Bluetooth link. True when the route moved onto or off Bluetooth.
+    /// which link carries it. True when the route moved onto, off or between links.
     pub fn follow(&self, remote: SocketAddr) -> bool {
-        let bluetooth = self.socket.on_bluetooth(remote);
-        let moved = self.state.on_bluetooth.swap(bluetooth, Ordering::Relaxed) != bluetooth;
+        let link = self.socket.link_to(remote).map_or(0, |id| id + 1);
+        let moved = self.state.link.swap(link, Ordering::Relaxed) != link;
         if moved {
             self.state.changes.fetch_add(1, Ordering::Relaxed);
         }
@@ -592,7 +622,12 @@ impl Route {
 
     /// Whether the connection runs over a Bluetooth link now.
     pub fn on_bluetooth(&self) -> bool {
-        self.state.on_bluetooth.load(Ordering::Relaxed)
+        self.link_kind() == Some(LinkKind::Bluetooth)
+    }
+
+    /// The kind of link the connection runs over now; None over UDP.
+    pub fn link_kind(&self) -> Option<LinkKind> {
+        self.state.link_kind()
     }
 
     /// The address quinn reaches this route's peer at.
@@ -670,7 +705,7 @@ impl Controller for PathController {
 
     fn window(&self) -> u64 {
         let window = self.controller.window();
-        if self.factory.state.on_bluetooth.load(Ordering::Relaxed) { window.min(LINK_WINDOW) } else { window }
+        if self.factory.state.link_kind() == Some(LinkKind::Bluetooth) { window.min(LINK_WINDOW) } else { window }
     }
 
     fn metrics(&self) -> quinn_proto::congestion::ControllerMetrics {
@@ -999,8 +1034,8 @@ mod tests {
         let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
         let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
         let (desk_end, phone_end) = socketpair(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
-        server.socket.accept_link(StreamLink::new(desk_end)?);
-        let phone_link = phone.add_link(StreamLink::new(phone_end)?, link_address(1));
+        server.socket.accept_link(StreamLink::new(desk_end, LinkKind::Bluetooth)?);
+        let phone_link = phone.add_link(StreamLink::new(phone_end, LinkKind::Bluetooth)?, link_address(1));
 
         let received = tokio::spawn(async move {
             let incoming = server.endpoint.accept().await.ok_or("no connection")?;
@@ -1025,11 +1060,59 @@ mod tests {
         Ok(())
     }
 
+    /// A connection over UDP moves onto a USB link (a TCP stream) and back to UDP when the link ends, losing nothing;
+    /// the USB link never gets the Bluetooth cap.
+    #[tokio::test]
+    async fn a_connection_moves_onto_a_usb_link_and_back_to_udp_when_it_ends() -> Result {
+        let server = PathServer::bind(&Identity::generate()?, "127.0.0.1:0".parse()?)?;
+        let server_addr = server.socket.local_addr()?;
+        let phone = PathSocket::new(std::net::UdpSocket::bind("[::]:0")?)?;
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let (phone_end, desk_end) = tokio::join!(tokio::net::TcpStream::connect(tcp.local_addr()?), tcp.accept());
+        let usb = |stream: tokio::net::TcpStream| StreamLink::new(OwnedFd::from(stream.into_std()?), LinkKind::Usb);
+        server.socket.accept_link(usb(desk_end?.0)?);
+        let link = phone.add_link(usb(phone_end?)?, link_address(1));
+
+        let dialer = Dialer::on_path(&Identity::generate()?, phone.clone())?;
+        let accepted = tokio::spawn(async move {
+            let desk = server.endpoint.accept().await.ok_or("no connection")?.await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((desk, server))
+        });
+        let Dialed { connection, route, .. } = dialer.dial(server_addr, ServerPin::Any).await?;
+        let path = route.ok_or("a path dialer gives a route")?;
+        let (desk, _server) = accepted.await??;
+        phone.tie(link, connection.clone());
+        path.set(Hop::Link(link));
+        assert_eq!(path.link_kind(), Some(LinkKind::Usb));
+        assert!(!path.on_bluetooth(), "a USB link got the Bluetooth cap");
+
+        let round = |label: &'static str| {
+            let (phone, desk) = (connection.clone(), desk.clone());
+            async move {
+                let mut send = phone.open_uni().await?;
+                send.write_all(label.as_bytes()).await?;
+                send.finish()?;
+                let got = desk.accept_uni().await?.read_to_end(64).await?;
+                assert_eq!(got, label.as_bytes());
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(desk.remote_address())
+            }
+        };
+        let from = tokio::time::timeout(Duration::from_secs(5), round("over usb")).await??;
+        assert!(is_link_address(from), "the desktop did not see the connection on the USB link");
+
+        phone.close_link(link);
+        assert_eq!(path.link_kind(), None, "the route stayed on a link that ended");
+        let from = tokio::time::timeout(Duration::from_secs(5), round("back on udp")).await??;
+        assert_eq!(from.port(), phone.local_addr()?.port(), "the connection did not move back to UDP");
+        assert!(connection.close_reason().is_none(), "the connection ended with its USB link");
+        Ok(())
+    }
+
     /// A frame that arrives in pieces, its length too, is still one message.
     #[tokio::test]
     async fn a_byte_stream_link_joins_a_frame_that_arrives_in_pieces() -> Result {
         let (ours, theirs) = socketpair(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
-        let link = StreamLink::new(theirs)?;
+        let link = StreamLink::new(theirs, LinkKind::Bluetooth)?;
         let packet: Vec<u8> = (0..1000).map(byte).collect();
         let frame = [&1000u16.to_be_bytes()[..], &packet].concat();
         let mut buf = vec![0; MAX_PACKET];
@@ -1119,7 +1202,9 @@ mod tests {
     struct Silent<const RELAY: bool>;
 
     impl<const RELAY: bool> MessageLink for Silent<RELAY> {
-        const KIND: LinkKind = if RELAY { LinkKind::Relay } else { LinkKind::Bluetooth };
+        fn kind(&self) -> LinkKind {
+            if RELAY { LinkKind::Relay } else { LinkKind::Bluetooth }
+        }
 
         fn send(&self, _: &[u8]) -> impl Future<Output = io::Result<()>> + Send {
             std::future::ready(Ok(()))

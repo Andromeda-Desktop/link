@@ -7,6 +7,7 @@
 # $OUT (default ./artifacts/link-android-ui). Run under flock /tmp/link-emulator.lock.
 # It uninstalls Link first: on a real phone, every pairing is lost; pair the real desktop again afterwards.
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-android-ui}
 BIN=${LINK_BIN:-$ROOT/target/debug}

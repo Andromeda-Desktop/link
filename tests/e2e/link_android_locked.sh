@@ -7,6 +7,7 @@
 # Writes screenshots, results.jsonl, signals.txt, linkd.log to $OUT (default ./artifacts/link-android-locked). Needs the
 # debug APK, the fixture APK and a running emulator; run under flock /tmp/link-emulator.lock, since the emulator is shared.
 set -euo pipefail
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-android-locked}
 BIN=${LINK_BIN:-$ROOT/target/debug}
