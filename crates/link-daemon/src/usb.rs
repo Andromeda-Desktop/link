@@ -19,6 +19,14 @@ const MAX_RESTART: Duration = Duration::from_secs(60);
 /// E2E only: a test linkd must not take the USB path from the user's own.
 const DISABLE: &str = "ANDROMEDA_LINK_NO_USB";
 
+/// `adb` that talks only to a server that already runs: adb starts none for a named host. A server linkd started in
+/// another network namespace (a sandbox, a test) would take the phone's USB interface from the user's own.
+fn adb() -> tokio::process::Command {
+    let mut adb = tokio::process::Command::new("adb");
+    adb.args(["-H", "127.0.0.1"]);
+    adb
+}
+
 pub async fn start(socket: Arc<PathSocket>, hub: HubHandle) {
     if std::env::var_os(DISABLE).is_some() {
         return;
@@ -75,7 +83,7 @@ async fn track(port: u16, hub: HubHandle) {
 
 /// One `adb track-devices` run. Each report is 4 hex digits of length, then lines of "serial\tstate".
 async fn follow(port: u16, hub: &HubHandle) -> std::io::Result<()> {
-    let mut child = tokio::process::Command::new("adb")
+    let mut child = adb()
         .arg("track-devices")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -116,7 +124,7 @@ async fn follow(port: u16, hub: &HubHandle) -> std::io::Result<()> {
 }
 
 async fn reverse(serial: &str, port: u16) -> bool {
-    let status = tokio::process::Command::new("adb")
+    let status = adb()
         .args(["-s", serial, "reverse", &format!("tcp:{USB_PORT}"), &format!("tcp:{port}")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
