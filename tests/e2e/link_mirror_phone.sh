@@ -10,6 +10,8 @@
 #    encoder down from 16 Mbit/s; after the link is clean again it steps back up. Frames keep arriving throughout.
 # 3. Sound: the fixture's 440 Hz tone arrives as Opus and decodes to audio.wav with that pitch.
 # MIRROR_H264=1 makes the viewer offer only H.264, for a comparison with the codec the phone picks otherwise.
+# MIRROR_USB=1 lets linkd use the phone's USB cable: the session moves onto it and only the latency step runs.
+# MIRROR_TAPS_ONLY=1 runs only the latency step, for a Wi-Fi baseline.
 # Needs the debug APKs and the phone on USB debugging, on the same Wi-Fi as this machine; see link_phone_lib.sh.
 # Updates Link on the phone, keeps its other pairings, and unpairs the run's desktop after. Holds
 # /tmp/andromeda-link-phone.lock, which other phone runs take too. Writes results.jsonl, latency.tsv, luma.tsv, relay.tsv,
@@ -17,6 +19,7 @@
 set -euo pipefail
 OUT=${OUT:-$(pwd)/artifacts/link-mirror-phone}
 source "$(dirname "$0")/link_phone_lib.sh"
+[[ -z ${MIRROR_USB:-} ]] || unset ANDROMEDA_LINK_NO_USB
 # A UDP port this machine's firewall lets in; the daemon's own random port is not, so the phone can only use the relay.
 RELAY_PORT=${RELAY_PORT:-48307}
 TAPS=30
@@ -56,6 +59,8 @@ start_mirror() {
   wait_for 20 "the mirror did not start" eval 'grep -q "mirroring at" "$OUT/linkd.log"'
 }
 
+on_usb() { prop DeviceInfo | grep -q "'transport': <'usb'>"; }
+[[ -z ${MIRROR_USB:-} ]] || wait_for 10 "the session never moved onto usb" on_usb
 adb logcat -c
 "$ADB" -s "$SERIAL" logcat -v epoch ScreenCapture:I ScreenInput:I ScreenMirror:I MirrorAudio:I LinkFixture:I '*:S' > "$OUT/logcat.txt" &
 adb shell am start -W -n org.andromeda.link.fixture/.MirrorProbeActivity > /dev/null
@@ -101,6 +106,12 @@ P50=$(jq .p50_ms <<< "$LATENCY")
 MEASURED=$(jq .measured <<< "$LATENCY")
 (( MEASURED >= TAPS * 9 / 10 )) || fail "only $MEASURED of $TAPS flips arrived"
 (( P50 < 250 )) || fail "median tap-to-photon $P50 ms"
+if [[ -n ${MIRROR_USB:-}${MIRROR_TAPS_ONLY:-} ]]; then
+  [[ -z ${MIRROR_USB:-} ]] || on_usb || fail "the session left usb: $(prop DeviceInfo)"
+  adb shell am force-stop org.andromeda.link.fixture
+  cat "$OUT/results.jsonl"
+  exit 0
+fi
 
 frames_since() { awk -v since="$1" '$1 > since' "$OUT/luma.tsv" | wc -l; }
 bitrates() { grep -o 'bitrate [0-9]* kbit/s' "$OUT/logcat.txt" | grep -o '[0-9]*' || true; }
