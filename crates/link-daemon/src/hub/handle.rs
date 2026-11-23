@@ -27,6 +27,11 @@ impl HubHandle {
         self.tell(Command::CancelPairing).await;
     }
 
+    /// A phone's `adb reverse` to this desktop's USB listener just succeeded.
+    pub async fn usb_ready(&self) {
+        self.tell(Command::UsbReady).await;
+    }
+
     /// Whether a phone with a session just reported `passkey` for the Bluetooth pairing under way; it counts once.
     pub async fn confirm_bt_pairing(&self, passkey: u32) -> bool {
         self.request(|reply| Command::ConfirmBtPairing { passkey, reply }).await.unwrap_or(false)

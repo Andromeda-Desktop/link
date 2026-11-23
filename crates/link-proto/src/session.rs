@@ -119,6 +119,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::MirrorInput(_)
         | Message::MirrorKeyframe
         | Message::MirrorLag(_)
+        | Message::UsbReady
         | Message::FsList(_)
         | Message::FsRead(_)
         | Message::FsStat(_)

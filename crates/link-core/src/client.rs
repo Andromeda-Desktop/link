@@ -259,8 +259,11 @@ pub struct ClientActor {
     /// Each IP session's standby link (LE, or the relay it started on), with the session's stable id and the link's
     /// path; losing Wi-Fi or the desktop's heartbeat moves the session onto it.
     standby: HashMap<DeviceId, (usize, LinkId, Via)>,
-    standbys: JoinSet<(DeviceId, usize, std::io::Result<OwnedFd>)>,
+    /// Standby links being opened: an L2CAP channel (`Via::Bluetooth`) or a proven USB stream (`Via::Usb`).
+    standbys: JoinSet<(DeviceId, usize, Via, Result<OwnedFd, Error>)>,
     probes: JoinSet<(DeviceId, Result<Reached, Error>)>,
+    /// Ends when a session's USB link ends (the cable came out), with the session's stable id.
+    usb_ends: JoinSet<(DeviceId, usize)>,
     /// The probe running for each desktop: a new one stops it, since two dials to one address contend for its packets.
     probing: HashMap<DeviceId, tokio::task::AbortHandle>,
     /// The relay connection under each session that started through the relay; it tells the phone's public address.
@@ -336,6 +339,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         next_probe: None,
         standby: HashMap::new(),
         standbys: JoinSet::new(),
+        usb_ends: JoinSet::new(),
         probes: JoinSet::new(),
         probing: HashMap::new(),
         relayed: HashMap::new(),
@@ -392,7 +396,7 @@ impl ClientActor {
                 () = sleep_until(next_status) => self.send_status().await,
                 () = sleep_until(self.next_probe) => self.probe(),
                 Some(joined) = self.standbys.join_next() => match joined {
-                    Ok((id, stable_id, opened)) => self.standby_opened(id, stable_id, opened),
+                    Ok((id, stable_id, via, opened)) => self.standby_opened(id, stable_id, via, opened).await,
                     Err(join) => log::warn!("standby link task: {join}"),
                 },
                 Some(_) = self.browsing.join_next() => {}
@@ -415,6 +419,7 @@ impl ClientActor {
                         self.redialing.clear();
                     }
                 },
+                Some(Ok((id, stable_id))) = self.usb_ends.join_next() => self.usb_ended(id, stable_id).await,
                 Some(joined) = self.probes.join_next() => match joined {
                     Ok((id, reached)) => self.probed(id, reached).await,
                     Err(join) if join.is_cancelled() => {}
@@ -713,6 +718,7 @@ impl ClientActor {
             SessionEvent::Message { from, message: Message::HotspotJoined(joined) } => {
                 self.hotspot_joined(from, &joined);
             }
+            SessionEvent::Message { from, message: Message::UsbReady } => self.usb_ready(from),
             SessionEvent::Message { from, message: Message::MirrorRequest(_) }
                 if !self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.screen) =>
             {

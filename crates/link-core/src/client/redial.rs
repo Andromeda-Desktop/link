@@ -1,3 +1,5 @@
+use crate::path::{FdLink, LinkKind, StreamLink};
+
 use super::{
     ClientActor, ClientEvent, CloseCode, DeviceId, Duration, Ended, Error, FIRST_RETRY, Hop, Instant, LinkId,
     MAX_RETRY, NetworkKind, OPEN_TTLS, OwnedFd, PROBE_EVERY, Peer, Reached, Relay, Retry, SessionHandle, Via,
@@ -5,7 +7,14 @@ use super::{
 };
 
 impl ClientActor {
-    pub(super) fn standby_opened(&mut self, id: DeviceId, stable_id: usize, opened: std::io::Result<OwnedFd>) {
+    /// A Bluetooth standby waits for Wi-Fi to go; a USB link takes the session at once.
+    pub(super) async fn standby_opened(
+        &mut self,
+        id: DeviceId,
+        stable_id: usize,
+        via: Via,
+        opened: Result<OwnedFd, Error>,
+    ) {
         let Some(quic) = self
             .sessions
             .get(&id)
@@ -14,13 +23,57 @@ impl ClientActor {
         else {
             return;
         };
-        let added = opened.map_err(Error::from).and_then(|fd| self.phone.add_standby(fd, quic));
-        match added {
-            Ok(link) => {
-                log::info!("{id}: standby Bluetooth link up");
-                self.standby.insert(id, (stable_id, link, Via::Bluetooth));
+        let added = opened.and_then(|fd| match via {
+            Via::Usb => self.phone.add_standby(StreamLink::new(fd, LinkKind::Usb)?, quic),
+            _ => self.phone.add_standby(FdLink::new(fd)?, quic),
+        });
+        match (added, via) {
+            (Ok(link), Via::Usb) => {
+                let ended = self.phone.socket().link_closed(link);
+                self.usb_ends.spawn({
+                    let id = id.clone();
+                    async move {
+                        ended.await;
+                        (id, stable_id)
+                    }
+                });
+                self.move_to_standby(id, (link, via), "the USB cable reaches the desktop").await;
             }
-            Err(error) => log::info!("{id}: no standby Bluetooth link: {error}"),
+            (Ok(link), _) => {
+                log::info!("{id}: standby {via:?} link up");
+                self.standby.insert(id, (stable_id, link, via));
+            }
+            (Err(error), _) => log::info!("{id}: no standby {via:?} link: {error}"),
+        }
+    }
+
+    /// The USB link under `id`'s session ended and its route went back to UDP: a heartbeat shows the desktop the
+    /// path before it gives up on the session.
+    pub(super) async fn usb_ended(&mut self, id: DeviceId, stable_id: usize) {
+        let Some(handle) = self.sessions.get(&id).filter(|handle| handle.stable_id() == stable_id).cloned() else {
+            return;
+        };
+        let Some(Hop::Udp(addr)) = handle.path().and_then(crate::path::Route::via) else { return };
+        log::info!("{id}: the USB cable is gone; the session is back at {addr}");
+        handle.wake();
+        self.path_changed(&id, Via::LastKnown, Some(addr)).await;
+        if let Some(desktop) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() {
+            self.emit(ClientEvent::Connected { desktop, addr: Some(addr), via: Via::LastKnown, resumed: false });
+        }
+    }
+
+    /// The desktop says this phone's USB cable reaches it: a live session not on USB yet moves there once a pinned
+    /// handshake over the cable proves it is the same desktop.
+    pub(super) fn usb_ready(&mut self, id: DeviceId) {
+        let Some(handle) = self.sessions.get(&id).filter(|handle| handle.path().is_some()) else { return };
+        if handle.link_kind() == Some(LinkKind::Usb) {
+            return;
+        }
+        let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
+        let stable_id = handle.stable_id();
+        match self.phone.usb_probe(&peer) {
+            Ok(probe) => drop(self.standbys.spawn(async move { (id, stable_id, Via::Usb, probe.await) })),
+            Err(error) => log::info!("{id}: no USB probe: {error}"),
         }
     }
 

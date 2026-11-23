@@ -212,7 +212,8 @@ impl SessionHandle {
         self.liveness.borrow().view(Instant::now())
     }
 
-    /// Something on this side wants a fresh answer soon (the app came to the front): heartbeats go active at once.
+    /// Something on this side wants a fresh answer soon (the app came to the front, the path moved): heartbeats go
+    /// active and one goes out at once, which also shows the peer the new path.
     pub fn wake(&self) {
         drop(self.commands.try_send(Command::Wake));
     }
@@ -426,7 +427,7 @@ impl Live {
     async fn on_command(&mut self, command: Command) -> Result<(), Error> {
         self.beat.touch(Instant::now());
         match command {
-            Command::Wake => {}
+            Command::Wake => self.beat.due = Instant::now(),
             Command::Share { share, reply } => {
                 let id = self.writer.send(Message::Share(share)).await?;
                 self.state.sent_share(id);

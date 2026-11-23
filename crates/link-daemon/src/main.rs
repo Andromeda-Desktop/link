@@ -111,7 +111,7 @@ async fn run() -> anyhow::Result<()> {
     let bluetooth = bluetooth::Bluetooth::start().await;
     #[cfg(target_os = "linux")]
     l2cap::start(server.socket.clone(), bluetooth.on_radio()).await;
-    usb::start(server.socket.clone()).await;
+    usb::start(server.socket.clone(), handle.clone()).await;
     let relay = relay::spec(&state_dir.join("relay"));
     let (relay_seen_tx, relay_seen) = tokio::sync::watch::channel(None);
     if let Some(spec) = &relay {

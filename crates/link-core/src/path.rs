@@ -33,6 +33,9 @@ pub const LINK_WINDOW: u64 = 12 << 10;
 /// How long an accepted link may carry no connection: a phone dials at once, and a handshake takes at most
 /// `CONNECT_TIMEOUT` (5 s).
 pub const UNUSED_LINK: Duration = Duration::from_secs(10);
+/// How long a connection outlives the link it runs over: a peer that came onto the link from UDP goes back to UDP
+/// and sends at once.
+const LINK_GRACE: Duration = Duration::from_secs(1);
 /// Inbound packets from all links waiting for the endpoint.
 const INBOUND: usize = 256;
 /// The largest packet a link may deliver; QUIC packets stay far below it.
@@ -47,6 +50,9 @@ pub enum LinkKind {
     /// A TCP stream over the phone's USB cable (`adb reverse`).
     Usb,
 }
+
+/// The phone reaches the desktop on its USB cable at 127.0.0.1 on this port, which `adb reverse` carries.
+pub const USB_PORT: u16 = 47999;
 
 /// A connected link that keeps message boundaries: one `send` is one `recv` on the other end.
 pub trait MessageLink: Send + Sync + 'static {
@@ -485,6 +491,7 @@ impl PathSocket {
         tokio::spawn(async move {
             tokio::select! {
                 () = link_closed => {
+                    tokio::time::sleep(LINK_GRACE).await;
                     let remote = canonical(connection.remote_address());
                     if is_link_address(remote) && !lock(&socket.shared.routes).to.contains_key(&remote) {
                         connection.close(0u32.into(), b"link closed");

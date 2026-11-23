@@ -131,6 +131,9 @@ pub const SCREEN_SHAPE: &str = "feature:screen-shape";
 /// A phone's hello carries this when it takes `mirror-lag`; desktops send older phones none.
 pub const MIRROR_LAG: &str = "feature:mirror-lag";
 
+/// A phone's hello carries this when it takes `usb-ready`; desktops send older phones none.
+pub const USB: &str = "feature:usb";
+
 /// The largest lag a `mirror-lag` reports, in milliseconds.
 pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
 
@@ -539,6 +542,7 @@ pub enum Message {
     MirrorKeyframe,
     MirrorLag(MirrorLag),
     MirrorData(MirrorData),
+    UsbReady,
     RemoteRequest(RemoteRequest),
     RemoteStarted(RemoteStarted),
     RemoteStop(MirrorStop),
@@ -636,6 +640,7 @@ impl Message {
             Self::MirrorKeyframe => "mirror-keyframe",
             Self::MirrorLag(_) => "mirror-lag",
             Self::MirrorData(_) => "mirror-data",
+            Self::UsbReady => "usb-ready",
             Self::RemoteRequest(_) => "remote-request",
             Self::RemoteStarted(_) => "remote-started",
             Self::RemoteStop(_) => "remote-stop",
@@ -689,6 +694,7 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::UsbReady
             | Self::ContactsChanged
             | Self::TextsChanged
             | Self::CallsChanged => Value::serialized(&Empty {}),
@@ -817,6 +823,10 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::MirrorKeyframe
             }
+            "usb-ready" => {
+                body.deserialized::<Empty>()?;
+                Self::UsbReady
+            }
             "hotspot" => Self::Hotspot(body.deserialized()?),
             "hotspot-joined" => Self::HotspotJoined(body.deserialized()?),
             "hotspot-end" => Self::HotspotEnd(body.deserialized()?),
@@ -898,6 +908,7 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::UsbReady
             | Self::ShareAck(_)
             | Self::Heartbeat(_)
             | Self::HeartbeatAck(_)

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
     Hello, Hotspot, LATE_HASH, MESSAGES, MIRROR_CODECS, MIRROR_LAG, Message, PHOTOS_PAGE, PHOTOS_RECENT, PairMethod,
-    SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, bluetooth_address, public_address, relay_entry,
+    SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, USB, bluetooth_address, public_address, relay_entry,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -21,7 +21,7 @@ use crate::control::{Control, Tap};
 use crate::hotspot::{HotspotProvider, WifiDirectProvider};
 use crate::identity::{DeviceId, Identity};
 use crate::pairing::pair_as_client;
-use crate::path::{FdLink, Hop, LinkId, LinkKind, MessageLink, PathSocket, Route, StreamLink, link_address};
+use crate::path::{FdLink, Hop, LinkId, LinkKind, MessageLink, PathSocket, Route, StreamLink, USB_PORT, link_address};
 use crate::reach::{self, Reached, Via};
 use crate::relay::{self, Relay};
 use crate::store::{Feature, Peer, Store};
@@ -280,9 +280,13 @@ impl Phone {
         }
     }
 
-    /// With no IP path (`ip` tells why): over Bluetooth when the desktop has an adapter and the platform can open one,
+    /// With no IP path (`ip` tells why): over the USB cable when a desktop's `adb reverse` reaches it, else over Bluetooth when the desktop has an adapter and the platform can open one,
     /// else through the desktop's relay when it has one.
     pub async fn connect_indirect(&mut self, peer: &Peer, ip: Error) -> Result<Session, Error> {
+        match self.connect_usb(peer).await {
+            Ok(session) => return Ok(session),
+            Err(usb) => log::debug!("{}: no USB path: {usb}", peer.id),
+        }
         let mut error = ip;
         if peer.bluetooth.is_some() && self.bluetooth.is_some() {
             log::info!("{}: no IP path ({error}); trying Bluetooth", peer.id);
@@ -328,10 +332,42 @@ impl Phone {
         Some(move || opener.open_l2cap(&address))
     }
 
-    /// Adds `fd` as a standby link that ends with `connection`; the connection's route can move onto it.
-    pub fn add_standby(&mut self, fd: OwnedFd, connection: quinn::Connection) -> Result<LinkId, Error> {
+    /// A session over the USB cable: refused at once when no desktop's `adb reverse` reaches this phone, and the pinned
+    /// handshake fails when another desktop's does.
+    async fn connect_usb(&mut self, peer: &Peer) -> Result<Session, Error> {
+        let link = StreamLink::new(usb_stream().await?, LinkKind::Usb)?;
+        self.connect_link(peer, link, Via::Usb).await
+    }
+
+    /// Proves the USB cable reaches `peer` with a pinned handshake that then closes, and opens a second stream there
+    /// for the live session to move onto: 127.0.0.1 may lead to another desktop, which would reset the session.
+    pub fn usb_probe(
+        &mut self,
+        peer: &Peer,
+    ) -> Result<impl Future<Output = Result<OwnedFd, Error>> + Send + 'static, Error> {
         self.links = self.links.wrapping_add(1);
-        let link = self.socket.add_link(FdLink::new(fd)?, link_address(self.links));
+        let (socket, dialer, addr) = (self.socket.clone(), self.dialer().clone(), link_address(self.links));
+        let pin = ServerPin::Key(peer.spki()?.fingerprint());
+        Ok(async move {
+            let link = socket.add_link(StreamLink::new(usb_stream().await?, LinkKind::Usb)?, addr);
+            match dialer.dial_hop(Hop::Link(link), pin).await {
+                Ok(probe) => {
+                    socket.tie(link, probe.connection.clone());
+                    Connection::from(probe.connection).close(CloseCode::Done);
+                }
+                Err(error) => {
+                    socket.close_link(link);
+                    return Err(error);
+                }
+            }
+            Ok(usb_stream().await?)
+        })
+    }
+
+    /// Adds `link` as a standby link that ends with `connection`; the connection's route can move onto it.
+    pub fn add_standby(&mut self, link: impl MessageLink, connection: quinn::Connection) -> Result<LinkId, Error> {
+        self.links = self.links.wrapping_add(1);
+        let link = self.socket.add_link(link, link_address(self.links));
         self.socket.tie(link, connection);
         Ok(link)
     }
@@ -435,6 +471,7 @@ impl Phone {
             LATE_HASH,
             MIRROR_CODECS,
             MIRROR_LAG,
+            USB,
         ]
         .map(str::to_owned);
         Hello { version: VERSION, name: self.name.clone(), addresses: features.to_vec() }
@@ -535,6 +572,14 @@ fn random_text(length: usize) -> Result<String, Error> {
         }
     }
     Ok(text)
+}
+
+/// A TCP stream to 127.0.0.1:[`USB_PORT`], which `adb reverse` carries to the desktop on the USB cable.
+async fn usb_stream() -> std::io::Result<OwnedFd> {
+    let stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, USB_PORT)).await?;
+    // QUIC packets go out whole and at once; Nagle would hold the small ones back.
+    stream.set_nodelay(true)?;
+    Ok(OwnedFd::from(stream.into_std()?))
 }
 
 #[cfg(test)]

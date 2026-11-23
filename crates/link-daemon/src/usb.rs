@@ -1,5 +1,5 @@
 //! QUIC over a phone's USB cable: a loopback TCP listener, and `adb reverse` from each ready phone's
-//! [`PHONE_PORT`] to it. Without `adb` nothing runs; any local process may connect, and the QUIC handshake still pins
+//! [`USB_PORT`] to it. Without `adb` nothing runs; any local process may connect, and the QUIC handshake still pins
 //! both keys.
 
 use std::net::Ipv4Addr;
@@ -7,19 +7,19 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
 
-use link_core::path::{LinkKind, PathSocket, StreamLink};
+use link_core::path::{LinkKind, PathSocket, StreamLink, USB_PORT};
+
+use crate::hub::HubHandle;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
-/// The phone dials 127.0.0.1 at this port; `adb reverse` carries it to the desktop.
-pub const PHONE_PORT: u16 = 47999;
 /// The first wait before `adb track-devices` runs again after it ended; it doubles up to [`MAX_RESTART`].
 const FIRST_RESTART: Duration = Duration::from_secs(1);
 const MAX_RESTART: Duration = Duration::from_secs(60);
 /// E2E only: a test linkd must not take the USB path from the user's own.
 const DISABLE: &str = "ANDROMEDA_LINK_NO_USB";
 
-pub async fn start(socket: Arc<PathSocket>) {
+pub async fn start(socket: Arc<PathSocket>, hub: HubHandle) {
     if std::env::var_os(DISABLE).is_some() {
         return;
     }
@@ -32,7 +32,7 @@ pub async fn start(socket: Arc<PathSocket>) {
         Err(error) => return log::info!("USB: {error}"),
     };
     tokio::spawn(accept(listener, socket));
-    tokio::spawn(track(port));
+    tokio::spawn(track(port, hub));
 }
 
 async fn accept(listener: TcpListener, socket: Arc<PathSocket>) {
@@ -53,12 +53,12 @@ fn link(stream: TcpStream) -> std::io::Result<StreamLink> {
     StreamLink::new(OwnedFd::from(stream.into_std()?), LinkKind::Usb)
 }
 
-/// Runs `adb track-devices` while linkd runs, and points each phone that becomes ready at `port`.
-async fn track(port: u16) {
+/// Runs `adb track-devices` while linkd runs, points each phone that becomes ready at `port`, and tells the hub.
+async fn track(port: u16, hub: HubHandle) {
     let mut wait = FIRST_RESTART;
     loop {
         let started = tokio::time::Instant::now();
-        match follow(port).await {
+        match follow(port, &hub).await {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return log::info!("USB: no adb"),
             Err(error) => log::info!("USB: adb track-devices: {error}"),
             Ok(()) => log::info!("USB: adb track-devices ended"),
@@ -72,7 +72,7 @@ async fn track(port: u16) {
 }
 
 /// One `adb track-devices` run. Each report is 4 hex digits of length, then lines of "serial\tstate".
-async fn follow(port: u16) -> std::io::Result<()> {
+async fn follow(port: u16, hub: &HubHandle) -> std::io::Result<()> {
     let mut child = tokio::process::Command::new("adb")
         .arg("track-devices")
         .stdout(std::process::Stdio::piped())
@@ -99,23 +99,30 @@ async fn follow(port: u16) -> std::io::Result<()> {
             .map(|(serial, _)| serial.to_owned())
             .collect();
         for serial in now.difference(&ready) {
-            reverse(serial, port).await;
+            if reverse(serial, port).await {
+                hub.usb_ready().await;
+            }
         }
         ready = now;
     }
 }
 
-async fn reverse(serial: &str, port: u16) {
+async fn reverse(serial: &str, port: u16) -> bool {
     let status = tokio::process::Command::new("adb")
-        .args(["-s", serial, "reverse", &format!("tcp:{PHONE_PORT}"), &format!("tcp:{port}")])
+        .args(["-s", serial, "reverse", &format!("tcp:{USB_PORT}"), &format!("tcp:{port}")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .status();
-    match tokio::time::timeout(Duration::from_secs(10), status).await {
-        Ok(Ok(status)) if status.success() => log::info!("USB: {serial} reaches this desktop over its cable"),
-        Ok(Ok(status)) => log::info!("USB: adb reverse on {serial}: {status}"),
-        Ok(Err(error)) => log::info!("USB: adb reverse on {serial}: {error}"),
-        Err(_) => log::info!("USB: adb reverse on {serial} hung"),
-    }
+    let failure = match tokio::time::timeout(Duration::from_secs(10), status).await {
+        Ok(Ok(status)) if status.success() => {
+            log::info!("USB: {serial} reaches this desktop over its cable");
+            return true;
+        }
+        Ok(Ok(status)) => status.to_string(),
+        Ok(Err(error)) => error.to_string(),
+        Err(_) => "hung".to_owned(),
+    };
+    log::info!("USB: adb reverse on {serial}: {failure}");
+    false
 }

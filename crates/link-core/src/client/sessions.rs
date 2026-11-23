@@ -73,7 +73,7 @@ impl ClientActor {
             self.standbys.spawn(async move {
                 let opened =
                     tokio::task::spawn_blocking(open).await.unwrap_or_else(|join| Err(std::io::Error::other(join)));
-                (id, stable_id, opened)
+                (id, stable_id, Via::Bluetooth, opened.map_err(Error::from))
             });
         }
         if let Some(status) = self.status {

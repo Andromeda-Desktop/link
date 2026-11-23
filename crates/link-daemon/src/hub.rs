@@ -24,6 +24,7 @@ use link_core::proto::message::{
     LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, MessagesRefusal, NotificationPosted,
     NotificationPull, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX,
     SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS, Text, TransferId,
+    USB,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -265,6 +266,7 @@ enum Backend {
 enum Command {
     StartPairing { reply: oneshot::Sender<anyhow::Result<(String, String)>> },
     CancelPairing,
+    UsbReady,
     Unpair { id: DeviceId, reply: oneshot::Sender<bool> },
     SetPaused { id: DeviceId, paused: bool, reply: oneshot::Sender<bool> },
     AnswerHotspot { id: DeviceId, allow: bool },
@@ -604,6 +606,7 @@ impl Hub {
         match command {
             Command::StartPairing { reply } => drop(reply.send(self.start_pairing())),
             Command::CancelPairing => self.close_window(),
+            Command::UsbReady => self.usb_ready().await,
             Command::ConfirmBtPairing { passkey, reply } => {
                 let confirmed =
                     self.bt_pairing.take().is_some_and(|(code, until)| code == passkey && Instant::now() < until);
@@ -992,6 +995,21 @@ impl Hub {
         self.send_capabilities(&id).await;
         self.send_desktop_status(&id).await;
         self.moved(&id, !on_ip).await;
+    }
+
+    /// A phone on this desktop's USB cable now reaches it over the cable; each live phone that takes `usb-ready` tries.
+    async fn usb_ready(&mut self) {
+        let phones: Vec<(DeviceId, SessionHandle)> = self
+            .sessions
+            .iter()
+            .filter(|(id, session)| session.is_live() && self.phone_has(id, USB))
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
+        for (id, session) in phones {
+            if let Err(error) = session.send(Message::UsbReady).await {
+                log::info!("{id}: usb-ready: {error}");
+            }
+        }
     }
 
     /// A session that reached IP takes the sends waiting for it; one back on Bluetooth means the phone's hotspot is

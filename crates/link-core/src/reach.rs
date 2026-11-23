@@ -26,6 +26,8 @@ pub enum Via {
     WifiDirect,
     /// The desktop's relay, when no direct path answers.
     Relay,
+    /// The phone's USB cable, through the desktop's `adb reverse`.
+    Usb,
 }
 
 pub struct Reached {
