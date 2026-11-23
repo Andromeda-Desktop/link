@@ -606,9 +606,7 @@ impl Link {
         }
     }
 
-    /// Input on the mirrored screen: `action` is tap, long-press, swipe, scroll, back, home, recents, screenshot,
-    /// or text;
-    /// `args` holds x, y, x2, y2, ms (i/u) and text (s) as `mirror-input` takes them.
+    /// Input on the mirrored screen: `action` and `args` as `MirrorInput` in api/org.andromeda.Link1.xml lists them.
     async fn mirror_input(
         &self,
         device_id: String,
