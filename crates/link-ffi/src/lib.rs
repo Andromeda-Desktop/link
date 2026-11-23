@@ -20,6 +20,12 @@ use link_core::transfer::{ClipBytes, LocalClip, Source, TransferEvent};
 use link_core::uri::PairingUri;
 use tokio::sync::{Mutex, mpsc};
 
+mod bridge;
+mod convert;
+
+use bridge::{Camera, Hotspots, Library, Messages, Opener, WifiDirects};
+use convert::{describe, parse_id, parse_transfer, source, stopped, translate};
+
 uniffi::setup_scaffolding!();
 
 mod spike;
@@ -757,40 +763,6 @@ pub trait BluetoothLink: Send + Sync {
     fn scan_pairing(&self, service: String, millis: u32) -> Vec<String>;
 }
 
-struct Opener(Arc<dyn BluetoothLink>);
-
-impl link_core::bluetooth::BluetoothOpener for Opener {
-    fn open(&self, address: &str, pair: bool) -> std::io::Result<OwnedFd> {
-        adopt(self.0.open(address.to_owned(), pair))
-    }
-
-    fn open_l2cap(&self, address: &str) -> std::io::Result<OwnedFd> {
-        adopt(self.0.open_l2cap(address.to_owned(), link_core::bluetooth::L2CAP_PSM))
-    }
-
-    fn scan_pairing(&self) -> std::io::Result<Vec<String>> {
-        let millis = u32::try_from(link_core::bluetooth::PAIRING_SCAN.as_millis()).unwrap_or(u32::MAX);
-        Ok(self.0.scan_pairing(link_core::bluetooth::SERVICE_UUID.to_owned(), millis))
-    }
-}
-
-/// Takes the descriptor `BluetoothLink` returned, or the reason it gave none.
-fn adopt(fd: i32) -> std::io::Result<OwnedFd> {
-    let reason = match fd {
-        0.. => None,
-        -2 => Some("the Nearby devices permission is off"),
-        -3 => Some("Bluetooth is off on the phone"),
-        -4 => Some("the Bluetooth pairing was not accepted"),
-        -5 => Some("an RFCOMM link to that address is already open"),
-        _ => Some("the desktop did not answer"),
-    };
-    if let Some(reason) = reason {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, reason));
-    }
-    // SAFETY: the app hands over a descriptor it detached and no longer uses, so nothing else owns or closes it.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BrowseRoot {
     pub name: String,
@@ -841,62 +813,6 @@ pub enum PhotoMedia {
     All,
     Photos,
     Videos,
-}
-
-struct Library(Arc<dyn PhoneLibrary>);
-
-impl link_core::browse::Library for Library {
-    fn albums(&self) -> Vec<String> {
-        self.0.albums()
-    }
-
-    fn album(&self, name: &str) -> Vec<link_core::browse::LibraryItem> {
-        let item = |item: LibraryItem| link_core::browse::LibraryItem {
-            name: item.name,
-            path: PathBuf::from(item.path),
-            size: item.size,
-            mtime: item.mtime,
-        };
-        self.0.album(name.to_owned()).into_iter().map(item).collect()
-    }
-
-    fn thumbnail(&self, path: &std::path::Path, px: u16) -> Option<Vec<u8>> {
-        self.0.thumbnail(path.to_str()?.to_owned(), px)
-    }
-
-    fn recent(
-        &self,
-        offset: usize,
-        count: usize,
-        media: link_core::proto::message::PhotoMedia,
-    ) -> Option<link_core::browse::RecentBatch> {
-        use link_core::proto::message::PhotoMedia as Wire;
-        let media = match media {
-            Wire::All => PhotoMedia::All,
-            Wire::Photos => PhotoMedia::Photos,
-            Wire::Videos => PhotoMedia::Videos,
-        };
-        let wide = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-        let RecentPhotos { total, photos } = self.0.recent(wide(offset), wide(count), media)?;
-        let items = photos
-            .into_iter()
-            .map(|RecentPhoto { album, item, video }| link_core::browse::RecentItem {
-                album,
-                item: link_core::browse::LibraryItem {
-                    name: item.name,
-                    path: PathBuf::from(item.path),
-                    size: item.size,
-                    mtime: item.mtime,
-                },
-                video,
-            })
-            .collect();
-        Some(link_core::browse::RecentBatch { total: total as usize, items })
-    }
-
-    fn trash(&self, path: &std::path::Path) -> bool {
-        path.to_str().is_some_and(|path| self.0.trash(path.to_owned()))
-    }
 }
 
 /// The phone's contacts and texts, for desktops whose messages switch is on. Called off the main thread; may block.
@@ -971,70 +887,6 @@ pub struct PhoneContact {
     pub numbers: Vec<String>,
 }
 
-struct Messages(Arc<dyn PhoneMessages>);
-
-impl link_core::messages::Messages for Messages {
-    fn contacts(&self, offset: u32, limit: u32) -> Result<Vec<Contact>, MessagesRefusal> {
-        let contacts = self.0.contacts(offset, limit).ok_or(MessagesRefusal::Denied)?;
-        Ok(contacts.into_iter().map(|contact| Contact { name: contact.name, numbers: contact.numbers }).collect())
-    }
-
-    fn texts(&self, offset: u32, limit: u32) -> Result<Vec<Text>, MessagesRefusal> {
-        let texts = self.0.texts(offset, limit).ok_or(MessagesRefusal::Denied)?;
-        let text = |text: PhoneText| Text {
-            id: text.id,
-            thread: text.thread,
-            address: text.address,
-            body: text.body,
-            date: text.date,
-            sent: text.sent,
-            state: text.state.map(|state| match state {
-                PhoneTextState::Sending => message::TextState::Sending,
-                PhoneTextState::Delivered => message::TextState::Delivered,
-                PhoneTextState::Failed => message::TextState::Failed,
-            }),
-            parts: text.parts.into_iter().map(|part| message::TextPart { id: part.id, mime: part.mime }).collect(),
-        };
-        Ok(texts.into_iter().map(text).collect())
-    }
-
-    fn text_part(&self, part: u64, px: u16) -> Option<Vec<u8>> {
-        self.0.text_part(part, px)
-    }
-
-    fn send_text(&self, to: &str, body: &str) -> Result<(), MessagesRefusal> {
-        outcome(self.0.send_text(to.to_owned(), body.to_owned()))
-    }
-
-    fn calls(&self, offset: u32, limit: u32) -> Result<Vec<LoggedCall>, MessagesRefusal> {
-        let calls = self.0.calls(offset, limit).ok_or(MessagesRefusal::Denied)?;
-        let call = |call: PhoneCall| LoggedCall {
-            number: call.number,
-            name: call.name,
-            date: call.date,
-            duration: call.duration,
-            kind: match call.kind {
-                CallKind::Incoming => message::CallKind::Incoming,
-                CallKind::Outgoing => message::CallKind::Outgoing,
-                CallKind::Missed => message::CallKind::Missed,
-            },
-        };
-        Ok(calls.into_iter().map(call).collect())
-    }
-
-    fn dial(&self, number: &str) -> Result<(), MessagesRefusal> {
-        outcome(self.0.dial(number.to_owned()))
-    }
-}
-
-fn outcome(outcome: TextOutcome) -> Result<(), MessagesRefusal> {
-    match outcome {
-        TextOutcome::Sent => Ok(()),
-        TextOutcome::Denied => Err(MessagesRefusal::Denied),
-        TextOutcome::Failed => Err(MessagesRefusal::Failed),
-    }
-}
-
 /// The phone's camera, for desktops whose browse switch is on. `take_photo` is called off the main thread and blocks
 /// until the photo is saved under the Photos root, as (album, file name), or not.
 #[uniffi::export(with_foreign)]
@@ -1048,19 +900,6 @@ pub enum PhotoOutcome {
     Cancelled,
     Denied,
     Failed,
-}
-
-struct Camera(Arc<dyn PhoneCamera>);
-
-impl link_core::camera::Camera for Camera {
-    fn take(&self, desktop: &str) -> Result<(String, String), message::PhotoRefusal> {
-        match self.0.take_photo(desktop.to_owned()) {
-            PhotoOutcome::Taken { album, name } => Ok((album, name)),
-            PhotoOutcome::Cancelled => Err(message::PhotoRefusal::Cancelled),
-            PhotoOutcome::Denied => Err(message::PhotoRefusal::Denied),
-            PhotoOutcome::Failed => Err(message::PhotoRefusal::Failed),
-        }
-    }
 }
 
 /// A local-only hotspot's credentials, from [`PhoneHotspot::start`].
@@ -1081,19 +920,6 @@ pub trait PhoneHotspot: Send + Sync {
     fn stop(&self);
 }
 
-struct Hotspots(Arc<dyn PhoneHotspot>);
-
-impl link_core::hotspot::HotspotProvider for Hotspots {
-    fn start(&self) -> std::io::Result<link_core::proto::message::Hotspot> {
-        let started = self.0.start().ok_or_else(|| std::io::Error::other("Android did not start the hotspot"))?;
-        Ok(link_core::proto::message::Hotspot { ssid: started.ssid, passphrase: started.passphrase, mhz: None })
-    }
-
-    fn stop(&self) {
-        self.0.stop();
-    }
-}
-
 /// How the app creates a Wi-Fi Direct group it owns, tried before the hotspot so the desktop may keep its own network.
 /// `start` blocks until the group is up and returns its credentials, or None when Android refused it. Called off the
 /// main thread.
@@ -1101,20 +927,6 @@ impl link_core::hotspot::HotspotProvider for Hotspots {
 pub trait PhoneWifiDirect: Send + Sync {
     fn start(&self, group: HotspotCredentials) -> Option<HotspotCredentials>;
     fn stop(&self);
-}
-
-struct WifiDirects(Arc<dyn PhoneWifiDirect>);
-
-impl link_core::hotspot::WifiDirectProvider for WifiDirects {
-    fn start(&self, group: &link_core::proto::message::Hotspot) -> std::io::Result<link_core::proto::message::Hotspot> {
-        let wanted = HotspotCredentials { ssid: group.ssid.clone(), passphrase: group.passphrase.clone(), mhz: None };
-        let group = self.0.start(wanted).ok_or_else(|| std::io::Error::other("Android did not create the group"))?;
-        Ok(link_core::proto::message::Hotspot { ssid: group.ssid, passphrase: group.passphrase, mhz: group.mhz })
-    }
-
-    fn stop(&self) {
-        self.0.stop();
-    }
 }
 
 #[uniffi::export]
@@ -1559,319 +1371,6 @@ impl LinkClient {
     pub async fn cancel_transfer(&self, transfer_id: String) -> Result<bool, LinkError> {
         let (client, id) = (self.client.clone(), parse_transfer(&transfer_id)?);
         self.run(async move { client.cancel_transfer(id).await }).await
-    }
-}
-
-fn transfer_event(event: TransferEvent) -> Option<LinkEvent> {
-    Some(match event {
-        TransferEvent::Offered { id, from, files } => LinkEvent::TransferOffered {
-            transfer_id: id.to_hex(),
-            desktop_id: from.to_string(),
-            files: files
-                .into_iter()
-                .map(|file| OfferedFile { name: file.name, size: file.size, mime: file.mime })
-                .collect(),
-        },
-        TransferEvent::Progress { id, bytes, total } => {
-            LinkEvent::TransferProgress { transfer_id: id.to_hex(), bytes, total }
-        }
-        TransferEvent::Finished { id, peer, incoming, status, files } => LinkEvent::TransferFinished {
-            transfer_id: id.to_hex(),
-            desktop_id: peer.to_string(),
-            incoming,
-            status: status.as_str().to_owned(),
-            files: files
-                .into_iter()
-                .map(|file| ReceivedFile { path: file.path.to_string_lossy().into_owned(), sha256: hex(&file.sha256) })
-                .collect(),
-        },
-        TransferEvent::ClipOffered { from, id, mimes, size, text } => {
-            LinkEvent::ClipOffered { desktop_id: from.to_string(), clip_id: id, mimes, size, text }
-        }
-        TransferEvent::Busy { .. } | TransferEvent::Mirror { .. } => return None,
-    })
-}
-
-/// Takes ownership of the app's descriptor, which the app detached from its `ParcelFileDescriptor`.
-fn source(file: OutgoingFile) -> Result<Source, LinkError> {
-    if file.fd < 0 {
-        return Err(LinkError::Rejected { reason: "not a file descriptor".to_owned() });
-    }
-    // SAFETY: the app hands over a descriptor it detached and no longer uses, so nothing else owns or closes it.
-    let owned = unsafe { OwnedFd::from_raw_fd(file.fd) };
-    let source = Source::new(File::from(owned), file.name, file.mime)?;
-    if source.size() != file.size {
-        return Err(LinkError::Rejected { reason: "the file's size is not what the app reported".to_owned() });
-    }
-    Ok(source)
-}
-
-fn parse_transfer(id: &str) -> Result<TransferId, LinkError> {
-    TransferId::parse_hex(id).ok_or_else(|| LinkError::Rejected { reason: "not a transfer id".to_owned() })
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::with_capacity(2 * bytes.len()), |mut hex, byte| {
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    })
-}
-
-impl LinkClient {
-    async fn broadcast(&self, message: Message) -> Result<u32, LinkError> {
-        let client = self.client.clone();
-        let sent = self.run(async move { client.broadcast(message).await }).await?;
-        Ok(u32::try_from(sent).unwrap_or(u32::MAX))
-    }
-}
-
-#[expect(clippy::too_many_lines, reason = "one arm per event")]
-fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) -> Option<LinkEvent> {
-    Some(match event {
-        ClientEvent::Connected { desktop, .. } => LinkEvent::Connected { desktop_id: desktop.id.to_string() },
-        ClientEvent::Disconnected { id, .. } => LinkEvent::Disconnected { desktop_id: id.to_string() },
-        ClientEvent::Link { id, live } => LinkEvent::Link { desktop_id: id.to_string(), live },
-        ClientEvent::Received { from, share } => LinkEvent::Received {
-            desktop_id: from.to_string(),
-            kind: match share.kind {
-                message::ShareKind::Text => ShareKind::Text,
-                message::ShareKind::Link => ShareKind::Link,
-            },
-            text: share.text,
-        },
-        ClientEvent::Unpaired { id } => LinkEvent::Unpaired { desktop_id: id.to_string() },
-        ClientEvent::Paused { id } => LinkEvent::Paused { desktop_id: id.to_string() },
-        ClientEvent::MirrorBlocked { from } => LinkEvent::MirrorBlocked { desktop_id: from.to_string() },
-        ClientEvent::Transfer(TransferEvent::Mirror { from, stream }) => {
-            let receiver = stream.take()?;
-            LinkEvent::RemoteStream {
-                desktop_id: from.to_string(),
-                width: receiver.width,
-                height: receiver.height,
-                stream: Arc::new(RemoteView {
-                    runtime: runtime.clone(),
-                    receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
-                }),
-            }
-        }
-        ClientEvent::Transfer(event) => return transfer_event(event),
-        ClientEvent::SystemCommand { from, id, command } => LinkEvent::SystemCommand {
-            desktop_id: from.to_string(),
-            id,
-            command: command.command.as_str().to_owned(),
-            value: command.value,
-        },
-        ClientEvent::Message { from, message } => {
-            let desktop_id = from.to_string();
-            match message {
-                Message::NotificationAction(action) => LinkEvent::NotificationAction {
-                    desktop_id,
-                    id: action.id,
-                    action: action.action,
-                    reply_text: action.reply_text,
-                },
-                Message::NotificationDismiss(dismiss) => {
-                    LinkEvent::NotificationDismissed { desktop_id, id: dismiss.id }
-                }
-                Message::MediaPlayer(player) => LinkEvent::PlayerChanged { desktop_id, player: player.into() },
-                Message::MediaGone(gone) => LinkEvent::PlayerGone { desktop_id, player: gone.player },
-                Message::Ring(ring) => LinkEvent::RingRequested { desktop_id, on: ring.on },
-                Message::CallAction(action) => LinkEvent::CallActionRequested {
-                    desktop_id,
-                    action: match action.action {
-                        message::CallActionKind::Mute => CallAction::Mute,
-                        message::CallActionKind::Decline => CallAction::Decline,
-                    },
-                },
-                Message::Ringing(ringing) => LinkEvent::DesktopRinging { desktop_id, on: ringing.on },
-                Message::MirrorRequest => LinkEvent::MirrorRequested { desktop_id },
-                Message::MirrorInput(input) => LinkEvent::MirrorInput {
-                    desktop_id,
-                    action: input.action.into(),
-                    x: input.x,
-                    y: input.y,
-                    x2: input.x2,
-                    y2: input.y2,
-                    ms: input.ms,
-                    text: input.text,
-                    code: input.code,
-                    meta: input.meta,
-                },
-                Message::MirrorKeyframe => LinkEvent::MirrorKeyframeRequested { desktop_id },
-                Message::Commands(list) => LinkEvent::CommandsChanged {
-                    desktop_id,
-                    commands: list.commands.into_iter().map(|c| DesktopCommand { id: c.id, name: c.name }).collect(),
-                },
-                Message::Ping(ping) => LinkEvent::Pinged { desktop_id, message: ping.message },
-                Message::Capabilities(capabilities) => {
-                    LinkEvent::CapabilitiesChanged { desktop_id, can: capabilities.can }
-                }
-                Message::DesktopStatus(status) => LinkEvent::DesktopStatusChanged {
-                    desktop_id,
-                    volume: status.volume,
-                    muted: status.muted,
-                    battery: status.battery,
-                    charging: status.charging,
-                    brightness: status.brightness,
-                    locked: status.locked,
-                    idle: status.idle,
-                    dnd: status.dnd,
-                    profile: status.profile.map(|profile| profile.as_str().to_owned()),
-                },
-                Message::MirrorStop(stop) => LinkEvent::MirrorStopped { desktop_id, reason: stop.reason },
-                Message::RemoteStarted(started) => LinkEvent::RemoteStarted {
-                    desktop_id,
-                    sources: started
-                        .sources
-                        .into_iter()
-                        .map(|source| RemoteSource {
-                            window: source.kind == message::RemoteSourceKind::Window,
-                            name: source.name,
-                        })
-                        .collect(),
-                    current: started.current,
-                },
-                Message::RemoteStop(stop) => LinkEvent::RemoteStopped { desktop_id, reason: stop.reason },
-                Message::MediaCommand(command) => LinkEvent::PlayerCommand {
-                    desktop_id,
-                    player: command.player,
-                    command: command.command.into(),
-                    value: command.value,
-                },
-                _ => return None,
-            }
-        }
-    })
-}
-
-impl LinkClient {
-    async fn system_command(
-        &self,
-        desktop_id: String,
-        command: message::SystemCommandKind,
-        value: Option<u8>,
-    ) -> Result<(), LinkError> {
-        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
-        let message = Message::SystemCommand(message::SystemCommand { command, value });
-        self.run(async move { client.send(id, message).await }).await
-    }
-
-    /// Runs `work` on the client's runtime, which owns the timers and sockets it needs.
-    async fn run<T: Send + 'static>(
-        &self,
-        work: impl Future<Output = Result<T, link_core::Error>> + Send + 'static,
-    ) -> Result<T, LinkError> {
-        let joined = self.runtime.spawn(work).await.map_err(|_| stopped())?;
-        Ok(joined?)
-    }
-}
-
-impl From<client::DesktopLink> for DesktopLink {
-    fn from(link: client::DesktopLink) -> Self {
-        match link {
-            client::DesktopLink::Live => Self::Live,
-            client::DesktopLink::Reconnecting => Self::Reconnecting,
-            client::DesktopLink::Offline => Self::Offline,
-        }
-    }
-}
-
-fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Desktop {
-    let store::Grants { clipboard, files, notifications, media, ring, calls, browse, screen, messages, .. } =
-        peer.grants;
-    Desktop {
-        id: peer.id.to_string(),
-        name: peer.name.clone(),
-        addresses: peer.addresses.iter().map(ToString::to_string).collect(),
-        last_seen: peer.last_seen,
-        link,
-        bluetooth,
-        sharing: Sharing { clipboard, files, notifications, media, ring, calls, browse, screen, messages },
-        bluetooth_address: peer.bluetooth.clone(),
-        bt_pairing: peer.bt_pairing,
-        control: peer.has(message::CONTROL),
-    }
-}
-
-fn parse_id(id: &str) -> Result<DeviceId, LinkError> {
-    Ok(DeviceId::parse(id)?)
-}
-
-fn stopped() -> LinkError {
-    LinkError::Failed { reason: "the link runtime stopped".to_owned() }
-}
-
-impl From<MediaCommandKind> for message::MediaCommandKind {
-    fn from(kind: MediaCommandKind) -> Self {
-        match kind {
-            MediaCommandKind::Play => Self::Play,
-            MediaCommandKind::Pause => Self::Pause,
-            MediaCommandKind::PlayPause => Self::PlayPause,
-            MediaCommandKind::Next => Self::Next,
-            MediaCommandKind::Previous => Self::Previous,
-            MediaCommandKind::Seek => Self::Seek,
-            MediaCommandKind::Volume => Self::Volume,
-        }
-    }
-}
-
-impl From<message::MediaCommandKind> for MediaCommandKind {
-    fn from(kind: message::MediaCommandKind) -> Self {
-        match kind {
-            message::MediaCommandKind::Play => Self::Play,
-            message::MediaCommandKind::Pause => Self::Pause,
-            message::MediaCommandKind::PlayPause => Self::PlayPause,
-            message::MediaCommandKind::Next => Self::Next,
-            message::MediaCommandKind::Previous => Self::Previous,
-            message::MediaCommandKind::Seek => Self::Seek,
-            message::MediaCommandKind::Volume => Self::Volume,
-        }
-    }
-}
-
-impl From<MediaPlayer> for message::MediaPlayer {
-    fn from(player: MediaPlayer) -> Self {
-        let state = match player.state {
-            PlaybackState::Playing => message::PlaybackState::Playing,
-            PlaybackState::Paused => message::PlaybackState::Paused,
-            PlaybackState::Stopped => message::PlaybackState::Stopped,
-        };
-        Self {
-            player: player.player,
-            name: player.name,
-            state,
-            title: player.title,
-            artist: player.artist,
-            album: player.album,
-            length_ms: player.length_ms,
-            position_ms: player.position_ms,
-            volume: player.volume,
-            artwork: player.artwork,
-            can: player.can.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<message::MediaPlayer> for MediaPlayer {
-    fn from(player: message::MediaPlayer) -> Self {
-        let state = match player.state {
-            message::PlaybackState::Playing => PlaybackState::Playing,
-            message::PlaybackState::Paused => PlaybackState::Paused,
-            message::PlaybackState::Stopped => PlaybackState::Stopped,
-        };
-        Self {
-            player: player.player,
-            name: player.name,
-            state,
-            title: player.title,
-            artist: player.artist,
-            album: player.album,
-            length_ms: player.length_ms,
-            position_ms: player.position_ms,
-            volume: player.volume,
-            artwork: player.artwork,
-            can: player.can.into_iter().map(Into::into).collect(),
-        }
     }
 }
 
