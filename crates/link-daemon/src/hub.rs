@@ -1362,7 +1362,7 @@ impl Hub {
         } else if command.value == Some(0)
             && self.sessions.get(&id).is_some_and(|session| cuts_link(session, command.command))
         {
-            Some("turning that off would end this connection")
+            Some("Turning that off would end this connection")
         } else {
             None
         };
