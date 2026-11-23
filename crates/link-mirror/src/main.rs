@@ -36,6 +36,9 @@ struct Cli {
     /// With --frames or --luma, how many access units to decode.
     #[arg(long, default_value_t = 60)]
     count: u32,
+    /// Offer the phone no codec besides H.264, for a comparison run.
+    #[arg(long)]
+    h264: bool,
 }
 
 fn main() -> ExitCode {
@@ -52,7 +55,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     gstreamer::init()?;
     let bus = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)?;
-    let offered = stream::offered(cli.frames.is_some());
+    let offered = if cli.h264 { Vec::new() } else { stream::offered(cli.frames.is_some()) };
     let (socket, width, height, codec) = open(&bus, &cli.device, &offered)?;
     log::info!("mirroring {} at {width}x{height} in {codec:?}", cli.device);
     if let Some(dir) = cli.frames {

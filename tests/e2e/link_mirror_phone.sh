@@ -9,6 +9,7 @@
 # 2. Bitrate under loss: while the fixture draws noise, 3 Mbit/s and 2 % loss on the relay make the phone step its
 #    encoder down from 16 Mbit/s; after the link is clean again it steps back up. Frames keep arriving throughout.
 # 3. Sound: the fixture's 440 Hz tone arrives as Opus and decodes to audio.wav with that pitch.
+# MIRROR_H264=1 makes the viewer offer only H.264, for a comparison with the codec the phone picks otherwise.
 # Needs the debug APKs and the phone on USB debugging, on the same Wi-Fi as this machine; see link_phone_lib.sh.
 # Updates Link on the phone, keeps its other pairings, and unpairs the run's desktop after. Holds
 # /tmp/andromeda-link-phone.lock, which other phone runs take too. Writes results.jsonl, latency.tsv, luma.tsv, relay.tsv,
@@ -49,7 +50,7 @@ grep "connected over IP" "$OUT/linkd.log" | tail -1 | grep -q 127.0.0.1 || fail 
 
 # start_mirror ARGS...: a viewer with ARGS, through the request notification and Android's capture prompt.
 start_mirror() {
-  "$BIN/andromeda-link-mirror" "$ID" "$@" >> "$OUT/viewer.log" 2>&1 &
+  "$BIN/andromeda-link-mirror" "$ID" ${MIRROR_H264:+--h264} "$@" >> "$OUT/viewer.log" 2>&1 &
   VIEWER=$!
   allow_mirror "${1#--}"
   wait_for 20 "the mirror did not start" eval 'grep -q "mirroring at" "$OUT/linkd.log"'
