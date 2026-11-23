@@ -29,7 +29,7 @@ TAPS=30
 rm -rf "$OUT"
 mkdir -p "$OUT"
 RUNTIME=$(mktemp -d /tmp/link-mirror-phone.XXXX)
-trap 'adb shell am force-stop org.andromeda.link.fixture; adb shell input keyevent KEYCODE_SLEEP; forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
+trap 'adb shell am force-stop org.andromeda.link.fixture; [[ -n ${KEEP_AWAKE:-} ]] || adb shell input keyevent KEYCODE_SLEEP; forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no phone at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
 
