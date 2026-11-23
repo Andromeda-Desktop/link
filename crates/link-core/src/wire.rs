@@ -20,6 +20,14 @@ impl Connection {
     }
 }
 
+/// The control stream outranks every other stream: heartbeats ride it, and a 2 s late one marks the link Degraded.
+pub const CONTROL_PRIORITY: i32 = i32::MAX;
+/// Clipboard data: a few bytes the user waits for.
+pub const CLIP_PRIORITY: i32 = i32::MAX - 1;
+/// The mirror's first stream (audio and the first picture); later video streams rank below it by sequence.
+pub const MIRROR_PRIORITY: i32 = i32::MAX - 2;
+const _: () = assert!(CONTROL_PRIORITY > CLIP_PRIORITY && CLIP_PRIORITY > MIRROR_PRIORITY);
+
 pub struct SendStream(quinn::SendStream);
 
 pub struct RecvStream(quinn::RecvStream);
@@ -104,7 +112,7 @@ impl SendStream {
         self.0.stopped().await.ok().flatten().and_then(|code| u32::try_from(code.into_inner()).ok())
     }
 
-    /// Queued data of higher priority goes first.
+    /// Queued data of higher priority goes first; see [`CONTROL_PRIORITY`] for the order on one connection.
     pub fn set_priority(&self, priority: i32) {
         drop(self.0.set_priority(priority));
     }

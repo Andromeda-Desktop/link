@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 use crate::Error;
 use crate::control::{Tap, write_frame};
 use crate::session::SessionHandle;
-use crate::wire::{Connection, RecvStream, SendStream};
+use crate::wire::{Connection, MIRROR_PRIORITY, RecvStream, SendStream};
 
 /// Length, presentation time, flags.
 const UNIT_HEADER: usize = 4 + 8 + 1;
@@ -76,7 +76,7 @@ impl MirrorSender {
     ) -> Result<Self, Error> {
         let main = open_stream(&connection, tap.as_ref(), width, height, None).await?;
         if streams {
-            main.set_priority(i32::MAX);
+            main.set_priority(MIRROR_PRIORITY);
         }
         Ok(Self {
             connection,
@@ -117,7 +117,7 @@ impl MirrorSender {
             }
             video.gop = seq;
             let stream = open_stream(&self.connection, self.tap.as_ref(), self.width, self.height, Some(seq)).await?;
-            stream.set_priority(i32::try_from(seq).unwrap_or(i32::MAX - 1).min(i32::MAX - 1));
+            stream.set_priority(i32::try_from(seq).unwrap_or(MIRROR_PRIORITY - 1).min(MIRROR_PRIORITY - 1));
             video.stream = Some(stream);
         }
         let gop = video.gop;

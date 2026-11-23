@@ -9,7 +9,7 @@ use link_proto::message::{Envelope, Hello, Message};
 use tokio::sync::mpsc;
 
 use crate::Error;
-use crate::wire::{Connection, RecvStream, SendStream};
+use crate::wire::{CONTROL_PRIORITY, Connection, RecvStream, SendStream};
 
 /// How long a peer may take for one handshake step before the attempt is abandoned.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -51,6 +51,7 @@ impl Control {
     }
 
     fn new(send: SendStream, recv: RecvStream, tap: Option<Tap>) -> Self {
+        send.set_priority(CONTROL_PRIORITY);
         Self { writer: ControlWriter { send, next_id: 0, tap: tap.clone() }, reader: ControlReader { recv, tap } }
     }
 

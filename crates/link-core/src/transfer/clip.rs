@@ -22,7 +22,7 @@ use crate::Error;
 use crate::control::{STEP_TIMEOUT, write_frame};
 use crate::identity::DeviceId;
 use crate::session::SessionHandle;
-use crate::wire::RecvStream;
+use crate::wire::{CLIP_PRIORITY, RecvStream};
 
 /// What this side offers: each type with its own bytes, in order of preference. The first `text/plain` type's text
 /// goes inline when short enough.
@@ -376,6 +376,7 @@ impl TransferActor {
 
 async fn serve(session: &SessionHandle, header: ClipPull, content: Option<Content>) -> Result<(), Error> {
     let stream = session.connection().open_uni().await?;
+    stream.set_priority(CLIP_PRIORITY);
     let mut out = Outbound { stream, finished: false };
     write_frame(&mut out.stream, Message::ClipData(header), session.tap()).await?;
     match content {
