@@ -21,10 +21,75 @@ const AUDIO: u8 = 4;
 /// The daemon's last unit, empty, when the phone ended mirroring on purpose; a socket closing without it
 /// lost the stream.
 const END: u8 = 8;
-const CAPS: &str = "video/x-h264,stream-format=byte-stream,alignment=au";
 const AUDIO_CAPS: &str = "audio/x-opus,channel-mapping-family=(int)0,channels=(int)2,rate=(int)48000";
 /// Every this many pixels of the luma plane go into a frame's mean; enough for a full-screen flip.
 const LUMA_STRIDE: usize = 7;
+
+/// The stream's video codec, as `OpenMirrorWith` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+impl Codec {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "h264" => Some(Self::H264),
+            "hevc" => Some(Self::Hevc),
+            "av1" => Some(Self::Av1),
+            _ => None,
+        }
+    }
+
+    /// Appsrc caps and parser: Annex B access units for H.264 and HEVC, one temporal unit of low-overhead OBUs for AV1.
+    fn caps_and_parser(self) -> &'static str {
+        match self {
+            Self::H264 => "video/x-h264,stream-format=byte-stream,alignment=au ! h264parse",
+            Self::Hevc => "video/x-h265,stream-format=byte-stream,alignment=au ! h265parse",
+            Self::Av1 => "video/x-av1,stream-format=obu-stream,alignment=tu ! av1parse",
+        }
+    }
+
+    /// The first of `candidates` whose element is installed.
+    fn first(candidates: &[&'static str]) -> Option<&'static str> {
+        candidates.iter().copied().find(|c| gst::ElementFactory::find(c.split(' ').next().unwrap_or(c)).is_some())
+    }
+
+    /// The window's decoder, which the latency test times too: VA-API when the GPU has it. Frame threads would hold
+    /// up to one frame per core, so the software decoders split each frame into slices instead.
+    fn live_decoder(self) -> Option<&'static str> {
+        match self {
+            Self::H264 => Self::first(&["vah264dec", "avdec_h264 thread-type=slice ! videoconvert"]),
+            Self::Hevc => Self::first(&["vah265dec", "avdec_h265 thread-type=slice ! videoconvert"]),
+            Self::Av1 => Self::first(&["vaav1dec", "dav1ddec ! videoconvert", "av1dec ! videoconvert"]),
+        }
+    }
+
+    /// A software decoder for tests, so they run anywhere.
+    fn soft_decoder(self) -> Option<&'static str> {
+        match self {
+            Self::H264 => Self::first(&["avdec_h264"]),
+            Self::Hevc => Self::first(&["avdec_h265"]),
+            Self::Av1 => Self::first(&["dav1ddec", "av1dec"]),
+        }
+    }
+}
+
+/// What this viewer decodes besides H.264, best first, for `OpenMirrorWith`: HEVC only on VA-API (software HEVC costs
+/// more CPU than hardware H.264), AV1 on VA-API or dav1d; `soft` for the test decoders. Needs `gst::init`.
+pub fn offered(soft: bool) -> Vec<&'static str> {
+    let has = |element: &str| gst::ElementFactory::find(element).is_some();
+    let mut out = Vec::new();
+    if has("h265parse") && (if soft { Codec::Hevc.soft_decoder().is_some() } else { has("vah265dec") }) {
+        out.push("hevc");
+    }
+    if has("av1parse") && (if soft { Codec::Av1.soft_decoder() } else { Codec::Av1.live_decoder() }).is_some() {
+        out.push("av1");
+    }
+    out
+}
 
 struct Unit {
     pts_us: u64,
@@ -191,33 +256,27 @@ fn run_to_end(
 
 /// Decodes `count` units into `dir/frame-NNN.png`, and the sound into `dir/audio.wav`, for tests; software decoding,
 /// so it runs anywhere.
-pub fn to_png(socket: UnixStream, dir: &Path, count: u32) -> anyhow::Result<()> {
+pub fn to_png(socket: UnixStream, codec: Codec, dir: &Path, count: u32) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
+    let decoder = codec.soft_decoder().with_context(|| format!("no software {codec:?} decoder"))?;
+    log::info!("decoding {codec:?} with {decoder}");
     let (pipeline, src) = build(&format!(
-        "appsrc name=src is-live=true format=time caps={CAPS} ! h264parse ! avdec_h264 ! videoconvert ! pngenc \
+        "appsrc name=src is-live=true format=time caps={} ! {decoder} ! videoconvert ! pngenc \
          ! multifilesink sync=false location={}/frame-%03d.png",
+        codec.caps_and_parser(),
         dir.display()
     ))?;
     run_to_end(&pipeline, src, socket, Sound::Wav(dir.join("audio.wav")), count)
 }
 
-/// The window's decoder, which the latency test times too: VA-API when the GPU has it. Frame threads would hold up to
-/// one frame per core, so the software decoder splits each frame into slices instead.
-fn live_decoder() -> &'static str {
-    if gst::ElementFactory::find("vah264dec").is_some() {
-        "vah264dec"
-    } else {
-        "avdec_h264 thread-type=slice ! videoconvert"
-    }
-}
-
 /// Decodes `count` units and writes one line per frame to `out`: the Unix time in ms it was decoded at, and its mean
 /// luma (0 to 255). A test flips the phone's screen and times the flip's arrival.
-pub fn to_luma(socket: UnixStream, out: &Path, count: u32) -> anyhow::Result<()> {
+pub fn to_luma(socket: UnixStream, codec: Codec, out: &Path, count: u32) -> anyhow::Result<()> {
+    let decoder = codec.live_decoder().with_context(|| format!("no {codec:?} decoder"))?;
     let (pipeline, src) = build(&format!(
-        "appsrc name=src is-live=true format=time caps={CAPS} ! h264parse ! {} ! video/x-raw,format=NV12 \
+        "appsrc name=src is-live=true format=time caps={} ! {decoder} ! video/x-raw,format=NV12 \
          ! appsink name=sink sync=false max-buffers=1 drop=true",
-        live_decoder()
+        codec.caps_and_parser()
     ))?;
     let sink = pipeline
         .by_name("sink")
@@ -263,10 +322,15 @@ impl Display {
     }
 
     /// Shows `socket`'s stream in place of the current one; `ended` gets each end of stream or error.
-    pub fn start(&self, socket: UnixStream, ended: impl FnMut(&gst::Message) + 'static) -> anyhow::Result<()> {
+    pub fn start(
+        &self,
+        socket: UnixStream,
+        codec: Codec,
+        ended: impl FnMut(&gst::Message) + 'static,
+    ) -> anyhow::Result<()> {
         self.stop();
-        let decoder = live_decoder();
-        log::info!("decoding with {}", decoder.split(' ').next().unwrap_or(decoder));
+        let decoder = codec.live_decoder().with_context(|| format!("no {codec:?} decoder"))?;
+        log::info!("decoding {codec:?} with {}", decoder.split(' ').next().unwrap_or(decoder));
         let paintable_sink = gst::ElementFactory::find("gtk4paintablesink").is_some();
         // Ubuntu 24.04 lacks the GTK 4 sink: frames then reach the picture as textures copied off an appsink.
         let sink = if paintable_sink {
@@ -275,8 +339,10 @@ impl Display {
             log::info!("gtk4paintablesink is missing, showing frames through an appsink");
             "videoconvert ! video/x-raw,format=BGRx ! appsink name=sink sync=false max-buffers=1 drop=true"
         };
-        let (pipeline, src) =
-            build(&format!("appsrc name=src is-live=true format=time caps={CAPS} ! h264parse ! {decoder} ! {sink}"))?;
+        let (pipeline, src) = build(&format!(
+            "appsrc name=src is-live=true format=time caps={} ! {decoder} ! {sink}",
+            codec.caps_and_parser()
+        ))?;
         let sink = pipeline.by_name("sink").context("the pipeline has no sink")?;
         if paintable_sink {
             self.picture.set_paintable(Some(&sink.property::<gtk4::gdk::Paintable>("paintable")));

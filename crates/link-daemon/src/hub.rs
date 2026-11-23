@@ -280,7 +280,7 @@ enum Command {
     SendText { id: DeviceId, to: String, body: String, reply: crate::messages::SendReply },
     Dial { id: DeviceId, number: String, reply: crate::messages::SendReply },
     TakePhoto { id: DeviceId, reply: crate::messages::PhotoReply },
-    OpenMirror { id: DeviceId, reply: crate::mirror::Reply },
+    OpenMirror { id: DeviceId, ask: crate::mirror::Ask },
     ServeRemote { id: DeviceId, stream: RemoteStream, reply: oneshot::Sender<Result<(), String>> },
     StopRemote { id: DeviceId, reason: String },
     SetCommands { commands: Vec<StoredCommand>, reply: oneshot::Sender<bool> },
@@ -439,7 +439,7 @@ struct Waiting {
 
 enum Parked {
     Send { sources: Vec<Source>, reply: oneshot::Sender<Result<TransferId, link_core::Error>> },
-    Mirror(crate::mirror::Reply),
+    Mirror(crate::mirror::Ask),
 }
 
 /// The transfer backends the hub consents for: the Link transfer actor, which it also attaches sessions to, and
@@ -627,7 +627,7 @@ impl Hub {
             Command::Dial { id, number, reply } => self.dial(id, number, reply).await,
             Command::TakePhoto { id, reply } => self.take_photo(id, reply).await,
             Command::Browse { id, request, reply } => self.browse(id, request, reply).await,
-            Command::OpenMirror { id, reply } => self.open_mirror(id, reply).await,
+            Command::OpenMirror { id, ask } => self.open_mirror(id, ask).await,
             Command::ServeRemote { id, stream, reply } => drop(reply.send(self.serve_remote(id, stream).await)),
             Command::StopRemote { id, reason } => self.stop_remote(&id, &reason).await,
             Command::SetCommands { commands, reply } => drop(reply.send(self.set_commands(commands).await)),

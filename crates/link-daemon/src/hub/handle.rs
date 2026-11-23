@@ -67,9 +67,14 @@ impl HubHandle {
     }
 
     /// Asks the phone to mirror its screen; answered once the user allowed it there and the video stream arrived.
-    pub async fn open_mirror(&self, id: DeviceId) -> Result<crate::mirror::Opened, crate::mirror::Failure> {
+    pub async fn open_mirror(
+        &self,
+        id: DeviceId,
+        codecs: Vec<link_core::proto::message::Codec>,
+    ) -> Result<crate::mirror::Opened, crate::mirror::Failure> {
         let (reply, answer) = oneshot::channel();
-        if self.commands.send(Command::OpenMirror { id, reply }).await.is_err() {
+        let ask = crate::mirror::Ask { codecs, reply };
+        if self.commands.send(Command::OpenMirror { id, ask }).await.is_err() {
             return Err(crate::mirror::Failure::NotConnected);
         }
         answer.await.unwrap_or(Err(crate::mirror::Failure::NotConnected))

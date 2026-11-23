@@ -23,7 +23,7 @@ impl Hub {
                 self.waiting.push(Waiting { peer, work, deadline });
             }
             (Err(error), Parked::Send { reply, .. }) => drop(reply.send(Err(error))),
-            (Err(_), Parked::Mirror(reply)) => drop(reply.send(Err(crate::mirror::Failure::NotConnected))),
+            (Err(_), Parked::Mirror(ask)) => drop(ask.reply.send(Err(crate::mirror::Failure::NotConnected))),
         }
     }
 
@@ -44,7 +44,7 @@ impl Hub {
         for Waiting { peer, work, .. } in ready {
             match work {
                 Parked::Send { sources, reply } => drop(reply.send(self.send_files(peer.as_str(), sources).await)),
-                Parked::Mirror(reply) => self.open_mirror(peer, reply).await,
+                Parked::Mirror(ask) => self.open_mirror(peer, ask).await,
             }
         }
     }
@@ -72,7 +72,7 @@ impl Hub {
     pub(super) async fn without_hotspot(&mut self, waiting: Waiting, error: link_core::Error) {
         let Waiting { peer, work, .. } = waiting;
         let (sources, reply) = match work {
-            Parked::Mirror(reply) => return drop(reply.send(Err(crate::mirror::Failure::NeedsWifi))),
+            Parked::Mirror(ask) => return drop(ask.reply.send(Err(crate::mirror::Failure::NeedsWifi))),
             Parked::Send { sources, reply } => (sources, reply),
         };
         if total_size(&sources) > link_core::bluetooth::BLUETOOTH_FILE_LIMIT {

@@ -659,7 +659,7 @@ mod tests {
             assert!(Instant::now() < first, "no heartbeat round trip: {:?}", phone.link());
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let sender = MirrorSender::open(&phone, 16, 16, true).await?;
+        let sender = MirrorSender::open(&phone, 16, 16, None, true).await?;
         let video = tokio::spawn(async move {
             sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
             for pts_us in 1.. {
@@ -746,7 +746,7 @@ mod tests {
             return Err("two phones".into());
         };
 
-        let sender = MirrorSender::open(a_phone, 16, 16, true).await?;
+        let sender = MirrorSender::open(a_phone, 16, 16, None, true).await?;
         let video = tokio::spawn(async move {
             sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
             for pts_us in 1.. {

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use link_core::identity::DeviceId;
 use link_core::mirror::{MirrorReceiver, MirrorStream};
-use link_core::proto::message::{MIRROR_CONFIG, MIRROR_END};
+use link_core::proto::message::{Codec, MIRROR_CONFIG, MIRROR_END};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
@@ -21,6 +21,8 @@ pub struct Opened {
     pub stream: OwnedFd,
     pub width: u32,
     pub height: u32,
+    /// H.264 when None.
+    pub codec: Option<Codec>,
 }
 
 #[derive(Debug)]
@@ -36,9 +38,15 @@ pub enum Failure {
 
 pub type Reply = oneshot::Sender<Result<Opened, Failure>>;
 
+/// A viewer's request: `codecs` is what it decodes besides H.264, best first.
+pub struct Ask {
+    pub codecs: Vec<Codec>,
+    pub reply: Reply,
+}
+
 #[derive(Default)]
 pub struct Mirrors {
-    waiting: HashMap<DeviceId, (Reply, Instant)>,
+    waiting: HashMap<DeviceId, (Ask, Instant)>,
     /// Each running pump's stop, which ends it with [`MIRROR_END`].
     running: HashMap<DeviceId, oneshot::Sender<()>>,
     pumps: JoinSet<DeviceId>,
@@ -55,8 +63,8 @@ impl Mirrors {
         self.waiting.contains_key(id) || self.running.contains_key(id)
     }
 
-    pub fn wait(&mut self, id: DeviceId, reply: Reply) {
-        self.waiting.insert(id, (reply, Instant::now() + CONSENT_TIMEOUT));
+    pub fn wait(&mut self, id: DeviceId, ask: Ask) {
+        self.waiting.insert(id, (ask, Instant::now() + CONSENT_TIMEOUT));
     }
 
     pub fn deadline(&self) -> Option<Instant> {
@@ -75,8 +83,8 @@ impl Mirrors {
     }
 
     pub fn fail(&mut self, id: &DeviceId, failure: Failure) {
-        if let Some((reply, _)) = self.waiting.remove(id) {
-            drop(reply.send(Err(failure)));
+        if let Some((ask, _)) = self.waiting.remove(id) {
+            drop(ask.reply.send(Err(failure)));
         }
     }
 
@@ -92,10 +100,17 @@ impl Mirrors {
     /// The phone's video stream: handed to the request waiting for it, or refused.
     pub fn stream(&mut self, from: DeviceId, stream: &MirrorStream) {
         let Some(mut receiver) = stream.take() else { return };
-        let Some((reply, _)) = self.waiting.remove(&from) else {
+        let Some((Ask { codecs, reply }, _)) = self.waiting.remove(&from) else {
             log::info!("{from}: refusing a mirror stream nobody asked for");
             return receiver.stop();
         };
+        let codec = receiver.codec;
+        if codec.is_some_and(|codec| !codecs.contains(&codec)) {
+            receiver.stop();
+            return drop(
+                reply.send(Err(Failure::Failed(format!("the phone sent {codec:?} video, which was not asked for")))),
+            );
+        }
         let (ours, theirs) = match std::os::unix::net::UnixStream::pair() {
             Ok(pair) => pair,
             Err(error) => return drop(reply.send(Err(Failure::Failed(error.to_string())))),
@@ -106,10 +121,10 @@ impl Mirrors {
             Ok(ours) => ours,
             Err(error) => return drop(reply.send(Err(Failure::Failed(error.to_string())))),
         };
-        if reply.send(Ok(Opened { stream: theirs.into(), width, height })).is_err() {
+        if reply.send(Ok(Opened { stream: theirs.into(), width, height, codec })).is_err() {
             return receiver.stop();
         }
-        log::info!("{from}: mirroring at {width}x{height}");
+        log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
         let id = from.clone();
         let (stop, stopped) = oneshot::channel();
         self.pumps.spawn(async move {
@@ -212,4 +227,12 @@ fn header(len: usize, pts_us: u64, flags: u8) -> anyhow::Result<[u8; 13]> {
     header[4..12].copy_from_slice(&pts_us.to_be_bytes());
     header[12] = flags;
     Ok(header)
+}
+
+/// The name `OpenMirrorWith` takes and returns.
+pub fn codec_name(codec: Codec) -> &'static str {
+    match codec {
+        Codec::Hevc => "hevc",
+        Codec::Av1 => "av1",
+    }
 }

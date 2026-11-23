@@ -197,7 +197,7 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
         | Message::WifiDirect(_)
         | Message::FsWrite(_)
         | Message::FsDelete(_) => Some(Feature::Files),
-        Message::MirrorRequest
+        Message::MirrorRequest(_)
         | Message::MirrorStarted(_)
         | Message::ScreenShape(_)
         | Message::MirrorStop(_)

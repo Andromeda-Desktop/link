@@ -10,6 +10,7 @@ import android.hardware.display.VirtualDisplay
 import android.hardware.display.VirtualDisplayConfig
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -32,6 +33,7 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.LinkApplication
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.MirrorStream
+import org.andromeda.link.core.domain.VideoCodec
 import org.andromeda.link.notifications.Channels
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.lang.reflect.Method
@@ -119,14 +121,16 @@ class ScreenCapture : Service() {
         projection: MediaProjection,
     ) {
         val (width, height) = videoSize()
-        var codec = encoder(width, height) ?: return
-        display = mirrorDisplay(projection, width, height)
         val repository = (application as LinkApplication).container.repository
         val stream =
-            repository.startMirror(desktop, width, height).getOrElse {
+            repository.startMirror(desktop, width, height, hardwareEncoders(width, height)).getOrElse {
                 return finish(tellDesktop = false, reason = null)
             }
         this.stream = stream
+        val mime = stream.codec?.mime ?: MediaFormat.MIMETYPE_VIDEO_AVC
+        Log.i(TAG, "mirroring in $mime")
+        var codec = encoder(mime, width, height) ?: return
+        display = mirrorDisplay(projection, width, height)
         sendShape(desktop)
         val audio = MirrorAudio(this, projection)
         this.audio = audio
@@ -139,7 +143,7 @@ class ScreenCapture : Service() {
             val (turnedWidth, turnedHeight) = videoSize()
             runCatching { codec.stop() }
             runCatching { codec.release() }
-            codec = encoder(turnedWidth, turnedHeight) ?: return
+            codec = encoder(mime, turnedWidth, turnedHeight) ?: return
             display?.resize(turnedWidth, turnedHeight, resources.displayMetrics.densityDpi)
             display?.surface = surface
             resizing = false
@@ -153,19 +157,39 @@ class ScreenCapture : Service() {
         }
     }
 
-    /** A started encoder for [width] by [height] whose input is [surface]; null after telling the desktop why not. */
+    /**
+     * The codecs besides H.264 this phone has a hardware encoder for at [width] by [height] in either orientation: a
+     * software encoder adds tens of ms a frame, worse than H.264's larger frames.
+     */
+    private fun hardwareEncoders(
+        width: Int,
+        height: Int,
+    ): List<VideoCodec> {
+        val encoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { it.isEncoder && it.isHardwareAccelerated }
+        return VideoCodec.entries.filter { codec ->
+            encoders.any { info ->
+                info.supportedTypes.any { it.equals(codec.mime, ignoreCase = true) } &&
+                    info.getCapabilitiesForType(codec.mime).videoCapabilities.let {
+                        it.isSizeSupported(width, height) && it.isSizeSupported(height, width)
+                    }
+            }
+        }
+    }
+
+    /** A started [mime] encoder for [width] by [height] whose input is [surface]; null after telling the desktop why not. */
     private fun encoder(
+        mime: String,
         width: Int,
         height: Int,
     ): MediaCodec? {
         val codec =
             try {
-                MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
-                    configure(videoFormat(this, width, height), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                MediaCodec.createEncoderByType(mime).apply {
+                    configure(videoFormat(this, mime, width, height), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 }
             } catch (error: Exception) {
-                Log.w(TAG, "no H.264 encoder: ${error.message}")
-                main.post { finish(tellDesktop = true, reason = "the phone has no H.264 encoder for ${width}x$height") }
+                Log.w(TAG, "no $mime encoder: ${error.message}")
+                main.post { finish(tellDesktop = true, reason = "the phone has no $mime encoder for ${width}x$height") }
                 return null
             }
         surface = codec.createInputSurface()
@@ -190,9 +214,10 @@ class ScreenCapture : Service() {
 
     private fun videoFormat(
         codec: MediaCodec,
+        mime: String,
         width: Int,
         height: Int,
-    ) = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+    ) = MediaFormat.createVideoFormat(mime, width, height).apply {
         setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         setInteger(MediaFormat.KEY_BIT_RATE, MAX_BITRATE)
         setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
@@ -208,10 +233,15 @@ class ScreenCapture : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         // Qualcomm encoders take their low-latency mode only by this vendor key; others ignore it.
         setInteger("vendor.qti-ext-enc-low-latency.enable", 1)
-        val capabilities = codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        val capabilities = codec.codecInfo.getCapabilitiesForType(mime)
         // Constrained Baseline cannot reorder frames; the desktop relies on that to show each frame as it is decoded.
-        val baseline = MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
-        if (capabilities.profileLevels.any { it.profile == baseline }) setInteger(MediaFormat.KEY_PROFILE, baseline)
+        // HEVC Main has no such profile: KEY_MAX_B_FRAMES 0 keeps it in order.
+        val profile =
+            when (mime) {
+                MediaFormat.MIMETYPE_VIDEO_AVC -> MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
+                else -> MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+            }
+        if (capabilities.profileLevels.any { it.profile == profile }) setInteger(MediaFormat.KEY_PROFILE, profile)
         val modes = capabilities.encoderCapabilities
         if (modes.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)) {
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)

@@ -85,7 +85,7 @@ impl Limits {
             Message::Status(_) => &mut self.statuses,
             Message::Hotspot(_) | Message::WifiDirect(_) => &mut self.hotspots,
             Message::MirrorInput(_) | Message::RemoteInput(_) => &mut self.inputs,
-            Message::MirrorRequest => &mut self.mirror_requests,
+            Message::MirrorRequest(_) => &mut self.mirror_requests,
             Message::Ping(_) | Message::RunCommand(_) => &mut self.taps,
             Message::Punch(_) => &mut self.punches,
             _ => return true,

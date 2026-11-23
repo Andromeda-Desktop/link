@@ -122,7 +122,7 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                     },
                 },
                 Message::Ringing(ringing) => LinkEvent::DesktopRinging { desktop_id, on: ringing.on },
-                Message::MirrorRequest => LinkEvent::MirrorRequested { desktop_id },
+                Message::MirrorRequest(_) => LinkEvent::MirrorRequested { desktop_id },
                 Message::MirrorInput(input) => LinkEvent::MirrorInput {
                     desktop_id,
                     action: input.action.into(),

@@ -717,11 +717,43 @@ impl RemoteView {
 pub struct MirrorSession {
     runtime: tokio::runtime::Handle,
     sender: Arc<link_core::mirror::MirrorSender>,
+    codec: Option<MirrorCodec>,
+}
+
+/// A mirror video codec besides H.264.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MirrorCodec {
+    Hevc,
+    Av1,
+}
+
+impl From<MirrorCodec> for link_core::proto::message::Codec {
+    fn from(codec: MirrorCodec) -> Self {
+        match codec {
+            MirrorCodec::Hevc => Self::Hevc,
+            MirrorCodec::Av1 => Self::Av1,
+        }
+    }
+}
+
+impl From<link_core::proto::message::Codec> for MirrorCodec {
+    fn from(codec: link_core::proto::message::Codec) -> Self {
+        match codec {
+            link_core::proto::message::Codec::Hevc => Self::Hevc,
+            link_core::proto::message::Codec::Av1 => Self::Av1,
+        }
+    }
 }
 
 #[uniffi::export]
 impl MirrorSession {
-    /// One H.264 access unit in Annex B form; `flags` is 1 for a keyframe, 2 for codec configuration. Returns once
+    /// What to encode in: H.264 when None.
+    pub fn codec(&self) -> Option<MirrorCodec> {
+        self.codec
+    }
+
+    /// One access unit in [`MirrorSession::codec`]: Annex B for H.264 and HEVC, a temporal unit of low-overhead OBUs
+    /// for AV1; `flags` is 1 for a keyframe, 2 for codec configuration. Returns once
     /// the bytes are queued, so a slow network holds the encoder back; fails once the desktop is gone.
     pub async fn send_unit(&self, pts_us: u64, flags: u8, data: Vec<u8>) -> Result<(), LinkError> {
         let unit = link_core::mirror::Unit { pts_us, flags, data };
@@ -1221,16 +1253,20 @@ impl LinkClient {
         self.broadcast(Message::Ringing(message::Ringing { on })).await
     }
 
-    /// Opens the video stream to the desktop that asked for mirroring, after telling it the size.
+    /// Opens the video stream to the desktop that asked for mirroring, after telling it the size and codec: the
+    /// desktop's best one in `encoders` (the phone's hardware encoders besides H.264), else H.264.
     pub async fn start_mirror(
         &self,
         desktop_id: String,
         width: u32,
         height: u32,
+        encoders: Vec<MirrorCodec>,
     ) -> Result<Arc<MirrorSession>, LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
-        let sender = self.run(async move { client.start_mirror(id, width, height).await }).await?;
-        Ok(Arc::new(MirrorSession { runtime: self.runtime.handle().clone(), sender: Arc::new(sender) }))
+        let encoders: Vec<_> = encoders.into_iter().map(Into::into).collect();
+        let (sender, codec) = self.run(async move { client.start_mirror(id, width, height, &encoders).await }).await?;
+        let (runtime, sender, codec) = (self.runtime.handle().clone(), Arc::new(sender), codec.map(Into::into));
+        Ok(Arc::new(MirrorSession { runtime, sender, codec }))
     }
 
     /// Tells the mirroring desktop the screen's rounded corners and cutouts, in pixels of a `width` x `height` screen.

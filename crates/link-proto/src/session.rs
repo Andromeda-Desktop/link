@@ -114,7 +114,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::HotspotRequest
         | Message::HotspotJoined(_)
         | Message::WifiDirectReady(_)
-        | Message::MirrorRequest
+        | Message::MirrorRequest(_)
         | Message::MirrorInput(_)
         | Message::MirrorKeyframe
         | Message::FsList(_)

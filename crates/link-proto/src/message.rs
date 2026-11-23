@@ -119,6 +119,12 @@ pub const SHARE_OUTBOX: &str = "feature:share-outbox";
 /// phones send older desktops video and sound on one stream.
 pub const MIRROR_STREAMS: &str = "feature:mirror-streams";
 
+/// A phone's hello carries this when it takes `mirror-request`'s `codecs`; older phones close a session on the field.
+pub const MIRROR_CODECS: &str = "feature:mirror-codecs";
+
+/// The most codecs a `mirror-request` lists.
+pub const MAX_MIRROR_CODECS: usize = 4;
+
 /// A desktop's hello carries this when it takes `screen-shape`; phones send older desktops no shape.
 pub const SCREEN_SHAPE: &str = "feature:screen-shape";
 
@@ -505,7 +511,7 @@ pub enum Message {
     /// answers like a hotspot: `hotspot-joined` or `hotspot-end`.
     WifiDirect(Hotspot),
     BtPairing(BtPairing),
-    MirrorRequest,
+    MirrorRequest(MirrorRequest),
     MirrorStarted(MirrorStarted),
     ScreenShape(ScreenShape),
     MirrorStop(MirrorStop),
@@ -600,7 +606,7 @@ impl Message {
             Self::WifiDirectReady(_) => "wifi-direct-ready",
             Self::WifiDirect(_) => "wifi-direct",
             Self::BtPairing(_) => "bt-pairing",
-            Self::MirrorRequest => "mirror-request",
+            Self::MirrorRequest(_) => "mirror-request",
             Self::MirrorStarted(_) => "mirror-started",
             Self::ScreenShape(_) => "screen-shape",
             Self::MirrorStop(_) => "mirror-stop",
@@ -658,11 +664,11 @@ impl Message {
             Self::PairConfirm(body) => Value::serialized(body),
             Self::Unpair
             | Self::HotspotRequest
-            | Self::MirrorRequest
             | Self::MirrorKeyframe
             | Self::ContactsChanged
             | Self::TextsChanged
             | Self::CallsChanged => Value::serialized(&Empty {}),
+            Self::MirrorRequest(body) => Value::serialized(body),
             Self::Share(body) => Value::serialized(body),
             Self::ShareAck(body) => Value::serialized(body),
             Self::NotificationPosted(body) => Value::serialized(body),
@@ -780,10 +786,7 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::HotspotRequest
             }
-            "mirror-request" => {
-                body.deserialized::<Empty>()?;
-                Self::MirrorRequest
-            }
+            "mirror-request" => Self::MirrorRequest(body.deserialized()?),
             "mirror-keyframe" => {
                 body.deserialized::<Empty>()?;
                 Self::MirrorKeyframe
@@ -866,7 +869,6 @@ impl Message {
             Self::FileHash(hash) => hash.sha256.len() == SHA256_LEN,
             Self::Unpair
             | Self::HotspotRequest
-            | Self::MirrorRequest
             | Self::MirrorKeyframe
             | Self::ShareAck(_)
             | Self::Heartbeat(_)
@@ -926,9 +928,10 @@ impl Message {
                 punch.addresses.len() <= MAX_PUNCH_ADDRESSES
                     && punch.addresses.iter().all(|address| address.parse::<std::net::SocketAddr>().is_ok())
             }
-            Self::MirrorStarted(MirrorStarted { width, height }) => mirror_size_valid(*width, *height),
+            Self::MirrorRequest(request) => request.codecs.len() <= MAX_MIRROR_CODECS,
+            Self::MirrorStarted(MirrorStarted { width, height, .. }) => mirror_size_valid(*width, *height),
             Self::ScreenShape(shape) => shape.valid(),
-            Self::MirrorData(MirrorData { width, height, gop }) => {
+            Self::MirrorData(MirrorData { width, height, gop, .. }) => {
                 mirror_size_valid(*width, *height) && *gop != Some(0)
             }
             Self::MirrorStop(stop) | Self::RemoteStop(stop) => {

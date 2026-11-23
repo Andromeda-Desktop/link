@@ -52,13 +52,14 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     gstreamer::init()?;
     let bus = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)?;
-    let (socket, width, height) = open(&bus, &cli.device)?;
-    log::info!("mirroring {} at {width}x{height}", cli.device);
+    let offered = stream::offered(cli.frames.is_some());
+    let (socket, width, height, codec) = open(&bus, &cli.device, &offered)?;
+    log::info!("mirroring {} at {width}x{height} in {codec:?}", cli.device);
     if let Some(dir) = cli.frames {
-        return stream::to_png(socket, &dir, cli.count);
+        return stream::to_png(socket, codec, &dir, cli.count);
     }
     if let Some(file) = cli.luma {
-        return stream::to_luma(socket, &file, cli.count);
+        return stream::to_luma(socket, codec, &file, cli.count);
     }
     // The paintable sink needs a GDK display before its pipeline starts.
     gtk4::init()?;
@@ -68,39 +69,43 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let (device, name) = (cli.device, cli.name);
     app.connect_activate(move |app| {
         if let Some(socket) = socket.take() {
-            input::window(app, &bus, &device, &name, &display, socket, width, height);
+            input::window(app, &bus, &device, &name, &display, socket, codec, width, height);
         }
     });
     let status = app.run_with_args::<&str>(&[]);
     if status == glib::ExitCode::SUCCESS { Ok(()) } else { bail!("the window ended with {status:?}") }
 }
 
-/// Calls `OpenMirror`, which answers once the phone's user allowed capture.
-fn open(bus: &gio::DBusConnection, device: &str) -> anyhow::Result<(std::os::unix::net::UnixStream, u32, u32)> {
-    let (reply, fds) = bus
+/// Calls `OpenMirrorWith`, offering `codecs` besides H.264; it answers once the phone's user allowed capture.
+fn open(bus: &gio::DBusConnection, device: &str, codecs: &[&str]) -> anyhow::Result<Opened> {
+    let reply = bus
         .call_with_unix_fd_list_sync(
             Some(LINK),
             LINK_PATH,
             LINK,
-            "OpenMirror",
-            Some(&(device,).to_variant()),
-            Some(glib::VariantTy::new("(huu)")?),
+            "OpenMirrorWith",
+            Some(&(device, codecs).to_variant()),
+            Some(glib::VariantTy::new("(huus)")?),
             gio::DBusCallFlags::NONE,
             OPEN_TIMEOUT_MS,
             None::<&gio::UnixFDList>,
             None::<&gio::Cancellable>,
         )
         .context("the phone did not start mirroring")?;
-    opened(&(reply, fds))
+    opened(&reply, codecs)
 }
 
-/// `OpenMirror`'s reply: the stream and its size.
-pub fn opened(
-    (reply, fds): &(glib::Variant, Option<gio::UnixFDList>),
-) -> anyhow::Result<(std::os::unix::net::UnixStream, u32, u32)> {
-    let (handle, width, height) =
-        reply.get::<(glib::variant::Handle, u32, u32)>().context("a malformed OpenMirror reply")?;
-    let fds = fds.as_ref().context("OpenMirror passed no descriptor")?;
-    let fd = fds.get(handle.0).context("OpenMirror's descriptor is missing")?;
-    Ok((std::os::unix::net::UnixStream::from(fd), width, height))
+/// The stream, its size and its codec.
+pub type Opened = (std::os::unix::net::UnixStream, u32, u32, stream::Codec);
+
+/// `OpenMirrorWith`'s reply; a codec other than H.264 or one of `codecs` is refused.
+pub fn opened((reply, fds): &(glib::Variant, Option<gio::UnixFDList>), codecs: &[&str]) -> anyhow::Result<Opened> {
+    let (handle, width, height, name) =
+        reply.get::<(glib::variant::Handle, u32, u32, String)>().context("a malformed OpenMirrorWith reply")?;
+    let codec = stream::Codec::from_name(&name)
+        .filter(|codec| *codec == stream::Codec::H264 || codecs.contains(&name.as_str()))
+        .with_context(|| format!("the phone chose codec {name:?}, which was not offered"))?;
+    let fds = fds.as_ref().context("OpenMirrorWith passed no descriptor")?;
+    let fd = fds.get(handle.0).context("OpenMirrorWith's descriptor is missing")?;
+    Ok((std::os::unix::net::UnixStream::from(fd), width, height, codec))
 }

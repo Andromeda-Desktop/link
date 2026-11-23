@@ -106,7 +106,7 @@ impl Held {
                 }
             }
             // As the app does once the user allows capture: stream until the desktop stops it.
-            ClientEvent::Message { from, message: Message::MirrorRequest } => {
+            ClientEvent::Message { from, message: Message::MirrorRequest(_) } => {
                 let Some(source) = self.mirror.clone() else {
                     let refused = self.client.stop_mirror(from.clone(), Some("this phone cannot capture".to_owned()));
                     if let Err(error) = refused.await {

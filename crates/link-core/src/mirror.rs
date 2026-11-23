@@ -11,7 +11,7 @@ use std::time::Duration;
 
 #[cfg(doc)]
 use link_proto::message::MIRROR_STREAMS;
-use link_proto::message::{MAX_MIRROR_UNIT, MIRROR_AUDIO, MIRROR_END, MIRROR_KEYFRAME, Message, MirrorData};
+use link_proto::message::{Codec, MAX_MIRROR_UNIT, MIRROR_AUDIO, MIRROR_END, MIRROR_KEYFRAME, Message, MirrorData};
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::Error;
@@ -45,6 +45,7 @@ pub struct MirrorSender {
     tap: Option<Tap>,
     width: u32,
     height: u32,
+    codec: Option<Codec>,
     main: Mutex<SendStream>,
     /// None when everything goes on the first stream.
     video: Option<Mutex<Video>>,
@@ -62,9 +63,16 @@ struct Video {
 }
 
 impl MirrorSender {
-    /// Opens the first stream; with `streams`, each keyframe opens a video stream of its own.
-    pub async fn open(session: &SessionHandle, width: u32, height: u32, streams: bool) -> Result<Self, Error> {
-        Self::start(session.connection().clone(), session.tap().cloned(), width, height, streams).await
+    /// Opens the first stream of video in `codec` (H.264 when None); with `streams`, each keyframe opens a video stream
+    /// of its own.
+    pub async fn open(
+        session: &SessionHandle,
+        width: u32,
+        height: u32,
+        codec: Option<Codec>,
+        streams: bool,
+    ) -> Result<Self, Error> {
+        Self::start(session.connection().clone(), session.tap().cloned(), width, height, codec, streams).await
     }
 
     async fn start(
@@ -72,13 +80,16 @@ impl MirrorSender {
         tap: Option<Tap>,
         width: u32,
         height: u32,
+        codec: Option<Codec>,
         streams: bool,
     ) -> Result<Self, Error> {
-        let main = open_stream(&connection, tap.as_ref(), width, height, None).await?;
+        let header = MirrorData { width, height, gop: None, codec };
+        let main = open_stream(&connection, tap.as_ref(), header).await?;
         if streams {
             main.set_priority(MIRROR_PRIORITY);
         }
         Ok(Self {
+            codec,
             connection,
             tap,
             width,
@@ -116,7 +127,8 @@ impl MirrorSender {
                 return Ok(());
             }
             video.gop = seq;
-            let stream = open_stream(&self.connection, self.tap.as_ref(), self.width, self.height, Some(seq)).await?;
+            let header = MirrorData { width: self.width, height: self.height, gop: Some(seq), codec: self.codec };
+            let stream = open_stream(&self.connection, self.tap.as_ref(), header).await?;
             stream.set_priority(i32::try_from(seq).unwrap_or(MIRROR_PRIORITY - 1).min(MIRROR_PRIORITY - 1));
             video.stream = Some(stream);
         }
@@ -150,15 +162,9 @@ impl MirrorSender {
     }
 }
 
-async fn open_stream(
-    connection: &Connection,
-    tap: Option<&Tap>,
-    width: u32,
-    height: u32,
-    gop: Option<u64>,
-) -> Result<SendStream, Error> {
+async fn open_stream(connection: &Connection, tap: Option<&Tap>, header: MirrorData) -> Result<SendStream, Error> {
     let mut send = connection.open_uni().await?;
-    write_frame(&mut send, Message::MirrorData(MirrorData { width, height, gop }), tap).await?;
+    write_frame(&mut send, Message::MirrorData(header), tap).await?;
     Ok(send)
 }
 
@@ -248,6 +254,8 @@ impl MirrorParts {
 pub struct MirrorReceiver {
     pub width: u32,
     pub height: u32,
+    /// H.264 when None.
+    pub codec: Option<Codec>,
     main: Units,
     video: Option<Units>,
     /// A newer video stream, read once the current one has nothing ready.
@@ -264,6 +272,7 @@ impl MirrorReceiver {
         let receiver = Self {
             width: header.width,
             height: header.height,
+            codec: header.codec,
             main: reader(recv),
             video: None,
             next: None,
@@ -377,7 +386,8 @@ mod tests {
 
     async fn open(phone: &Connection, gop: Option<u64>) -> Result<SendStream, Error> {
         let mut send = phone.open_uni().await?;
-        write_frame(&mut send, Message::MirrorData(MirrorData { width: 16, height: 16, gop }), None).await?;
+        write_frame(&mut send, Message::MirrorData(MirrorData { width: 16, height: 16, gop, codec: None }), None)
+            .await?;
         Ok(send)
     }
 
@@ -430,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn a_keyframe_resets_the_stream_whose_write_flow_control_holds() -> Result<(), Error> {
         let (phone, desktop) = pair().await?;
-        let sender = MirrorSender::start(phone, None, 16, 16, true).await?;
+        let sender = MirrorSender::start(phone, None, 16, 16, None, true).await?;
         let _main = accept(&desktop).await?;
         sender.send(&unit(1, MIRROR_KEYFRAME)).await?;
         let (mut old, _) = accept(&desktop).await?;

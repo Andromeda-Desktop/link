@@ -589,12 +589,37 @@ impl Link {
     }
 
     /// Asks the phone to mirror its screen and returns the viewer's end of the video, with its size, once the user
-    /// allowed it there (up to 60 s). The socket carries the phone's access units in the stream's framing.
+    /// allowed it there (up to 60 s). The socket carries the phone's H.264 access units in the stream's framing.
     async fn open_mirror(&self, device_id: String) -> Result<(zbus::OwnedFd, u32, u32), LinkError> {
+        let (stream, width, height, _) = self.open_mirror_with(device_id, Vec::new()).await?;
+        Ok((stream, width, height))
+    }
+
+    /// [`Self::open_mirror`] for a viewer that also decodes `codecs` ("hevc", "av1"), best first; returns the codec
+    /// the phone chose: one of them, or "h264".
+    async fn open_mirror_with(
+        &self,
+        device_id: String,
+        codecs: Vec<String>,
+    ) -> Result<(zbus::OwnedFd, u32, u32, String), LinkError> {
         use crate::mirror::Failure;
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
-        match self.hub.open_mirror(id).await {
-            Ok(opened) => Ok((opened.stream.into(), opened.width, opened.height)),
+        if codecs.len() > link_core::proto::message::MAX_MIRROR_CODECS {
+            return Err(LinkError::Rejected("too many codecs".to_owned()));
+        }
+        let codecs = codecs
+            .iter()
+            .map(|name| match name.as_str() {
+                "hevc" => Ok(link_core::proto::message::Codec::Hevc),
+                "av1" => Ok(link_core::proto::message::Codec::Av1),
+                _ => Err(LinkError::Rejected(format!("unknown codec {name}"))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.hub.open_mirror(id, codecs).await {
+            Ok(opened) => {
+                let codec = opened.codec.map_or("h264", crate::mirror::codec_name).to_owned();
+                Ok((opened.stream.into(), opened.width, opened.height, codec))
+            }
             Err(Failure::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
             Err(Failure::NeedsWifi) => {
                 Err(LinkError::Failed("mirroring needs Wi-Fi, and the phone's hotspot did not come up".to_owned()))

@@ -51,7 +51,7 @@ struct Cli {
     /// Stands in for the phone's local-only hotspot: `<ssid>:<passphrase>` is what starting it returns.
     #[arg(long)]
     hotspot: Option<String>,
-    /// Stands in for screen capture: an Annex B H.264 file with access unit delimiters, streamed when a desktop asks.
+    /// Stands in for screen capture: an Annex B H.264 file (HEVC when it ends in .h265 or .hevc) with access unit delimiters, streamed when a desktop asks.
     #[arg(long)]
     mirror_file: Option<PathBuf>,
     /// The size `--mirror-file` is encoded at, as `<width>x<height>`.

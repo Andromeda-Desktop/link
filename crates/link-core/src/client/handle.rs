@@ -1,6 +1,6 @@
 use super::{
-    Arc, BLUETOOTH_FILE_LIMIT, BLUETOOTH_UPGRADE_ABOVE, Camera, Client, Command, DesktopLink, DesktopState, DeviceId,
-    Error, Feature, LocalClip, MIRROR_STREAMS, Message, Messages, MirrorSender, MirrorStarted, MirrorStop,
+    Arc, BLUETOOTH_FILE_LIMIT, BLUETOOTH_UPGRADE_ABOVE, Camera, Client, Codec, Command, DesktopLink, DesktopState,
+    DeviceId, Error, Feature, LocalClip, MIRROR_STREAMS, Message, Messages, MirrorSender, MirrorStarted, MirrorStop,
     NotificationPosted, PRESENTING, PairTarget, Peer, SCREEN_SHAPE, ScreenShape, Sent, SessionHandle, Share, Source,
     Status, TransferId, UNPAIR_TELL_TIMEOUT, UPGRADE_TIMEOUT, browse, feature_of, oneshot,
 };
@@ -65,15 +65,26 @@ impl Client {
         sent
     }
 
-    /// Tells the desktop that asked for mirroring the video's size, then opens the stream the access units go on.
-    pub async fn start_mirror(&self, id: DeviceId, width: u32, height: u32) -> Result<MirrorSender, Error> {
+    /// Tells the desktop that asked for mirroring the video's size and codec, then opens the stream the access units
+    /// go on. The codec is the desktop's best one in `encoders` (what the phone encodes besides H.264), else H.264
+    /// (None); the caller encodes in it.
+    pub async fn start_mirror(
+        &self,
+        id: DeviceId,
+        width: u32,
+        height: u32,
+        encoders: &[Codec],
+    ) -> Result<(MirrorSender, Option<Codec>), Error> {
         let session = self.session(id.clone()).await?;
-        session.send(Message::MirrorStarted(MirrorStarted { width, height })).await?;
         let desktops = self.desktops().await?;
-        let streams = desktops.iter().any(|desktop| desktop.peer.id == id && desktop.peer.has(MIRROR_STREAMS));
-        let sender = MirrorSender::open(&session, width, height, streams).await?;
+        let desktop = desktops.iter().find(|desktop| desktop.peer.id == id);
+        let codec =
+            desktop.and_then(|desktop| desktop.mirror_codecs.iter().copied().find(|codec| encoders.contains(codec)));
+        let streams = desktop.is_some_and(|desktop| desktop.peer.has(MIRROR_STREAMS));
+        session.send(Message::MirrorStarted(MirrorStarted { width, height, codec })).await?;
+        let sender = MirrorSender::open(&session, width, height, codec, streams).await?;
         self.commands.send(Command::Mirroring { id, on: true }).await.map_err(|_| Error::Stopped)?;
-        Ok(sender)
+        Ok((sender, codec))
     }
 
     /// Tells a mirroring desktop the screen's corners and cutouts; a desktop without [`SCREEN_SHAPE`] gets nothing.

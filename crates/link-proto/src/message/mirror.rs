@@ -1,11 +1,31 @@
 use super::*;
 
-/// Phone to desktop, once the user allowed capture: the video that follows on a `mirror-data` stream is this size.
+/// A video codec besides H.264, which every peer decodes and which a message without a codec means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Codec {
+    Hevc,
+    Av1,
+}
+
+/// Desktop to phone: mirror the screen. `codecs` lists what the desktop's viewer decodes besides H.264, best first;
+/// sent only to phones whose hello has [`MIRROR_CODECS`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorRequest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codecs: Vec<Codec>,
+}
+
+/// Phone to desktop, once the user allowed capture: the video that follows on a `mirror-data` stream is this size,
+/// in `codec`, one of the request's `codecs`, or H.264 when absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorStarted {
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<Codec>,
 }
 
 /// Phone to desktop while mirroring, after `mirror-started` and after each rotation: the screen's rounded corners and
@@ -105,7 +125,7 @@ pub struct MirrorInput {
     pub meta: Option<u32>,
 }
 
-/// The header of the phone's video stream: H.264 access units follow, each a big-endian u32 length, a big-endian u64
+/// The header of the phone's video stream: access units in `codec` (H.264 when absent) follow, each a big-endian u32 length, a big-endian u64
 /// presentation time in microseconds, a flags byte ([`MIRROR_KEYFRAME`], [`MIRROR_CONFIG`], [`MIRROR_AUDIO`]), then
 /// the Annex B bytes, or an Opus packet for audio.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +137,8 @@ pub struct MirrorData {
     /// From 1 up on each later stream: one keyframe and the video after it, until a stream with a higher number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gop: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<Codec>,
 }
 
 /// The whole width or height in [`MirrorInput`] coordinates.

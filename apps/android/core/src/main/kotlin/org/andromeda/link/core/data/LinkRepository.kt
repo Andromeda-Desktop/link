@@ -65,6 +65,7 @@ import org.andromeda.link.core.domain.ShareKind
 import org.andromeda.link.core.domain.Sharing
 import org.andromeda.link.core.domain.TransferEvent
 import org.andromeda.link.core.domain.TransferRecord
+import org.andromeda.link.core.domain.VideoCodec
 import org.andromeda.link.ffi.BrowseRoot
 import org.andromeda.link.ffi.ClipType
 import org.andromeda.link.ffi.InputAction
@@ -74,6 +75,7 @@ import org.andromeda.link.ffi.InputKey
 import org.andromeda.link.ffi.LinkClient
 import org.andromeda.link.ffi.LinkEvent
 import org.andromeda.link.ffi.LinkException
+import org.andromeda.link.ffi.MirrorCodec
 import org.andromeda.link.ffi.MirrorSession
 import org.andromeda.link.ffi.OutgoingFile
 import org.andromeda.link.ffi.PhoneCamera
@@ -315,12 +317,25 @@ class LinkRepository(
     suspend fun allowMirror(desktopId: String): Result<Unit> =
         setSharing(desktopId, Feature.Screen, true).onSuccess { _mirrorCommands.emit(MirrorCommand.Requested(desktopId)) }
 
-    /** Tells the desktop that asked the video's size and opens the stream to it. */
+    /**
+     * Tells the desktop that asked the video's size and opens the stream to it, in the desktop's best codec of
+     * [encoders] (what this phone encodes in hardware besides H.264), else H.264: see [MirrorStream.codec].
+     */
     suspend fun startMirror(
         desktopId: String,
         width: Int,
         height: Int,
-    ): Result<MirrorStream> = call { FfiMirror(it.startMirror(desktopId, width.toUInt(), height.toUInt())) }
+        encoders: List<VideoCodec>,
+    ): Result<MirrorStream> =
+        call {
+            val codecs =
+                encoders.map { codec ->
+                    when (codec) {
+                        VideoCodec.HEVC -> MirrorCodec.HEVC
+                    }
+                }
+            FfiMirror(it.startMirror(desktopId, width.toUInt(), height.toUInt(), codecs))
+        }
 
     /** Tells the mirroring desktop the screen's corners and cutouts, so it can draw the phone's edge. */
     suspend fun sendScreenShape(
@@ -1027,6 +1042,13 @@ private class FfiRemote(
 private class FfiMirror(
     private val session: MirrorSession,
 ) : MirrorStream {
+    override val codec =
+        when (session.codec()) {
+            MirrorCodec.HEVC -> VideoCodec.HEVC
+            // The phone never offers AV1, so the core never picks it.
+            MirrorCodec.AV1, null -> null
+        }
+
     override suspend fun send(
         ptsUs: Long,
         keyframe: Boolean,

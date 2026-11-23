@@ -152,6 +152,19 @@
       <arg name="width" type="u" direction="out"/>
       <arg name="height" type="u" direction="out"/>
     </method>
+    <!-- OpenMirror for a viewer that also decodes codecs ("hevc", "av1"), best first; codec is the one the phone chose:
+         one of them, or "h264". HEVC units are Annex B (codec configuration: VPS, SPS, PPS); AV1 units are one
+         temporal unit of low-overhead OBUs each (codec configuration: the sequence header OBU). A phone without
+         feature:mirror-codecs always answers "h264". Errors: as OpenMirror; .Rejected for an unknown codec or more
+         than 4. -->
+    <method name="OpenMirrorWith">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="codecs" type="as" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
+      <arg name="width" type="u" direction="out"/>
+      <arg name="height" type="u" direction="out"/>
+      <arg name="codec" type="s" direction="out"/>
+    </method>
     <!-- Input on the mirrored screen. action: tap, long-press (x, y, ms?), swipe (x, y, x2, y2, ms?), scroll (x, y
          and a signed delta x2, y2), back, home, recents, text (text; U+0008 deletes, "\n" presses Enter); touch-down,
          touch-move, touch-up (x, y: one finger that follows the pointer); wheel (x, y, and x2, y2 the wheel's turn in

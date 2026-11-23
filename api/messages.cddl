@@ -239,8 +239,12 @@ bt-pairing-msg = { type: "bt-pairing", id: uint, body: { ? passkey: uint .le 999
 ; before (resetting it unless acknowledged within 250 ms) and the desktop stops reading older ones. The
 ; desktop sends input (coordinates in 1/10000 of the width and height; a scroll's x2, y2 is a signed delta) and asks
 ; for a keyframe after a loss (mirror-keyframe, 0-RTT). Either side ends it (mirror-stop).
-mirror-request-msg = { type: "mirror-request", id: uint, body: {} }
-mirror-started-msg = { type: "mirror-started", id: uint, body: { width: 1..4096, height: 1..4096 } }
+; codecs: what the desktop's viewer decodes besides H.264, best first, only to phones whose hello has
+; feature:mirror-codecs. The phone's codec in mirror-started and every mirror-data is one of them, or absent for H.264.
+mirror-codec = "hevc" / "av1"
+mirror-request-msg = { type: "mirror-request", id: uint, body: { ? codecs: [1*4 mirror-codec] } }
+mirror-started-msg = { type: "mirror-started", id: uint, body: { width: 1..4096, height: 1..4096,
+  ? codec: mirror-codec } }
 ; Phone to desktop after mirror-started and after each rotation, only when the desktop's hello has
 ; feature:screen-shape: rounded corners (top-left, top-right, bottom-right, bottom-left) and camera cutouts in the
 ; picture, in 1/10000 of its width (x, radii) or height (y).
@@ -258,7 +262,8 @@ mirror-input-msg = { type: "mirror-input", id: uint, body: {
   ? code: 1..400, ? meta: uint,
 } }
 mirror-keyframe-msg = { type: "mirror-keyframe", id: uint, body: {} }
-mirror-data-msg = { type: "mirror-data", id: uint, body: { width: 1..4096, height: 1..4096, ? gop: uint .ge 1 } }
+mirror-data-msg = { type: "mirror-data", id: uint, body: { width: 1..4096, height: 1..4096, ? gop: uint .ge 1,
+  ? codec: mirror-codec } }
 
 ; Phone to desktop, before dialling it from a Bluetooth session: the phone's own host:port pairs, which the desktop
 ; sends one UDP byte to so its firewall takes the dial for a reply.

@@ -53,6 +53,7 @@ pub fn window(
     name: &str,
     display: &Rc<Display>,
     socket: UnixStream,
+    codec: crate::stream::Codec,
     width: u32,
     height: u32,
 ) {
@@ -129,7 +130,7 @@ pub fn window(
             glib::Propagation::Proceed
         });
     }
-    if let Err(error) = display.start(socket, on_end(&viewer)) {
+    if let Err(error) = display.start(socket, codec, on_end(&viewer)) {
         log::error!("showing the mirror: {error:#}");
         return window.close();
     }
@@ -346,8 +347,9 @@ fn retry(viewer: &Rc<Viewer>) {
             return;
         }
         let reopened = reopen(&viewer.bus, &viewer.device).await;
-        let started = reopened
-            .and_then(|socket| viewer.display.start(socket, on_end(&viewer)).map_err(|error| format!("{error:#}")));
+        let started = reopened.and_then(|(socket, codec)| {
+            viewer.display.start(socket, codec, on_end(&viewer)).map_err(|error| format!("{error:#}"))
+        });
         match started {
             Ok(()) => {
                 viewer.tries.set(0);
@@ -368,22 +370,23 @@ fn retry(viewer: &Rc<Viewer>) {
     });
 }
 
-async fn reopen(bus: &gio::DBusConnection, device: &str) -> Result<UnixStream, String> {
+async fn reopen(bus: &gio::DBusConnection, device: &str) -> Result<(UnixStream, crate::stream::Codec), String> {
+    let codecs = crate::stream::offered(false);
     let reply = bus
         .call_with_unix_fd_list_future(
             Some(LINK),
             LINK_PATH,
             LINK,
-            "OpenMirror",
-            Some(&(device,).to_variant()),
-            glib::VariantTy::new("(huu)").ok(),
+            "OpenMirrorWith",
+            Some(&(device, &codecs).to_variant()),
+            glib::VariantTy::new("(huus)").ok(),
             gio::DBusCallFlags::NONE,
             crate::OPEN_TIMEOUT_MS,
             None::<&gio::UnixFDList>,
         )
         .await
         .map_err(|error| error.to_string())?;
-    crate::opened(&reply).map(|(socket, _, _)| socket).map_err(|error| format!("{error:#}"))
+    crate::opened(&reply, &codecs).map(|(socket, _, _, codec)| (socket, codec)).map_err(|error| format!("{error:#}"))
 }
 
 type Send = Rc<dyn Fn(&str, glib::VariantDict)>;

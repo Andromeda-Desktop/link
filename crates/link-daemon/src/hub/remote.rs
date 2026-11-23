@@ -1,24 +1,30 @@
+use link_core::proto::message::{MIRROR_CODECS, MirrorRequest};
+
 use super::{DeviceId, Event, Hub, Message, Parked, RemoteStream, net};
 
 impl Hub {
     /// Asks the phone to mirror, only over IP: on Bluetooth, which video does not fit through, the request waits for
     /// the session to move to the phone's hotspot.
-    pub(super) async fn open_mirror(&mut self, id: DeviceId, reply: crate::mirror::Reply) {
+    pub(super) async fn open_mirror(&mut self, id: DeviceId, mut ask: crate::mirror::Ask) {
         use crate::mirror::Failure;
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
-            return drop(reply.send(Err(Failure::NotConnected)));
+            return drop(ask.reply.send(Err(Failure::NotConnected)));
         };
         if session.on_bluetooth() {
             log::info!("{id}: mirroring waits for the phone's hotspot");
-            return self.wait_for_hotspot(id, Parked::Mirror(reply)).await;
+            return self.wait_for_hotspot(id, Parked::Mirror(ask)).await;
         }
         if self.mirrors.busy(&id) {
-            return drop(reply.send(Err(Failure::Busy)));
+            return drop(ask.reply.send(Err(Failure::Busy)));
+        }
+        if !self.phone_has(&id, MIRROR_CODECS) {
+            ask.codecs.clear();
         }
         log::info!("{id}: asking the phone to mirror its screen");
-        match session.send(Message::MirrorRequest).await {
-            Ok(()) => self.mirrors.wait(id, reply),
-            Err(error) => drop(reply.send(Err(Failure::Failed(error.to_string())))),
+        let request = MirrorRequest { codecs: ask.codecs.clone() };
+        match session.send(Message::MirrorRequest(request)).await {
+            Ok(()) => self.mirrors.wait(id, ask),
+            Err(error) => drop(ask.reply.send(Err(Failure::Failed(error.to_string())))),
         }
     }
 
@@ -63,14 +69,15 @@ impl Hub {
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or_else(|| format!("{id} is not connected"))?;
         session.send(Message::RemoteStarted(stream.started)).await.map_err(|error| error.to_string())?;
-        let sender = match link_core::mirror::MirrorSender::open(&session, stream.width, stream.height, false).await {
-            Ok(sender) => sender,
-            Err(error) => {
-                // The phone already shows remote control as started.
-                self.tell_remote_stop(&id, "the desktop could not open the screen stream").await;
-                return Err(error.to_string());
-            }
-        };
+        let sender =
+            match link_core::mirror::MirrorSender::open(&session, stream.width, stream.height, None, false).await {
+                Ok(sender) => sender,
+                Err(error) => {
+                    // The phone already shows remote control as started.
+                    self.tell_remote_stop(&id, "the desktop could not open the screen stream").await;
+                    return Err(error.to_string());
+                }
+            };
         log::info!("{id}: showing the screen at {}x{}", stream.width, stream.height);
         self.remotes.serve(id, stream.socket, sender).map_err(|error| error.to_string())
     }

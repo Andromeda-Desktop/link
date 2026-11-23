@@ -56,9 +56,19 @@ enum class MirrorAction {
 
 const val MIRROR_UNIT = 10_000
 
+/** A mirror video codec besides H.264, with its MediaCodec type. */
+enum class VideoCodec(
+    val mime: String,
+) {
+    HEVC("video/hevc"),
+}
+
 /** The video stream to one desktop, from [org.andromeda.link.core.data.LinkRepository.startMirror]. */
 interface MirrorStream {
-    /** One H.264 access unit, Annex B; suspends while the network is behind. */
+    /** What [send] takes: H.264 when null. */
+    val codec: VideoCodec?
+
+    /** One access unit in [codec], Annex B; suspends while the network is behind. */
     suspend fun send(
         ptsUs: Long,
         keyframe: Boolean,

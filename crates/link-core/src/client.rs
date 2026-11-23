@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, FsRefusal, GROUP_CHANNEL, HEARTBEAT, HotspotEnd,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, Codec, FsRefusal, GROUP_CHANNEL, HEARTBEAT, HotspotEnd,
     LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
     MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
     NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX,
@@ -125,6 +125,8 @@ pub struct DesktopState {
     pub link: DesktopLink,
     /// The live session runs over Bluetooth.
     pub bluetooth: bool,
+    /// What the desktop's last `mirror-request` said its viewer decodes besides H.264, best first.
+    pub mirror_codecs: Vec<Codec>,
 }
 
 enum Command {
@@ -243,6 +245,8 @@ pub struct ClientActor {
     keeping: HashSet<DeviceId>,
     /// Desktops this phone's screen streams to, kept like busy ones, and their hotspot with them.
     mirroring: HashSet<DeviceId>,
+    /// By desktop: [`DesktopState::mirror_codecs`].
+    mirror_codecs: HashMap<DeviceId, Vec<Codec>>,
     retries: HashMap<DeviceId, Retry>,
     status: Option<Status>,
     /// The status last sent, when, and whether a newer one waits for [`STATUS_EVERY`] to pass.
@@ -323,6 +327,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         status_to: HashMap::new(),
         keeping: HashSet::new(),
         mirroring: HashSet::new(),
+        mirror_codecs: HashMap::new(),
         retries: HashMap::new(),
         status: None,
         status_sent: None,
@@ -715,7 +720,7 @@ impl ClientActor {
             SessionEvent::Message { from, message: Message::HotspotJoined(joined) } => {
                 self.hotspot_joined(from, &joined);
             }
-            SessionEvent::Message { from, message: Message::MirrorRequest }
+            SessionEvent::Message { from, message: Message::MirrorRequest(_) }
                 if !self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.screen) =>
             {
                 log::info!("{from}: refusing to mirror: the screen switch is off");
@@ -767,8 +772,11 @@ impl ClientActor {
                     self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.allows(feature))
                 });
                 if allowed {
+                    if let Message::MirrorRequest(request) = &message {
+                        self.mirror_codecs.insert(from.clone(), request.codecs.clone());
+                    }
                     self.emit(ClientEvent::Message { from, message });
-                } else if matches!(message, Message::MirrorRequest) {
+                } else if matches!(message, Message::MirrorRequest(_)) {
                     self.emit(ClientEvent::MirrorBlocked { from });
                 } else {
                     log::info!("{from}: dropped a {} its switch does not allow", message.kind());
@@ -828,6 +836,7 @@ impl ClientActor {
                 peer: peer.clone(),
                 link: link(&peer.id),
                 bluetooth: link(&peer.id) == DesktopLink::Live && self.on_bluetooth(&peer.id),
+                mirror_codecs: self.mirror_codecs.get(&peer.id).cloned().unwrap_or_default(),
             })
             .collect()
     }
