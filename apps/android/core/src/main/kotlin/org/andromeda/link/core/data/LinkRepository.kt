@@ -606,8 +606,10 @@ class LinkRepository(
         presenceLock.withLock {
             if (present == this.present) return@withLock Result.success(Unit)
             if (present) multicast.acquire() else multicast.release()
-            this.present = present
+            // Recorded only once the core took it; a failed call left the next same request as a no-op that never retried.
             call { it.setPresent(present) }
+                .onSuccess { this.present = present }
+                .onFailure { if (present) multicast.release() else multicast.acquire() }
         }
 
     /** A nearby network nothing uses stays up longer while the screen is on. */

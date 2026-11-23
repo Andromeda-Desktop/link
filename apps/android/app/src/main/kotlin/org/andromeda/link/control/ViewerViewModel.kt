@@ -19,16 +19,29 @@ import org.andromeda.link.core.domain.linkFailure
 data class ViewerState(
     val sources: List<RemoteSource> = emptyList(),
     val current: Int = 0,
-    val stream: RemoteEvent.Stream? = null,
-    /** Why the desktop ended or refused it; the viewer then only offers to go back. */
-    val stopped: String? = null,
-    val failure: LinkFailure? = null,
+    val phase: ViewerPhase = ViewerPhase.Waiting,
     val muted: Boolean = false,
     /** The picture moves the pointer and clicks where it is, as the pad does, instead of clicking where it is touched. */
     val touchpad: Boolean = false,
 ) {
     /** A window's place on the desktop is unknown: the picture takes no clicks, and the pad moves the desktop's pointer. */
     val window get() = sources.getOrNull(current)?.window == true
+
+    val stream get() = (phase as? ViewerPhase.Streaming)?.stream
+}
+
+sealed interface ViewerPhase {
+    data object Waiting : ViewerPhase
+
+    data class Streaming(
+        val stream: RemoteEvent.Stream,
+    ) : ViewerPhase
+
+    /** The desktop ended or refused it (`reason`), or it never opened (`failure`); the viewer only offers to go back. */
+    data class Ended(
+        val reason: String?,
+        val failure: LinkFailure? = null,
+    ) : ViewerPhase
 }
 
 /**
@@ -48,13 +61,8 @@ class ViewerViewModel(
             repository.remote.filter { it.desktopId == desktopId }.collect { event ->
                 when (event) {
                     is RemoteEvent.Started -> _state.update { it.copy(sources = event.sources, current = event.current) }
-                    is RemoteEvent.Stream -> {
-                        _state.value.stream
-                            ?.video
-                            ?.stop()
-                        _state.update { it.copy(stream = event, stopped = null) }
-                    }
-                    is RemoteEvent.Stopped -> _state.update { it.copy(stream = null, stopped = event.reason.orEmpty()) }
+                    is RemoteEvent.Stream -> enter(ViewerPhase.Streaming(event))
+                    is RemoteEvent.Stopped -> enter(ViewerPhase.Ended(event.reason))
                 }
             }
         }
@@ -66,7 +74,7 @@ class ViewerViewModel(
         _state.value = ViewerState()
         viewModelScope.launch {
             repository.startRemote(desktopId, null).exceptionOrNull()?.let { error ->
-                _state.update { it.copy(failure = error.linkFailure(), stopped = "") }
+                enter(ViewerPhase.Ended(null, error.linkFailure()))
             }
         }
     }
@@ -92,7 +100,17 @@ class ViewerViewModel(
 
     fun setTouchpad(on: Boolean) = _state.update { it.copy(touchpad = on) }
 
-    fun failureShown() = _state.update { it.copy(failure = null) }
+    /** The one place the phase changes. A stream that arrives after [leave] is stopped, never shown. */
+    private suspend fun enter(next: ViewerPhase) {
+        if (!open) {
+            (next as? ViewerPhase.Streaming)?.stream?.video?.stop()
+            return
+        }
+        _state.value.stream
+            ?.video
+            ?.stop()
+        _state.update { it.copy(phase = next) }
+    }
 
     override fun onCleared() = leave()
 }

@@ -632,18 +632,18 @@ private fun Picture(
                 Minimap(lens, camera, thumb, Modifier.align(Alignment.BottomEnd).padding(end = end.dp, bottom = Tok.Space.p8.dp))
             }
         } else {
-            val stopped = state.stopped
+            val ended = state.phase as? ViewerPhase.Ended
             Column(
                 Modifier.align(Alignment.Center).padding(horizontal = Tok.Space.p32.dp),
                 verticalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 val t = LinkTheme.phoneType
-                if (stopped == null) {
+                if (ended == null) {
                     Text(stringResource(R.string.viewer_waiting, deskName), t.body, color = s.label2, align = TextAlign.Center)
                 } else {
                     Text(stringResource(R.string.viewer_stopped, deskName), t.body, color = s.label2, align = TextAlign.Center)
-                    val why = state.failure?.text(LocalResources.current) ?: stopped.ifEmpty { null }
+                    val why = ended.failure?.text(LocalResources.current) ?: ended.reason?.ifEmpty { null }
                     if (why != null) Text(why, t.footnote, color = s.label3, align = TextAlign.Center)
                 }
             }
