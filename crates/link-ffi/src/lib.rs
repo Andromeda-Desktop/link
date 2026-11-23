@@ -245,6 +245,11 @@ pub enum LinkEvent {
     MirrorKeyframeRequested {
         desktop_id: String,
     },
+    /// How late the desktop receives the mirror's video; the bitrate steps down while it is high.
+    MirrorLag {
+        desktop_id: String,
+        lag_ms: u32,
+    },
     /// The desktop ended mirroring.
     MirrorStopped {
         desktop_id: String,

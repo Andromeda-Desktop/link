@@ -223,7 +223,8 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
         | Message::ScreenShape(_)
         | Message::MirrorStop(_)
         | Message::MirrorInput(_)
-        | Message::MirrorKeyframe => Some(Feature::Screen),
+        | Message::MirrorKeyframe
+        | Message::MirrorLag(_) => Some(Feature::Screen),
         Message::RemoteInput(_)
         | Message::RemoteRequest(_)
         | Message::RemoteStarted(_)

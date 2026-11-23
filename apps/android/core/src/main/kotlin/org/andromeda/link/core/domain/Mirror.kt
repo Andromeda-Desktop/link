@@ -28,6 +28,12 @@ sealed interface MirrorCommand {
         override val desktopId: String,
     ) : MirrorCommand
 
+    /** How late the desktop receives the video, in [lagMs]; the bitrate steps down while it is high. */
+    data class Lag(
+        override val desktopId: String,
+        val lagMs: Int,
+    ) : MirrorCommand
+
     data class Stopped(
         override val desktopId: String,
         val reason: String?,

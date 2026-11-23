@@ -17,6 +17,15 @@ pub struct MirrorRequest {
     pub codecs: Vec<Codec>,
 }
 
+/// Desktop to phone about every 500 ms while it mirrors, only to phones whose hello has [`MIRROR_LAG`]: how late the
+/// least late video unit of the last half second arrived, past the least late unit of the mirror; or, when no unit
+/// arrived, how long ago the last one did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorLag {
+    pub lag_ms: u32,
+}
+
 /// Phone to desktop, once the user allowed capture: the video that follows on a `mirror-data` stream is this size,
 /// in `codec`, one of the request's `codecs`, or H.264 when absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

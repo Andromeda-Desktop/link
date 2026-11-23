@@ -55,6 +55,7 @@ class ScreenMirror(
                     else -> askForControl()
                 }
             is MirrorCommand.Keyframe -> ScreenCapture.requestKeyframe()
+            is MirrorCommand.Lag -> ScreenCapture.reportLag(command.lagMs)
             is MirrorCommand.Stopped -> {
                 notifications.cancel(REQUEST_NOTIFICATION)
                 notifications.cancel(CONTROL_NOTIFICATION)

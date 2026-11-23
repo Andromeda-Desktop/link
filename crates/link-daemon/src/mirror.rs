@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use link_core::identity::DeviceId;
 use link_core::mirror::{MirrorReceiver, MirrorStream};
-use link_core::proto::message::{Codec, MIRROR_CONFIG, MIRROR_END};
+use link_core::proto::message::{
+    Codec, MAX_MIRROR_LAG_MS, MIRROR_AUDIO, MIRROR_CONFIG, MIRROR_END, Message, MirrorLag,
+};
+use link_core::session::SessionHandle;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
@@ -15,6 +18,9 @@ use tokio::time::Instant;
 
 /// Android asks the user every time; they may take a while to find the phone.
 pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How often a phone that takes `mirror-lag` hears how late its video arrives.
+const LAG_REPORT: Duration = Duration::from_millis(500);
 
 pub struct Opened {
     /// The viewer's end of a socket carrying the phone's access units.
@@ -97,8 +103,9 @@ impl Mirrors {
         self.wifi.awake(self.active());
     }
 
-    /// The phone's video stream: handed to the request waiting for it, or refused.
-    pub fn stream(&mut self, from: DeviceId, stream: &MirrorStream) {
+    /// The phone's video stream: handed to the request waiting for it, or refused. `lag` is the session of a phone
+    /// that takes `mirror-lag` reports.
+    pub fn stream(&mut self, from: DeviceId, stream: &MirrorStream, lag: Option<SessionHandle>) {
         let Some(mut receiver) = stream.take() else { return };
         let Some((Ask { codecs, reply }, _)) = self.waiting.remove(&from) else {
             log::info!("{from}: refusing a mirror stream nobody asked for");
@@ -128,7 +135,7 @@ impl Mirrors {
         let id = from.clone();
         let (stop, stopped) = oneshot::channel();
         self.pumps.spawn(async move {
-            if let Err(error) = pump(&mut receiver, ours, stopped).await {
+            if let Err(error) = pump(&mut receiver, ours, stopped, lag).await {
                 log::info!("{id}: mirroring ended: {error}");
             }
             receiver.stop();
@@ -204,13 +211,28 @@ async fn pump(
     receiver: &mut MirrorReceiver,
     mut viewer: tokio::net::UnixStream,
     mut stopped: oneshot::Receiver<()>,
+    session: Option<SessionHandle>,
 ) -> anyhow::Result<()> {
+    let mut report = tokio::time::interval(LAG_REPORT);
+    report.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut lag = Lag::new(Instant::now());
     loop {
         let unit = tokio::select! {
             unit = receiver.next() => unit?,
             _ = &mut stopped => None,
+            _ = report.tick(), if session.is_some() => {
+                if let (Some(session), Some(lag_ms)) = (&session, lag.report(Instant::now()))
+                    && let Err(error) = session.send(Message::MirrorLag(MirrorLag { lag_ms })).await
+                {
+                    log::debug!("mirror lag report: {error}");
+                }
+                continue;
+            }
         };
         let Some(mut unit) = unit else { break };
+        if unit.flags & MIRROR_AUDIO == 0 {
+            lag.arrived(unit.pts_us, Instant::now());
+        }
         if unit.flags & MIRROR_CONFIG != 0 {
             crate::low_delay::rewrite(&mut unit.data);
         }
@@ -219,6 +241,40 @@ async fn pump(
     }
     viewer.write_all(&header(0, 0, MIRROR_END)?).await?;
     Ok(())
+}
+
+/// How late video units arrive: arrival minus capture time (the phone's clock), minus the least such value seen, which
+/// cancels the clocks' offset. A window's least late unit is its lag, so one large keyframe does not count as loss.
+struct Lag {
+    start: Instant,
+    floor_us: i64,
+    window_best_us: Option<i64>,
+    last_arrival: Option<Instant>,
+}
+
+impl Lag {
+    fn new(start: Instant) -> Self {
+        Self { start, floor_us: i64::MAX, window_best_us: None, last_arrival: None }
+    }
+
+    fn arrived(&mut self, pts_us: u64, now: Instant) {
+        let now_us = i64::try_from(now.duration_since(self.start).as_micros()).unwrap_or(i64::MAX);
+        let transit = now_us.saturating_sub(i64::try_from(pts_us).unwrap_or(i64::MAX));
+        self.floor_us = self.floor_us.min(transit);
+        let lag = transit - self.floor_us;
+        self.window_best_us = Some(self.window_best_us.map_or(lag, |best| best.min(lag)));
+        self.last_arrival = Some(now);
+    }
+
+    /// The lag in ms since the last report, or how long ago the last unit came when none came since; None before the
+    /// first unit.
+    fn report(&mut self, now: Instant) -> Option<u32> {
+        let lag_us = match self.window_best_us.take() {
+            Some(best) => u64::try_from(best).unwrap_or(0),
+            None => u64::try_from(now.duration_since(self.last_arrival?).as_micros()).unwrap_or(u64::MAX),
+        };
+        Some(u32::try_from(lag_us / 1000).unwrap_or(u32::MAX).min(MAX_MIRROR_LAG_MS))
+    }
 }
 
 fn header(len: usize, pts_us: u64, flags: u8) -> anyhow::Result<[u8; 13]> {
@@ -234,5 +290,35 @@ pub fn codec_name(codec: Codec) -> &'static str {
     match codec {
         Codec::Hevc => "hevc",
         Codec::Av1 => "av1",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn lag_is_the_least_late_unit_of_each_window_and_silence_counts() {
+        let start = Instant::now();
+        let mut lag = Lag::new(start);
+        assert_eq!(lag.report(start), None);
+        // 60 fps, 20 ms in transit; one 200 ms keyframe in the window does not raise its lag.
+        for frame in 0..30_u64 {
+            let late = if frame == 10 { 200 } else { 20 };
+            lag.arrived(frame * 16_000, start + ms(frame * 16 + late));
+        }
+        assert_eq!(lag.report(start + ms(500)), Some(0));
+        // A queue builds: every unit of the next window is 300 ms or more later than the first window's.
+        for frame in 30..60_u64 {
+            lag.arrived(frame * 16_000, start + ms(frame * 16 + 320 + (frame - 30) * 10));
+        }
+        assert_eq!(lag.report(start + ms(1500)), Some(300));
+        // Nothing arrives: the report is how long ago the last unit came.
+        let last = start + ms(59 * 16 + 320 + 29 * 10);
+        assert_eq!(lag.report(last + ms(800)), Some(800));
     }
 }

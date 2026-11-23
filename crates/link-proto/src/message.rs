@@ -128,6 +128,12 @@ pub const MAX_MIRROR_CODECS: usize = 4;
 /// A desktop's hello carries this when it takes `screen-shape`; phones send older desktops no shape.
 pub const SCREEN_SHAPE: &str = "feature:screen-shape";
 
+/// A phone's hello carries this when it takes `mirror-lag`; desktops send older phones none.
+pub const MIRROR_LAG: &str = "feature:mirror-lag";
+
+/// The largest lag a `mirror-lag` reports, in milliseconds.
+pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
+
 /// A desktop's hello carries this when its `status` takes `storage`; older desktops close a session on the field.
 pub const STATUS_STORAGE: &str = "feature:status-storage";
 
@@ -531,6 +537,7 @@ pub enum Message {
     MirrorStop(MirrorStop),
     MirrorInput(MirrorInput),
     MirrorKeyframe,
+    MirrorLag(MirrorLag),
     MirrorData(MirrorData),
     RemoteRequest(RemoteRequest),
     RemoteStarted(RemoteStarted),
@@ -627,6 +634,7 @@ impl Message {
             Self::MirrorStop(_) => "mirror-stop",
             Self::MirrorInput(_) => "mirror-input",
             Self::MirrorKeyframe => "mirror-keyframe",
+            Self::MirrorLag(_) => "mirror-lag",
             Self::MirrorData(_) => "mirror-data",
             Self::RemoteRequest(_) => "remote-request",
             Self::RemoteStarted(_) => "remote-started",
@@ -718,6 +726,7 @@ impl Message {
             Self::BtPairing(body) => Value::serialized(body),
             Self::MirrorStarted(body) => Value::serialized(body),
             Self::ScreenShape(body) => Value::serialized(body),
+            Self::MirrorLag(body) => Value::serialized(body),
             Self::MirrorStop(body) | Self::RemoteStop(body) => Value::serialized(body),
             Self::MirrorInput(body) => Value::serialized(body),
             Self::MirrorData(body) => Value::serialized(body),
@@ -817,6 +826,7 @@ impl Message {
             "bt-pairing" => Self::BtPairing(body.deserialized()?),
             "mirror-started" => Self::MirrorStarted(body.deserialized()?),
             "screen-shape" => Self::ScreenShape(body.deserialized()?),
+            "mirror-lag" => Self::MirrorLag(body.deserialized()?),
             "mirror-stop" => Self::MirrorStop(body.deserialized()?),
             "mirror-input" => Self::MirrorInput(body.deserialized()?),
             "mirror-data" => Self::MirrorData(body.deserialized()?),
@@ -949,6 +959,7 @@ impl Message {
             Self::MirrorRequest(request) => request.codecs.len() <= MAX_MIRROR_CODECS,
             Self::MirrorStarted(MirrorStarted { width, height, .. }) => mirror_size_valid(*width, *height),
             Self::ScreenShape(shape) => shape.valid(),
+            Self::MirrorLag(lag) => lag.lag_ms <= MAX_MIRROR_LAG_MS,
             Self::MirrorData(MirrorData { width, height, gop, .. }) => {
                 mirror_size_valid(*width, *height) && *gop != Some(0)
             }

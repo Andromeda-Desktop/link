@@ -750,6 +750,7 @@ class LinkRepository(
                         ),
                     )
                 is LinkEvent.MirrorKeyframeRequested -> _mirrorCommands.emit(MirrorCommand.Keyframe(event.desktopId))
+                is LinkEvent.MirrorLag -> _mirrorCommands.emit(MirrorCommand.Lag(event.desktopId, event.lagMs.toInt()))
                 is LinkEvent.MirrorStopped -> _mirrorCommands.emit(MirrorCommand.Stopped(event.desktopId, event.reason))
                 is LinkEvent.RemoteStarted ->
                     _remote.emit(

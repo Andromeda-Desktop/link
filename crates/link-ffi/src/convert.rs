@@ -136,6 +136,7 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                     meta: input.meta,
                 },
                 Message::MirrorKeyframe => LinkEvent::MirrorKeyframeRequested { desktop_id },
+                Message::MirrorLag(lag) => LinkEvent::MirrorLag { desktop_id, lag_ms: lag.lag_ms },
                 Message::Commands(list) => LinkEvent::CommandsChanged {
                     desktop_id,
                     commands: list.commands.into_iter().map(|c| DesktopCommand { id: c.id, name: c.name }).collect(),

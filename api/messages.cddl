@@ -9,7 +9,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   hotspot-request-msg / hotspot-msg / hotspot-joined-msg / hotspot-end-msg / punch-msg /
   wifi-direct-ready-msg / wifi-direct-msg / bt-pairing-msg /
   mirror-request-msg / mirror-started-msg / screen-shape-msg / mirror-stop-msg / mirror-input-msg /
-  mirror-keyframe-msg / mirror-data-msg /
+  mirror-keyframe-msg / mirror-lag-msg / mirror-data-msg /
   fs-list-msg / fs-entries-msg / fs-read-msg / fs-data-msg / fs-error-msg / fs-stat-msg / fs-thumb-msg /
   fs-write-msg / fs-delete-msg / photo-request-msg / photo-taken-msg / photos-recent-msg / photos-list-msg /
   contacts-list-msg / contacts-msg / contacts-changed-msg /
@@ -262,6 +262,10 @@ mirror-input-msg = { type: "mirror-input", id: uint, body: {
   ? code: 1..400, ? meta: uint,
 } }
 mirror-keyframe-msg = { type: "mirror-keyframe", id: uint, body: {} }
+; Desktop to phone about every 500 ms while it mirrors, only when the phone's hello has feature:mirror-lag: how late
+; the least late video unit of the last half second arrived, past the mirror's least late unit; with no unit, how
+; long ago the last one arrived. The phone lowers its bitrate while it is high.
+mirror-lag-msg = { type: "mirror-lag", id: uint, body: { lag_ms: 0..60000 } }
 mirror-data-msg = { type: "mirror-data", id: uint, body: { width: 1..4096, height: 1..4096, ? gop: uint .ge 1,
   ? codec: mirror-codec } }
 

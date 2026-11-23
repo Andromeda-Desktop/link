@@ -64,6 +64,9 @@ class ScreenCapture : Service() {
     @Volatile
     private var resizing = false
     private var stream: MirrorStream? = null
+
+    @Volatile
+    private var rate: MirrorRate? = null
     private var audio: MirrorAudio? = null
     private var desktop: String? = null
 
@@ -137,6 +140,7 @@ class ScreenCapture : Service() {
         scope.launch { audio.run(stream) }
         getSystemService(DisplayManager::class.java).registerDisplayListener(rotation, main)
         val rate = MirrorRate(MAX_BITRATE, MIN_BITRATE)
+        this.rate = rate
         // A rotation ends the encoder's stream; a new encoder at the turned size goes on in the same stream, its
         // codec configuration in front of its first keyframe as always.
         while (drain(codec, stream, rate) && !stopping) {
@@ -468,6 +472,10 @@ class ScreenCapture : Service() {
 
         fun requestKeyframe() {
             instance?.keyframe()
+        }
+
+        fun reportLag(lagMs: Int) {
+            instance?.rate?.reported(lagMs * 1000L, System.nanoTime() / 1000)
         }
 
         /** The desktop stopped; nothing is sent back to it. */

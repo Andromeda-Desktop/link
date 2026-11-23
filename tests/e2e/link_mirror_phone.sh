@@ -26,7 +26,7 @@ TAPS=30
 rm -rf "$OUT"
 mkdir -p "$OUT"
 RUNTIME=$(mktemp -d /tmp/link-mirror-phone.XXXX)
-trap 'forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
+trap 'adb shell am force-stop org.andromeda.link.fixture; adb shell input keyevent KEYCODE_SLEEP; forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no phone at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
 
@@ -107,9 +107,13 @@ bitrates() { grep -o 'bitrate [0-9]* kbit/s' "$OUT/logcat.txt" | grep -o '[0-9]*
 # Random blocks every frame keep the encoder at its full rate, so the loss bites.
 adb shell am start -n org.andromeda.link.fixture/.MirrorProbeActivity --ez noise true > /dev/null
 sleep 3
-START=$(now_ms)
 STEPS=$(bitrates | wc -l)
+ASKED=$(now_ms)
 echo "rate=3000000 loss=0.02" > "$RUNTIME/impair"
+# The relay reads the impairment once a second: count from its first second with drops.
+impaired_since() { awk -v since="$ASKED" '$1 * 1000 > since && $3 > 0 { print int($1 * 1000); exit }' "$OUT/relay.tsv"; }
+wait_for 5 "the relay dropped no packets" eval '[[ -n $(impaired_since) ]]'
+START=$(impaired_since)
 sleep 15
 IMPAIRED=$(frames_since "$START")
 DOWN=$(bitrates | tail -n +$(( STEPS + 1 )) | sort -n | head -1)

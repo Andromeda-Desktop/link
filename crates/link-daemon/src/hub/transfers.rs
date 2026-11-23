@@ -1,4 +1,5 @@
 use super::{Backend, DeviceId, Event, Hub, Share, Signal, Source, TransferEvent, TransferId};
+use link_core::proto::message::MIRROR_LAG;
 
 impl Hub {
     /// Consent and grants are the hub's: an offer from a device without the files grant is declined, one from an
@@ -48,7 +49,8 @@ impl Hub {
             }
             TransferEvent::Busy { .. } => return,
             TransferEvent::Mirror { from, stream } => {
-                self.mirrors.stream(from, &stream);
+                let lag = self.sessions.get(&from).filter(|_| self.phone_has(&from, MIRROR_LAG)).cloned();
+                self.mirrors.stream(from, &stream, lag);
                 return self.publish();
             }
         };
