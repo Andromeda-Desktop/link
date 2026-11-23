@@ -175,6 +175,27 @@ impl Feature {
     }
 }
 
+/// The feature a phone must share before it obeys `message` from a desktop: its browse, messages and calls requests
+/// (client.rs dispatches them to notify.rs, which checks these), else [`feature_of`]. Desktops refuse by it before
+/// sending.
+pub fn phone_requires(message: &Message) -> Option<Feature> {
+    match message {
+        Message::FsList(_)
+        | Message::FsStat(_)
+        | Message::FsRead(_)
+        | Message::FsThumb(_)
+        | Message::PhotosRecent(_)
+        | Message::FsWrite(_)
+        | Message::FsDelete(_)
+        | Message::PhotoRequest(_) => Some(Feature::Browse),
+        Message::ContactsList(_) | Message::TextsList(_) | Message::TextPartThumb(_) | Message::TextSend(_) => {
+            Some(Feature::Messages)
+        }
+        Message::CallsList(_) | Message::Dial(_) => Some(Feature::Calls),
+        _ => feature_of(message),
+    }
+}
+
 /// The grant that governs a message; `None` for the ones every paired device may send.
 pub fn feature_of(message: &Message) -> Option<Feature> {
     match message {
@@ -215,6 +236,15 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
 }
 
 impl Grants {
+    /// The wire `sharing` list: the names of every feature these grants allow.
+    pub fn sharing(self) -> Vec<String> {
+        Feature::ALL
+            .into_iter()
+            .filter(|feature| self.allows(*feature))
+            .map(|feature| feature.as_str().to_owned())
+            .collect()
+    }
+
     pub fn allows(self, feature: Feature) -> bool {
         match feature {
             Feature::Clipboard => self.clipboard,

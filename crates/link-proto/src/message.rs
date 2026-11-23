@@ -397,6 +397,20 @@ pub const CAN_CONTROL: &str = "control";
 pub const MAX_CAPABILITIES: usize = 16;
 pub const MAX_CAPABILITY_LEN: usize = 32;
 
+/// The desktop's hello carries this when it takes `sharing`.
+pub const SHARING: &str = "feature:sharing";
+
+/// Phone to desktop, on each session open and after each change: the features this phone lets the desktop use
+/// (store feature names such as "ring", "screen"), so the desktop refuses the rest at once instead of the phone
+/// dropping them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sharing {
+    pub allows: Vec<String>,
+}
+
+pub const MAX_SHARING: usize = 32;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
@@ -559,6 +573,7 @@ pub enum Message {
     HeartbeatAck(HeartbeatAck),
     Presenting(Presenting),
     Capabilities(Capabilities),
+    Sharing(Sharing),
     DesktopStatus(DesktopStatus),
     SystemCommand(SystemCommand),
     SystemResult(SystemResult),
@@ -651,6 +666,7 @@ impl Message {
             Self::HeartbeatAck(_) => "heartbeat-ack",
             Self::Presenting(_) => "presenting",
             Self::Capabilities(_) => "capabilities",
+            Self::Sharing(_) => "sharing",
             Self::DesktopStatus(_) => "desktop-status",
             Self::SystemCommand(_) => "system-command",
             Self::SystemResult(_) => "system-result",
@@ -739,6 +755,7 @@ impl Message {
             Self::HeartbeatAck(body) => Value::serialized(body),
             Self::Presenting(body) => Value::serialized(body),
             Self::Capabilities(body) => Value::serialized(body),
+            Self::Sharing(body) => Value::serialized(body),
             Self::DesktopStatus(body) => Value::serialized(body),
             Self::SystemCommand(body) => Value::serialized(body),
             Self::SystemResult(body) => Value::serialized(body),
@@ -850,6 +867,7 @@ impl Message {
             "heartbeat-ack" => Self::HeartbeatAck(body.deserialized()?),
             "presenting" => Self::Presenting(body.deserialized()?),
             "capabilities" => Self::Capabilities(body.deserialized()?),
+            "sharing" => Self::Sharing(body.deserialized()?),
             "desktop-status" => Self::DesktopStatus(body.deserialized()?),
             "system-command" => Self::SystemCommand(body.deserialized()?),
             "system-result" => Self::SystemResult(body.deserialized()?),
@@ -993,6 +1011,10 @@ impl Message {
             Self::Capabilities(capabilities) => {
                 capabilities.can.len() <= MAX_CAPABILITIES
                     && capabilities.can.iter().all(|entry| sized(entry, 1, MAX_CAPABILITY_LEN))
+            }
+            Self::Sharing(sharing) => {
+                sharing.allows.len() <= MAX_SHARING
+                    && sharing.allows.iter().all(|entry| sized(entry, 1, MAX_CAPABILITY_LEN))
             }
             Self::DesktopStatus(status) => status.valid(),
             Self::SystemCommand(command) => command.valid(),

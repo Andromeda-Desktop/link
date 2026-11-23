@@ -20,9 +20,9 @@ use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
-    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, NotificationPosted, NotificationPull, PHOTOS_PAGE,
-    PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share,
-    Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS, Text, TransferId,
+    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, MessagesRefusal, NotificationPosted,
+    NotificationPull, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX,
+    SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS, Text, TransferId,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -58,6 +58,16 @@ use crate::notifications::Mirror;
 use crate::paths::Paths;
 
 const WINDOW: Duration = Duration::from_secs(120);
+
+type SessionReply = oneshot::Sender<Result<SessionHandle, Gate>>;
+
+/// Why a desktop action was not sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    NotConnected,
+    /// The phone's switch for the action's feature is off for this desktop.
+    NotShared,
+}
 
 pub enum Admission {
     Session,
@@ -264,7 +274,7 @@ enum Command {
     ReleaseWindow { window: u64 },
     Connected { id: DeviceId, hello: Hello, session: SessionHandle },
     Disconnected { id: DeviceId, stable_id: usize },
-    Session { id: DeviceId, reply: oneshot::Sender<Option<SessionHandle>> },
+    Session { id: DeviceId, needs: Option<Feature>, reply: SessionReply },
     SetAutoAccept { id: DeviceId, enabled: bool, reply: oneshot::Sender<bool> },
     SetGrant { id: DeviceId, feature: String, granted: bool, reply: oneshot::Sender<bool> },
     SendFiles { device: String, sources: Vec<Source>, reply: oneshot::Sender<Result<TransferId, link_core::Error>> },
@@ -376,6 +386,9 @@ pub struct Hub {
     browsing: browse::Browsing,
     /// Each connected phone's `feature:` entries from its hello.
     features: HashMap<DeviceId, Vec<String>>,
+    /// What each connected phone lets this desktop use, from its last `sharing`; none yet (an older phone): every
+    /// action goes out and the phone decides.
+    sharing: HashMap<DeviceId, Vec<Feature>>,
     capabilities: capabilities::Reports,
     /// The desktop's state as `link-session` last reported it.
     desktop_status: Option<DesktopStatus>,
@@ -507,6 +520,7 @@ impl Hub {
             hotspot_asked: HashSet::new(),
             browsing: browse::Browsing::default(),
             features: HashMap::new(),
+            sharing: HashMap::new(),
             outbox,
             outbox_actor: Some(outbox_actor),
             seen: Seen::default(),
@@ -650,8 +664,13 @@ impl Hub {
             Command::DesktopPlayer { player } => self.media.desktop_player(player, self.sessions.values()),
             Command::DesktopPlayerGone { player } => self.media.desktop_gone(player, self.sessions.values()),
             Command::MediaKey { key } => self.emit(Event::MediaKey { key }).await,
-            Command::Session { id, reply } => {
-                drop(reply.send(self.sessions.get(&id).filter(|session| session.is_live()).cloned()));
+            Command::Session { id, needs, reply } => {
+                let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
+                drop(reply.send(match session {
+                    None => Err(Gate::NotConnected),
+                    Some(_) if needs.is_some_and(|feature| !self.shares(&id, feature)) => Err(Gate::NotShared),
+                    Some(session) => Ok(session),
+                }));
             }
             Command::SetAutoAccept { id, enabled, reply } => {
                 let Some(peer) = self.store.peer_mut(&id) else {
@@ -727,17 +746,7 @@ impl Hub {
             SessionEvent::Link { from, state } => self.on_link(&from, state),
             SessionEvent::Path { from, on_bluetooth } => self.moved(&from, on_bluetooth).await,
             SessionEvent::Received { .. } | SessionEvent::Status { .. } | SessionEvent::SystemCommand { .. } => {}
-            SessionEvent::Unpaired { from } => {
-                log::info!("{from} unpaired itself");
-                self.sessions.remove(&from);
-                self.store.remove(&from);
-                self.outbox.forget(from.clone());
-                self.messages.forget(&from);
-                self.save();
-                self.refresh();
-                self.media.disconnected(&from).await;
-                self.forget_notifications(&from).await;
-            }
+            SessionEvent::Unpaired { from } => self.unpaired(from).await,
             SessionEvent::Message { from, message } if browse::is_answer(&message) => {
                 // Answers to this desktop's own requests, which need no grant of the phone's here.
                 if let Some(next) = self.browsing.on_answer(&from, message)
@@ -801,6 +810,9 @@ impl Hub {
                     self.bt_pairing = Some((passkey, until));
                 }
             }
+            SessionEvent::Message { from, message: Message::Sharing(sharing) } => {
+                self.set_sharing(from, &sharing.allows);
+            }
             SessionEvent::Message { from, message: Message::Ping(ping) } if self.sessions.contains_key(&from) => {
                 self.emit(Event::Pinged { id: from, message: ping.message }).await;
             }
@@ -814,6 +826,18 @@ impl Hub {
                 }
             }
         }
+    }
+
+    async fn unpaired(&mut self, from: DeviceId) {
+        log::info!("{from} unpaired itself");
+        self.sessions.remove(&from);
+        self.store.remove(&from);
+        self.outbox.forget(from.clone());
+        self.messages.forget(&from);
+        self.save();
+        self.refresh();
+        self.media.disconnected(&from).await;
+        self.forget_notifications(&from).await;
     }
 
     async fn on_message(&mut self, from: DeviceId, message: Message) {
@@ -951,6 +975,7 @@ impl Hub {
         let late_hash = features.iter().any(|feature| feature == LATE_HASH);
         self.transfers.attach(id.clone(), session.clone(), clip, late_hash).await;
         self.features.insert(id.clone(), features);
+        self.sharing.remove(&id);
         self.outbox.live(id.clone(), session.clone(), self.phone_has(&id, SHARE_OUTBOX));
         if self.phone_has(&id, MESSAGES) {
             let contacts = self.messages.pull_contacts(id.clone());
@@ -990,6 +1015,9 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(reply.send(Err(browse::Failure::NotConnected)));
         };
+        if !self.shares(&id, Feature::Browse) {
+            return drop(reply.send(Err(browse::Failure::Refused(FsRefusal::NotAllowed))));
+        }
         if request.bulk() && session.on_bluetooth() {
             self.ask_hotspot_once(&id, &session).await;
         }
@@ -1032,6 +1060,10 @@ impl Hub {
             let _ = reply.send(Err(crate::messages::SendFailure::NotConnected));
             return;
         };
+        if !self.shares(&id, Feature::Messages) {
+            let _ = reply.send(Err(crate::messages::SendFailure::Refused(MessagesRefusal::NotAllowed)));
+            return;
+        }
         let (req, message) = self.messages.send_text(id, to, body, reply);
         if session.send(message).await.is_err() {
             self.messages.answer_send(req, Some(crate::messages::SendFailure::NotConnected));
@@ -1043,6 +1075,10 @@ impl Hub {
             let _ = reply.send(Err(crate::messages::SendFailure::NotConnected));
             return;
         };
+        if !self.shares(&id, Feature::Calls) {
+            let _ = reply.send(Err(crate::messages::SendFailure::Refused(MessagesRefusal::NotAllowed)));
+            return;
+        }
         let (req, message) = self.messages.dial(id, number, reply);
         if session.send(message).await.is_err() {
             self.messages.answer_send(req, Some(crate::messages::SendFailure::NotConnected));
@@ -1057,6 +1093,10 @@ impl Hub {
         };
         if !self.phone_has(&id, CAMERA) {
             let _ = reply.send(Err(PhotoFailure::Refused(PhotoRefusal::Denied)));
+            return;
+        }
+        if !self.shares(&id, Feature::Browse) {
+            let _ = reply.send(Err(PhotoFailure::Refused(PhotoRefusal::NotAllowed)));
             return;
         }
         let (req, message) = self.messages.take_photo(id, reply);
@@ -1084,6 +1124,18 @@ impl Hub {
         {
             log::info!("{id}: sending {kind}: {error}");
         }
+    }
+
+    /// Keeps what a connected phone shares; names this desktop does not know are skipped.
+    fn set_sharing(&mut self, id: DeviceId, allows: &[String]) {
+        if self.sessions.contains_key(&id) {
+            self.sharing.insert(id, allows.iter().filter_map(|name| Feature::parse(name)).collect());
+        }
+    }
+
+    /// Whether phone `id` lets this desktop use `feature`; true until its first `sharing` (an older phone decides alone).
+    fn shares(&self, id: &DeviceId, feature: Feature) -> bool {
+        self.sharing.get(id).is_none_or(|shared| shared.contains(&feature))
     }
 
     fn phone_has(&self, id: &DeviceId, feature: &str) -> bool {

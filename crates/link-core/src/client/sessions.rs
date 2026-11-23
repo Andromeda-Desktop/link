@@ -84,6 +84,7 @@ impl ClientActor {
             }
         }
         self.send_notifications(&id, &handle, &[]).await;
+        Self::send_sharing(&desktop, &handle).await;
         self.emit(ClientEvent::Connected { desktop, addr, via, resumed });
         handle
     }

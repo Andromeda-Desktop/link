@@ -16,14 +16,14 @@ use link_core::proto::message::{
     NotificationAction, NotificationDismiss, NotificationPosted, Ping, RemoteInput, Ring, Ringing, Share, ShareKind,
     SystemCommand, SystemCommandKind, TransferId, dialable, is_text_mime,
 };
-use link_core::store::StoredCommand;
+use link_core::store::{StoredCommand, phone_requires};
 use link_core::transfer::{ClipBytes, LocalClip, Source};
 use tokio::sync::{mpsc, watch};
 use zbus::fdo;
 use zbus::object_server::SignalEmitter;
 
 use crate::browse;
-use crate::hub::{Event, HubHandle, Signal, Snapshot};
+use crate::hub::{Event, Gate, HubHandle, Signal, Snapshot};
 use crate::messages::SendFailure;
 
 pub const PATH: &str = "/org/andromeda/Link1";
@@ -914,11 +914,7 @@ impl Link {
             self.snapshots.borrow().players.iter().find(|(device, _)| *device == device_id).map(|(_, p)| p.0.clone());
         let player = player.ok_or_else(|| LinkError::Rejected(format!("{id} has no player")))?;
         let value = matches!(kind, MediaCommandKind::Seek | MediaCommandKind::Volume).then_some(value);
-        let Some(session) = self.hub.session(id.clone()).await else {
-            return Err(LinkError::NotConnected(format!("{id} is not connected")));
-        };
-        let message = Message::MediaCommand(MediaCommand { player, command: kind, value });
-        session.send(message).await.map_err(|error| LinkError::Failed(error.to_string()))
+        self.send(&device_id, Message::MediaCommand(MediaCommand { player, command: kind, value })).await
     }
 
     /// One row per paired device: id, name, state, path, rtt in µs, lost packets, outbox depth.
@@ -1111,8 +1107,10 @@ impl Link {
     async fn send(&self, device_id: &str, message: Message) -> Result<(), LinkError> {
         let id = DeviceId::parse(device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
         message.validate().map_err(|error| LinkError::Rejected(error.to_string()))?;
-        let Some(session) = self.hub.session(id.clone()).await else {
-            return Err(LinkError::NotConnected(format!("{id} is not connected")));
+        let session = match self.hub.session(id.clone(), phone_requires(&message)).await {
+            Ok(session) => session,
+            Err(Gate::NotConnected) => return Err(LinkError::NotConnected(format!("{id} is not connected"))),
+            Err(Gate::NotShared) => return Err(LinkError::Refused("not-allowed".to_owned())),
         };
         session.send(message).await.map_err(|error| LinkError::Failed(error.to_string()))
     }

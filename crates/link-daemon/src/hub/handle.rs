@@ -1,7 +1,7 @@
 use super::{
-    Admission, Checkup, CloseCode, Command, DesktopStatus, DeviceId, Hello, HubHandle, MediaPlayer, RemoteStream,
-    Route, SYSTEM_TIMEOUT, Sent, SessionHandle, Share, Source, Spki, StoredCommand, SystemCommand, TransferHandle,
-    TransferId, browse, oneshot,
+    Admission, Checkup, CloseCode, Command, DesktopStatus, DeviceId, Feature, Gate, Hello, HubHandle, MediaPlayer,
+    RemoteStream, Route, SYSTEM_TIMEOUT, Sent, SessionHandle, Share, Source, Spki, StoredCommand, SystemCommand,
+    TransferHandle, TransferId, browse, oneshot,
 };
 
 impl HubHandle {
@@ -133,8 +133,9 @@ impl HubHandle {
         self.outbox.share(id, share).await
     }
 
-    pub async fn session(&self, id: DeviceId) -> Option<SessionHandle> {
-        self.request(|reply| Command::Session { id, reply }).await.flatten()
+    /// The live session to send a message to that needs `needs` shared by the phone.
+    pub async fn session(&self, id: DeviceId, needs: Option<Feature>) -> Result<SessionHandle, Gate> {
+        self.request(|reply| Command::Session { id, needs, reply }).await.unwrap_or(Err(Gate::NotConnected))
     }
 
     /// Records what the `link-session` at D-Bus name `owner` can do, and tells connected phones.

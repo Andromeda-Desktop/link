@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use link_core::identity::DeviceId;
 use link_core::proto::message::{MediaCommand, MediaCommandKind, MediaPlayer, Message, PlaybackState};
+use link_core::store::Feature;
 use ring::digest;
 use zbus::object_server::SignalEmitter;
 use zbus::{ObjectPath, Variant};
 
-use crate::hub::HubHandle;
+use crate::hub::{Gate, HubHandle};
 
 const PATH: &str = "/org/mpris/MediaPlayer2";
 /// The prefix of every name this daemon exports, which its own MPRIS client skips.
@@ -89,8 +90,12 @@ impl Playback {
         if !self.can(command) {
             return Err(zbus::fdo::Error::NotSupported(format!("the phone's player cannot {command:?}")));
         }
-        let Some(session) = self.hub.session(self.device.clone()).await else {
-            return Err(zbus::fdo::Error::Failed("the phone is not connected".to_owned()));
+        let session = match self.hub.session(self.device.clone(), Some(Feature::Media)).await {
+            Ok(session) => session,
+            Err(Gate::NotConnected) => return Err(zbus::fdo::Error::Failed("the phone is not connected".to_owned())),
+            Err(Gate::NotShared) => {
+                return Err(zbus::fdo::Error::AccessDenied("the phone does not share media".to_owned()));
+            }
         };
         let message = Message::MediaCommand(MediaCommand { player: self.player.player.clone(), command, value });
         session.send(message).await.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))

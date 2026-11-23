@@ -1,7 +1,7 @@
 use super::{
-    CALLS, ClientActor, DeviceId, Feature, FsRefusal, Instant, MAX_SNAPSHOT, MESSAGES, Message, MessagesRefusal,
-    NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, PhotoRefusal, SessionHandle,
-    TEXTS_MMS, Takes, browse, camera, for_desktop, messages, shown_digest, slot,
+    CALLS, ClientActor, DeviceId, Error, Feature, FsRefusal, Instant, MAX_SNAPSHOT, MESSAGES, Message, MessagesRefusal,
+    NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, Peer, PhotoRefusal, SHARING,
+    SessionHandle, Sharing, TEXTS_MMS, Takes, browse, camera, for_desktop, messages, shown_digest, slot,
 };
 
 impl ClientActor {
@@ -144,6 +144,33 @@ impl ClientActor {
         };
         if let Err(error) = handle.send(camera::refused(req, refusal)).await {
             log::info!("{from}: refusing a photo request: {error}");
+        }
+    }
+
+    /// Turns one feature on or off for desktop `id` and tells that desktop what changed.
+    pub(super) async fn set_sharing(&mut self, id: &DeviceId, feature: Feature, on: bool) -> Result<(), Error> {
+        self.phone.set_sharing(id, feature, on)?;
+        if let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == *id)
+            && let Some(handle) = self.sessions.get(id).filter(|handle| handle.is_live())
+        {
+            Self::send_sharing(peer, handle).await;
+        }
+        if feature == Feature::Messages {
+            self.messages_changed(Some(id), &[Message::ContactsChanged, Message::TextsChanged]).await;
+        }
+        if feature == Feature::Calls {
+            self.messages_changed(Some(id), &[Message::CallsChanged]).await;
+        }
+        Ok(())
+    }
+
+    /// Tells `peer` what this phone lets it use, when its hello takes `sharing`.
+    pub(super) async fn send_sharing(peer: &Peer, handle: &SessionHandle) {
+        if !peer.has(SHARING) {
+            return;
+        }
+        if let Err(error) = handle.send(Message::Sharing(Sharing { allows: peer.grants.sharing() })).await {
+            log::info!("{}: sending sharing: {error}", peer.id);
         }
     }
 

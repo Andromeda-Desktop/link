@@ -18,9 +18,9 @@ use link_proto::message::{
     CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, Codec, FsRefusal, GROUP_CHANNEL, HEARTBEAT, HotspotEnd,
     LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
     MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
-    NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX,
-    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Status, SystemCommand, SystemResult, TEXTS_MMS,
-    TransferId, WIFI_DIRECT_JOIN,
+    NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, SHARING,
+    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Sharing, Status, SystemCommand, SystemResult,
+    TEXTS_MMS, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -478,14 +478,7 @@ impl ClientActor {
             }
             Command::Mirroring { id, on } => self.set_mirroring(&id, on),
             Command::SetSharing { id, feature, on, reply } => {
-                let result = self.phone.set_sharing(&id, feature, on);
-                if result.is_ok() && feature == Feature::Messages {
-                    self.messages_changed(Some(&id), &[Message::ContactsChanged, Message::TextsChanged]).await;
-                }
-                if result.is_ok() && feature == Feature::Calls {
-                    self.messages_changed(Some(&id), &[Message::CallsChanged]).await;
-                }
-                drop(reply.send(result));
+                drop(reply.send(self.set_sharing(&id, feature, on).await));
             }
             Command::SetBrowseRoots { roots } => self.phone.set_browse_roots(roots),
             Command::SetMessages { messages } => {

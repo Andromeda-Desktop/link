@@ -15,7 +15,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   contacts-list-msg / contacts-msg / contacts-changed-msg /
   texts-list-msg / texts-msg / texts-changed-msg / text-send-msg / text-sent-msg / text-part-msg /
   calls-list-msg / calls-msg / calls-changed-msg / dial-msg / dialed-msg /
-  remote-input-msg / remote-request-msg / remote-started-msg / remote-stop-msg / commands-msg / run-command-msg / ping-msg / presenting-msg / capabilities-msg / desktop-status-msg / system-command-msg / system-result-msg /
+  remote-input-msg / remote-request-msg / remote-started-msg / remote-stop-msg / commands-msg / run-command-msg / ping-msg / presenting-msg / capabilities-msg / sharing-msg / desktop-status-msg / system-command-msg / system-result-msg /
   offer-msg / offer-reply-msg / resume-msg / resume-at-msg / cancel-msg / file-done-msg / file-hash-msg / file-data-msg /
   clip-offer-msg / clip-pull-msg / clip-data-msg / status-msg
 
@@ -420,6 +420,11 @@ presenting-msg = { type: "presenting", id: uint, body: { on: bool } }
 ; desktop's session can do now ("clipboard", "input", "notifications", "volume"). The phone hides the rest and skips
 ; entries it does not know.
 capabilities-msg = { type: "capabilities", id: uint, body: { can: [* tstr .size (1..32)] } }  ; at most 16
+
+; Phone to desktop, only when the desktop's hello listed "feature:sharing"; on each session open and after each
+; change: the store feature names this phone lets the desktop use ("ring", "screen", ...). The desktop refuses
+; actions on other features at once.
+sharing-msg = { type: "sharing", id: uint, body: { allows: [* tstr .size (1..32)] } }  ; at most 32
 
 ; Only when both hellos listed "feature:system". Desktop to phone, on connect and after each change: the desktop's
 ; state. A command goes either way while the receiver's system switch for the sender is on; the desktop sends only

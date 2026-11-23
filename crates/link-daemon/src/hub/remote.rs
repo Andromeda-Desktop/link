@@ -1,6 +1,6 @@
 use link_core::proto::message::{MIRROR_CODECS, MirrorRequest};
 
-use super::{DeviceId, Event, Hub, Message, Parked, RemoteStream, net};
+use super::{DeviceId, Event, Feature, Hub, Message, Parked, RemoteStream, net};
 
 impl Hub {
     /// Asks the phone to mirror, only over IP: on Bluetooth, which video does not fit through, the request waits for
@@ -10,6 +10,9 @@ impl Hub {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(ask.reply.send(Err(Failure::NotConnected)));
         };
+        if !self.shares(&id, Feature::Screen) {
+            return drop(ask.reply.send(Err(Failure::Refused("not-allowed".to_owned()))));
+        }
         if session.on_bluetooth() {
             log::info!("{id}: mirroring waits for the phone's hotspot");
             return self.wait_for_hotspot(id, Parked::Mirror(ask)).await;

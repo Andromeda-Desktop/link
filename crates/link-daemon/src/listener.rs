@@ -11,8 +11,8 @@ use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, GROUP_CHANNEL,
     HEARTBEAT, LATE_HASH, MESSAGES, MIRROR_STREAMS, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, PRESENTING, PUBLIC_SCHEME,
-    RELAY_SCHEME, SCREEN_SHAPE, SHARE_OUTBOX, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS,
-    WIFI_DIRECT_JOIN,
+    RELAY_SCHEME, SCREEN_SHAPE, SHARE_OUTBOX, SHARING, STATUS_SIGNAL, STATUS_STORAGE, SYSTEM, SYSTEM_CONTROL,
+    TEXTS_MMS, WIFI_DIRECT_JOIN,
 };
 use link_core::proto::session::Role;
 use link_core::proto::{CloseCode, VERSION};
@@ -227,6 +227,7 @@ impl Context {
                 SCREEN_SHAPE,
                 HEARTBEAT,
                 LATE_HASH,
+                SHARING,
             ]
             .map(str::to_owned),
         );
