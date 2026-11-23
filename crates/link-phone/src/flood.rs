@@ -74,6 +74,9 @@ fn message(kind: Kind, n: u32) -> Message {
             dnd: None,
             locked: None,
             storage: None,
+            wifi: None,
+            bluetooth: None,
+            torch: None,
         }),
     }
 }

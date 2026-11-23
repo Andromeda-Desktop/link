@@ -114,6 +114,8 @@ object InputRelay {
             "screen-off" -> if (power(POWER_OFF)) screenOff = true
             "screen-on" -> if (power(POWER_NORMAL)) screenOff = false
             "wifi-latency" -> wifiLatency(int(5) == 1)
+            "set-wifi" -> shell("cmd", "wifi", "set-wifi-enabled", if (int(5) == 1) "enabled" else "disabled")
+            "set-bluetooth" -> shell("cmd", "bluetooth_manager", if (int(5) == 1) "enable" else "disable")
             "capture" -> capture(String(Base64.decode(fields.getOrNull(7).orEmpty(), Base64.NO_WRAP)))
         }
     }
@@ -137,6 +139,11 @@ object InputRelay {
                 }.getOrElse { it.message to -1 }
             if (result.second != 0) println("capture: ${command.take(2).joinToString(" ")} exited ${result.second}: ${result.first}")
         }
+    }
+
+    private fun shell(vararg command: String) {
+        val code = runCatching { ProcessBuilder(*command).redirectErrorStream(true).start().waitFor() }.getOrDefault(-1)
+        if (code != 0) println("${command.take(3).joinToString(" ")} exited $code")
     }
 
     /** Wi-Fi's low-latency mode, which ends power saving on the radio; while mirroring it cuts ping from ~50 to ~10 ms. */

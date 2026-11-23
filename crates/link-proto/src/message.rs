@@ -140,6 +140,14 @@ pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
 /// A desktop's hello carries this when its `status` takes `storage`; older desktops close a session on the field.
 pub const STATUS_STORAGE: &str = "feature:status-storage";
 
+/// A phone's hello carries this when it takes `set-wifi`, `set-bluetooth` and `set-torch`; older phones close a
+/// session on those kinds.
+pub const PHONE_TOGGLES: &str = "feature:phone-toggles";
+
+/// A desktop's hello carries this when its `status` takes `wifi`, `bluetooth` and `torch`; older desktops close a
+/// session on the fields.
+pub const STATUS_TOGGLES: &str = "feature:status-toggles";
+
 /// The address in a `bt:` entry, upper-case, or None when `entry` is not one.
 pub fn bluetooth_address(entry: &str) -> Option<String> {
     let address = entry.strip_prefix(BLUETOOTH_SCHEME)?;

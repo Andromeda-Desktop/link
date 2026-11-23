@@ -192,6 +192,9 @@ class LinkRepository(
                     controls.ringer,
                     controls.dnd,
                     controls.locked,
+                    controls.wifi,
+                    controls.bluetooth,
+                    controls.torch,
                 )
             it.setStatus(
                 battery.coerceIn(0, 100).toUByte(),

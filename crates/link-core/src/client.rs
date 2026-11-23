@@ -19,8 +19,8 @@ use link_proto::message::{
     LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
     MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
     NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, SHARING,
-    STATUS_SIGNAL, STATUS_STORAGE, SYSTEM_CONTROL, ScreenShape, Share, Sharing, Status, SystemCommand, SystemResult,
-    TEXTS_MMS, TransferId, WIFI_DIRECT_JOIN,
+    STATUS_SIGNAL, STATUS_STORAGE, STATUS_TOGGLES, SYSTEM_CONTROL, ScreenShape, Share, Sharing, Status, SystemCommand,
+    SystemResult, TEXTS_MMS, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -627,6 +627,9 @@ impl ClientActor {
         Message::Status(Status {
             signal: status.signal.filter(|_| has(STATUS_SIGNAL)),
             storage: status.storage.filter(|_| has(STATUS_STORAGE)),
+            wifi: status.wifi.filter(|_| has(STATUS_TOGGLES)),
+            bluetooth: status.bluetooth.filter(|_| has(STATUS_TOGGLES)),
+            torch: status.torch.filter(|_| has(STATUS_TOGGLES)),
             notifications_off: status.notifications_off && has(NOTIFICATION_SYNC),
             ..status
         })

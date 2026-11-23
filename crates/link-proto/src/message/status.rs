@@ -36,6 +36,13 @@ pub struct Status {
     /// [`STATUS_STORAGE`]: the phone's primary shared storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<Storage>,
+    /// [`STATUS_TOGGLES`]: Wi-Fi, Bluetooth and the torch are on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torch: Option<bool>,
 }
 
 /// Bytes of a phone's primary shared storage.
@@ -57,7 +64,16 @@ impl Status {
     /// The status for a desktop without [`SYSTEM_CONTROL`].
     #[must_use]
     pub fn without_control(self) -> Self {
-        Self { media_volume: None, ringer: None, dnd: None, locked: None, ..self }
+        Self {
+            media_volume: None,
+            ringer: None,
+            dnd: None,
+            locked: None,
+            wifi: None,
+            bluetooth: None,
+            torch: None,
+            ..self
+        }
     }
 }
 

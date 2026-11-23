@@ -192,6 +192,9 @@ pub fn parse_status(text: &str) -> anyhow::Result<Status> {
         dnd: None,
         locked: None,
         storage: None,
+        wifi: None,
+        bluetooth: None,
+        torch: None,
     };
     for part in keyed {
         let (key, value) = part.split_once('=').context(usage)?;
@@ -202,6 +205,9 @@ pub fn parse_status(text: &str) -> anyhow::Result<Status> {
             }
             "dnd" => status.dnd = Some(value == "1"),
             "locked" => status.locked = Some(value == "1"),
+            "wifi" => status.wifi = Some(value == "1"),
+            "bluetooth" => status.bluetooth = Some(value == "1"),
+            "torch" => status.torch = Some(value == "1"),
             "storage" => {
                 let (free, total) = value.split_once('/').context("storage is <free>/<total> bytes")?;
                 let storage =

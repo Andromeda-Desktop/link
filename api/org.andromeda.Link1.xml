@@ -260,6 +260,9 @@
     <!-- Connected device id to (media volume, ringer, dnd, locked), from phones with feature:system-control: a
          percent or -1; normal, vibrate, silent, or empty; 1, 0, or -1 when the phone does not say. -->
     <property name="DeviceControls" type="a{s(isii)}" access="read"/>
+    <!-- Connected device id to (wifi, bluetooth, torch), from phones with feature:phone-toggles: 1, 0, or -1 when the
+         phone does not say. -->
+    <property name="DeviceToggles" type="a{s(iii)}" access="read"/>
     <!-- Connected device ids whose notification access is off: nothing mirrors until the user turns it on. -->
     <property name="NotificationsOff" type="as" access="read"/>
     <!-- Device id to the number of its phone notifications on show, those a locked desktop holds back included. -->
@@ -524,8 +527,10 @@
     <method name="SetDesktopStatus">
       <arg name="state" type="a{sv}" direction="in"/>
     </method>
-    <!-- Sets a phone's set-media-volume (percent), set-ringer (0 silent, 1 vibrate, 2 normal), or set-dnd (1 or 0)
-         and waits up to 5 s for its answer. Needs the phone's system grant. Errors: Rejected, Failed. -->
+    <!-- Sets a phone's set-media-volume (percent), set-ringer (0 silent, 1 vibrate, 2 normal), or set-dnd,
+         set-wifi, set-bluetooth, set-torch (1 or 0), and waits up to 5 s for its answer. Wi-Fi and Bluetooth need
+         the phone's helper (root, Shizuku, or started over adb); without it the phone answers needs-helper. Needs
+         the phone's system grant; the toggles need feature:phone-toggles. Errors: Rejected, Failed. -->
     <method name="SendSystemCommand">
       <arg name="device_id" type="s" direction="in"/>
       <arg name="command" type="s" direction="in"/>

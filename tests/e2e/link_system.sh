@@ -11,6 +11,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OUT:-$(pwd)/artifacts/link-system}
 BIN=${LINK_BIN:-$ROOT/target/debug}
+export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 if [[ -z ${LINK_IN_NS:-} ]]; then
   rm -rf "$OUT"
   mkdir -p "$OUT"
@@ -185,6 +186,18 @@ wait_for 15 "DeviceControls never showed media 30: $(prop DeviceControls)" media
 say "status 80 0 wifi   dnd=1,media=55"
 wait_for 1 "media 55 did not arrive within 1 s: $(prop DeviceControls)" media 55
 record '{"step":"media-volume-live","within_seconds":1}'
+
+# Toggles: the desktop sends set-torch to a phone with feature:phone-toggles, and the phone's state shows.
+BEFORE=$(count system-command)
+link SendSystemCommand "$ID" set-torch 1 > /dev/null || fail "SendSystemCommand set-torch"
+(( $(count system-command) > BEFORE )) || fail "the phone never got set-torch"
+[[ $(last system-command) == *'"command":"set-torch"'*'"value":1'* ]] || fail "the phone got $(last system-command)"
+say "status 80 0 wifi   dnd=1,media=55,wifi=1,bluetooth=0,torch=1"
+toggles() { prop DeviceToggles | grep -qF "'$ID': (1, 0, 1)"; }
+wait_for 15 "DeviceToggles never showed wifi on, bluetooth off, torch on: $(prop DeviceToggles)" toggles
+link SendSystemCommand "$ID" set-wifi 0 > "$OUT/wifi-off.txt" 2>&1 && fail "Wi-Fi off was sent though the session runs on Wi-Fi"
+grep -q "end this connection" "$OUT/wifi-off.txt" || fail "set-wifi 0: $(cat "$OUT/wifi-off.txt")"
+record '{"step":"phone-toggles","command":"set-torch","toggles":[1,0,1],"wifi_off_refused":true}'
 
 CHECK=$("$BIN/andromeda-link-phone" check-transcript "$ROOT/api/messages.cddl" "$OUT/transcript.jsonl") \
   || fail "transcript violates the schema"

@@ -1070,8 +1070,8 @@ impl Link {
     }
 
     /// Sets a phone's media volume (`set-media-volume`, percent), ringer (`set-ringer`: 0 silent, 1 vibrate,
-    /// 2 normal), or Do Not Disturb (`set-dnd`, 1 or 0), and waits up to 5 s for the phone's answer. Needs the
-    /// phone's system grant.
+    /// 2 normal), Do Not Disturb (`set-dnd`), Wi-Fi (`set-wifi`), Bluetooth (`set-bluetooth`) or torch (`set-torch`),
+    /// 1 or 0, and waits up to 5 s for the phone's answer. Needs the phone's system grant.
     async fn send_system_command(&self, device_id: String, command: String, value: u32) -> Result<(), LinkError> {
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
         let kind: SystemCommandKind = serde_json::from_value(serde_json::Value::String(command.clone()))
@@ -1089,6 +1089,13 @@ impl Link {
     #[zbus(property)]
     fn device_controls(&self) -> HashMap<String, (i32, String, i32, i32)> {
         self.snapshots.borrow().controls.iter().cloned().collect()
+    }
+
+    /// Connected device id to `(wifi, bluetooth, torch)`: 1, 0, or -1 when the phone does not say; only phones with
+    /// `feature:phone-toggles` appear.
+    #[zbus(property)]
+    fn device_toggles(&self) -> HashMap<String, (i32, i32, i32)> {
+        self.snapshots.borrow().toggles.iter().cloned().collect()
     }
 }
 
@@ -1256,6 +1263,9 @@ pub async fn forward(
                 }
                 if next.controls != last.controls {
                     link.get().await.device_controls_changed(emitter).await?;
+                }
+                if next.toggles != last.toggles {
+                    link.get().await.device_toggles_changed(emitter).await?;
                 }
                 if next.notifications_off != last.notifications_off {
                     link.get().await.notifications_off_changed(emitter).await?;

@@ -407,6 +407,9 @@ pub struct PhoneControls {
     pub ringer: Option<String>,
     pub dnd: Option<bool>,
     pub locked: Option<bool>,
+    pub wifi: Option<bool>,
+    pub bluetooth: Option<bool>,
+    pub torch: Option<bool>,
 }
 
 /// Bytes of the phone's primary shared storage.
@@ -1362,6 +1365,9 @@ impl LinkClient {
             ringer,
             dnd: controls.dnd,
             locked: controls.locked,
+            wifi: controls.wifi,
+            bluetooth: controls.bluetooth,
+            torch: controls.torch,
             storage: storage.map(|PhoneStorage { free, total }| message::Storage { free: free.min(total), total }),
         };
         let client = self.client.clone();

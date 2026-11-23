@@ -28,6 +28,9 @@ data class PhoneControls(
     val ringer: String?,
     val dnd: Boolean?,
     val locked: Boolean?,
+    val wifi: Boolean? = null,
+    val bluetooth: Boolean? = null,
+    val torch: Boolean? = null,
 )
 
 enum class PointerButton { Left, Right, Middle }

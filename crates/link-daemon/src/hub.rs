@@ -22,9 +22,9 @@ use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
     Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
     LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, MessagesRefusal, NotificationPosted,
-    NotificationPull, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer, SHARE_OUTBOX,
-    SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS, Text, TransferId,
-    USB,
+    NotificationPull, PHONE_TOGGLES, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer,
+    SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS,
+    Text, TransferId, USB,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -116,6 +116,8 @@ pub struct Snapshot {
     pub status: Vec<(String, (u32, bool, String, i32))>,
     /// Connected device id to `(media volume, ringer, dnd, locked)`, the D-Bus `DeviceControls` property.
     pub controls: Vec<(String, (i32, String, i32, i32))>,
+    /// Connected device id to `(wifi, bluetooth, torch)`, the D-Bus `DeviceToggles` property.
+    pub toggles: Vec<(String, (i32, i32, i32))>,
     /// Connected devices whose notification access is off, the D-Bus `NotificationsOff` property.
     pub notifications_off: Vec<String>,
     /// The D-Bus `NotificationCounts` property.
@@ -1346,12 +1348,18 @@ impl Hub {
     ) {
         let refused = if !self.sessions.contains_key(&id) {
             Some("the phone is not connected")
-        } else if !self.phone_has(&id, SYSTEM_CONTROL) {
+        } else if !self.phone_has(&id, SYSTEM_CONTROL)
+            || (command.command.toggle() && !self.phone_has(&id, PHONE_TOGGLES))
+        {
             Some("the phone's Link app is too old")
         } else if !self.store.peer(&id).is_some_and(|peer| peer.grants.system) {
             Some("Control system is off for this phone")
         } else if !command.command.to_phone() {
             Some("not a command for a phone")
+        } else if command.value == Some(0)
+            && self.sessions.get(&id).is_some_and(|session| cuts_link(session, command.command))
+        {
+            Some("turning that off would end this connection")
         } else {
             None
         };
@@ -1545,6 +1553,13 @@ impl Hub {
             })
             .collect();
         controls.sort();
+        let mut toggles: Vec<_> = self
+            .status
+            .iter()
+            .filter(|(_, status)| status.wifi.is_some() || status.bluetooth.is_some() || status.torch.is_some())
+            .map(|(id, status)| (id.to_string(), (flag(status.wifi), flag(status.bluetooth), flag(status.torch))))
+            .collect();
+        toggles.sort();
         let mut notifications_off: Vec<String> =
             self.status.iter().filter(|(_, status)| status.notifications_off).map(|(id, _)| id.to_string()).collect();
         notifications_off.sort();
@@ -1565,6 +1580,7 @@ impl Hub {
                 grants,
                 status,
                 controls,
+                toggles,
                 notifications_off,
                 notification_counts: self.notifications.counts(),
                 notify_locked: self.store.notify_locked,
@@ -1624,6 +1640,15 @@ fn generate_secrets() -> anyhow::Result<(String, [u8; QR_SECRET_LEN])> {
     let mut qr = [0; QR_SECRET_LEN];
     fill(&mut qr)?;
     Ok((format!("{code:06}"), qr))
+}
+
+/// True when turning `kind` off on the phone drops the radio `session` runs on.
+fn cuts_link(session: &SessionHandle, kind: SystemCommandKind) -> bool {
+    match kind {
+        SystemCommandKind::SetWifi => transport(session) == "wifi",
+        SystemCommandKind::SetBluetooth => transport(session) == "bluetooth",
+        _ => false,
+    }
 }
 
 /// What carries `session`, as D-Bus names it: "bluetooth", "usb" or "wifi" (any IP path, and the relay).

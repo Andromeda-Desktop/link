@@ -131,6 +131,9 @@ mod tests {
             dnd: None,
             locked: None,
             storage: None,
+            wifi: None,
+            bluetooth: None,
+            torch: None,
         });
         assert!(limits.admit(&status, now));
     }

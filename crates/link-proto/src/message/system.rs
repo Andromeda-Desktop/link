@@ -85,12 +85,20 @@ pub enum SystemCommandKind {
     SetMediaVolume,
     /// To the phone; `value` is 0 silent, 1 vibrate, 2 normal.
     SetRinger,
+    /// [`PHONE_TOGGLES`] from here on. To the phone; `value` is 1 for on.
+    SetWifi,
+    SetBluetooth,
+    SetTorch,
 }
 
 impl SystemCommandKind {
     /// False for the commands only a desktop sends.
     pub fn to_desktop(self) -> bool {
-        !matches!(self, Self::SetMediaVolume | Self::SetRinger)
+        !self.phone_only()
+    }
+
+    fn phone_only(self) -> bool {
+        matches!(self, Self::SetMediaVolume | Self::SetRinger | Self::SetWifi | Self::SetBluetooth | Self::SetTorch)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -105,19 +113,27 @@ impl SystemCommandKind {
             Self::SetProfile => "set-profile",
             Self::SetMediaVolume => "set-media-volume",
             Self::SetRinger => "set-ringer",
+            Self::SetWifi => "set-wifi",
+            Self::SetBluetooth => "set-bluetooth",
+            Self::SetTorch => "set-torch",
         }
     }
 
     /// True for the commands a desktop may send.
     pub fn to_phone(self) -> bool {
-        matches!(self, Self::SetMediaVolume | Self::SetRinger | Self::SetDnd)
+        self.phone_only() || self == Self::SetDnd
+    }
+
+    /// True for the commands only a phone with [`PHONE_TOGGLES`] takes.
+    pub fn toggle(self) -> bool {
+        matches!(self, Self::SetWifi | Self::SetBluetooth | Self::SetTorch)
     }
 
     /// The largest `value`, or `None` for a command without one.
     pub fn max_value(self) -> Option<u8> {
         match self {
             Self::SetVolume | Self::SetBrightness | Self::SetMediaVolume => Some(100),
-            Self::SetMute | Self::SetDnd => Some(1),
+            Self::SetMute | Self::SetDnd | Self::SetWifi | Self::SetBluetooth | Self::SetTorch => Some(1),
             Self::SetProfile | Self::SetRinger => Some(2),
             Self::Lock | Self::Suspend | Self::ScreenOff => None,
         }
