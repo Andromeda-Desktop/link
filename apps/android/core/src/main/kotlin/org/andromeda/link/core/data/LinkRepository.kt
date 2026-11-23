@@ -54,6 +54,7 @@ import org.andromeda.link.core.domain.PointerButton
 import org.andromeda.link.core.domain.RecentClip
 import org.andromeda.link.core.domain.RemoteEvent
 import org.andromeda.link.core.domain.RemoteInput
+import org.andromeda.link.core.domain.RemoteScreens
 import org.andromeda.link.core.domain.RemoteSource
 import org.andromeda.link.core.domain.RemoteUnit
 import org.andromeda.link.core.domain.RemoteVideo
@@ -109,7 +110,7 @@ import org.andromeda.link.ffi.TouchContact as FfiTouchContact
 class LinkRepository(
     private val context: Context,
     private val deviceName: String,
-) {
+) : RemoteScreens {
     /** Lives as long as the process: it reads the core's events for every screen and service. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clientLock = Mutex()
@@ -346,16 +347,14 @@ class LinkRepository(
         reason: String?,
     ): Result<Unit> = call { it.stopMirror(desktopId, reason) }
 
-    /** Desktops' answers to this phone's requests for their screens. */
-    val remote: SharedFlow<RemoteEvent> = _remote.asSharedFlow()
+    override val remote: SharedFlow<RemoteEvent> = _remote.asSharedFlow()
 
-    /** Asks the desktop for its screen, or to switch to [source] of its last [RemoteEvent.Started]. */
-    suspend fun startRemote(
+    override suspend fun startRemote(
         desktopId: String,
         source: Int?,
     ): Result<Unit> = call { it.startRemote(desktopId, source?.toUInt()) }
 
-    suspend fun stopRemote(desktopId: String): Result<Unit> = call { it.stopRemote(desktopId) }
+    override suspend fun stopRemote(desktopId: String): Result<Unit> = call { it.stopRemote(desktopId) }
 
     /** What each desktop lets this phone run there, by desktop id. */
     val commands: StateFlow<Map<String, List<DesktopCommand>>> = _commands.asStateFlow()

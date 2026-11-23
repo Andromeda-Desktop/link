@@ -2,6 +2,7 @@ package org.andromeda.link.control
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,9 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.domain.LinkFailure
 import org.andromeda.link.core.domain.RemoteEvent
+import org.andromeda.link.core.domain.RemoteScreens
 import org.andromeda.link.core.domain.RemoteSource
 import org.andromeda.link.core.domain.linkFailure
 
@@ -49,8 +50,9 @@ sealed interface ViewerPhase {
  * outlives the screen, which survives rotation this way.
  */
 class ViewerViewModel(
-    private val repository: LinkRepository,
+    private val repository: RemoteScreens,
     private val desktopId: String,
+    private val background: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _state = MutableStateFlow(ViewerState())
     val state: StateFlow<ViewerState> = _state
@@ -85,7 +87,7 @@ class ViewerViewModel(
         val stream = _state.value.stream
         _state.value = ViewerState()
         // Not the view model's scope: the stop must reach the desktop after the screen is gone.
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        CoroutineScope(SupervisorJob() + background).launch {
             stream?.video?.stop()
             repository.stopRemote(desktopId)
         }

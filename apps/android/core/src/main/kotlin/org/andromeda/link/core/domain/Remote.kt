@@ -1,5 +1,7 @@
 package org.andromeda.link.core.domain
 
+import kotlinx.coroutines.flow.SharedFlow
+
 /** A monitor or window a desktop shares for remote control. */
 data class RemoteSource(
     val name: String,
@@ -23,6 +25,20 @@ interface RemoteVideo {
     suspend fun next(): RemoteUnit?
 
     suspend fun stop()
+}
+
+/** Desktops' screens for this phone: what a viewer needs of the repository. */
+interface RemoteScreens {
+    /** Desktops' answers to this phone's requests for their screens. */
+    val remote: SharedFlow<RemoteEvent>
+
+    /** Asks the desktop for its screen, or to switch to [source] of its last [RemoteEvent.Started]. */
+    suspend fun startRemote(
+        desktopId: String,
+        source: Int?,
+    ): Result<Unit>
+
+    suspend fun stopRemote(desktopId: String): Result<Unit>
 }
 
 /** What a desktop answers this phone's request for its screen. */
