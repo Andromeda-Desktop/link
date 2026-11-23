@@ -1140,6 +1140,13 @@ impl ClientActor {
     /// Wi-Fi going away moves every session over it to Bluetooth at once, instead of after the idle timeout and a
     /// round of redials; Wi-Fi coming back looks for an IP path at once, instead of at the next probe.
     async fn network_changed(&mut self, before: Option<NetworkKind>, now: NetworkKind) {
+        if now != NetworkKind::None {
+            // A new network may reach a desktop the last one could not; the backoff learned on the old one only delays.
+            let at = Instant::now();
+            for retry in self.retries.values_mut() {
+                *retry = Retry { at, delay: FIRST_RETRY };
+            }
+        }
         if before == Some(NetworkKind::Wifi) && now != NetworkKind::Wifi {
             let standby: Vec<(DeviceId, (LinkId, Via))> =
                 self.standby.keys().filter_map(|id| Some((id.clone(), self.standby_for(id)?))).collect();
