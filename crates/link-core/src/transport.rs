@@ -279,12 +279,66 @@ pub(crate) async fn connected(
     phone: &Identity,
     desktop: &Identity,
 ) -> Result<(quinn::Connection, quinn::Connection), Error> {
+    connected_through(phone, desktop, None).await
+}
+
+/// [`connected`], with the phone's packets to the desktop through a bottleneck of `bytes_per_second` when given.
+#[cfg(test)]
+pub(crate) async fn connected_through(
+    phone: &Identity,
+    desktop: &Identity,
+    bytes_per_second: Option<u32>,
+) -> Result<(quinn::Connection, quinn::Connection), Error> {
     let server = server_endpoint(desktop, SocketAddr::from(([127, 0, 0, 1], 0)))?;
     let pin = ServerPin::Key(desktop.spki().fingerprint());
     let accept = async { Ok::<_, Error>(server.accept().await.ok_or(Error::NotConnected)?.await?) };
     let dialer = Dialer::new(phone)?.tuned(|t| {
         t.send_window(1 << 20);
     });
-    let (phone_side, desktop_side) = tokio::join!(dialer.dial(server.local_addr()?, pin), accept);
+    let to = match bytes_per_second {
+        Some(rate) => bottleneck(server.local_addr()?, rate).await?,
+        None => server.local_addr()?,
+    };
+    let (phone_side, desktop_side) = tokio::join!(dialer.dial(to, pin), accept);
     Ok((phone_side?.connection, desktop_side?))
+}
+
+/// A UDP relay to `to` that sends upstream at `bytes_per_second` from a drop-tail queue of 48 packets, as a slow
+/// router does; replies pass at once.
+#[cfg(test)]
+async fn bottleneck(to: SocketAddr, bytes_per_second: u32) -> std::io::Result<SocketAddr> {
+    use tokio::net::UdpSocket;
+    let front = Arc::new(UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?);
+    let back = Arc::new(UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?);
+    back.connect(to).await?;
+    let addr = front.local_addr()?;
+    let (phone_tx, mut phone_rx) = tokio::sync::watch::channel(None::<SocketAddr>);
+    let (queue, mut queued) = tokio::sync::mpsc::channel::<Vec<u8>>(48);
+    let (socket, out) = (front.clone(), back.clone());
+    tokio::spawn(async move {
+        let mut buf = vec![0; 65_536];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            phone_tx.send_if_modified(|phone| phone.replace(from) != Some(from));
+            drop(queue.try_send(buf[..n].to_vec()));
+        }
+    });
+    tokio::spawn(async move {
+        while let Some(packet) = queued.recv().await {
+            tokio::time::sleep(
+                Duration::from_secs(1) * u32::try_from(packet.len()).unwrap_or(u32::MAX) / bytes_per_second,
+            )
+            .await;
+            drop(out.send(&packet).await);
+        }
+    });
+    tokio::spawn(async move {
+        let mut buf = vec![0; 65_536];
+        while let Ok(n) = back.recv(&mut buf).await {
+            let phone = *phone_rx.borrow_and_update();
+            if let Some(phone) = phone {
+                drop(front.send_to(&buf[..n], phone).await);
+            }
+        }
+    });
+    Ok(addr)
 }

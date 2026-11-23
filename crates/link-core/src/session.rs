@@ -488,6 +488,8 @@ mod tests {
         events: [mpsc::Receiver<SessionEvent>; 2],
         freeze: [watch::Sender<bool>; 2],
         dir: std::path::PathBuf,
+        /// With a bottleneck only: the desktop's mirror and file streams, from a running transfer actor.
+        transfers: Option<mpsc::UnboundedReceiver<crate::transfer::TransferEvent>>,
     }
 
     impl Drop for Pair {
@@ -504,8 +506,18 @@ mod tests {
         name: &str,
         events: usize,
     ) -> std::result::Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
+        pair_through(name, events, None).await
+    }
+
+    /// [`pair_with_events`]; with `bottleneck`, the phone sends at that many bytes a second on the real clock, and
+    /// the desktop's transfer actor runs.
+    async fn pair_through(
+        name: &str,
+        events: usize,
+        bottleneck: Option<u32>,
+    ) -> std::result::Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
         let (phone_key, desk_key) = (Identity::generate()?, Identity::generate()?);
-        let (phone_conn, desktop_conn) = crate::transport::connected(&phone_key, &desk_key).await?;
+        let (phone_conn, desktop_conn) = crate::transport::connected_through(&phone_key, &desk_key, bottleneck).await?;
         let (phone_conn, desktop_conn) = (Connection::from(phone_conn), Connection::from(desktop_conn));
         // QUIC announces a stream with its first bytes, so the desktop accepts the control stream only after the hello.
         let (phone_control, desktop_control) = tokio::try_join!(
@@ -521,10 +533,16 @@ mod tests {
             }
         )?;
         // After the handshake: the paused clock would run its timeout out while packets cross the real socket.
-        tokio::time::pause();
+        if bottleneck.is_none() {
+            tokio::time::pause();
+        }
 
         let dir = std::env::temp_dir().join(format!("link-session-{name}-{}", std::process::id()));
-        let (transfers, _transfer_actor, _transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
+        let (transfers, transfer_actor, transfer_events) = crate::transfer::transfers(Inbox::new(dir.clone(), &dir)?);
+        let transfer_events = bottleneck.map(|_| {
+            tokio::spawn(transfer_actor.run());
+            transfer_events
+        });
         let route = |peer: DeviceId| {
             let (events, rx) = mpsc::channel(events);
             (Route { peer, events, transfers: transfers.clone(), heartbeat: true, path: None }, rx)
@@ -538,6 +556,7 @@ mod tests {
             events: [phone_events, desktop_events],
             freeze: [freezable(phone_actor), freezable(desktop_actor)],
             dir,
+            transfers: transfer_events,
         })
     }
 
@@ -616,6 +635,62 @@ mod tests {
         tokio::time::sleep(ACTIVE_EVERY * 2).await;
         assert!(matches!(phone.link(), LinkState::Live { .. }), "phone after: {:?}", phone.link());
         assert!(matches!(desktop.link(), LinkState::Live { .. }), "desktop after: {:?}", desktop.link());
+        Ok(())
+    }
+
+    /// Mirror video fills a 3 Mbit/s path with a short queue, as on Bluetooth or weak Wi-Fi: the control stream
+    /// outranks it, so heartbeats still cross within their grace and neither side turns degraded.
+    #[tokio::test]
+    async fn heartbeats_pass_while_mirror_video_fills_a_slow_path() -> Result {
+        use crate::mirror::{MirrorSender, Unit};
+        use crate::transfer::TransferEvent;
+        use link_proto::message::MIRROR_KEYFRAME;
+
+        let mut pair = pair_through("priority", 1024, Some(375_000)).await?;
+        let [phone, desktop] = pair.handles.clone();
+        // Until the first heartbeat is acked, no deadline exists to miss.
+        let first = Instant::now() + IDLE_EVERY + GRACE;
+        while !matches!(phone.link(), LinkState::Live { rtt: Some(_) }) {
+            assert!(Instant::now() < first, "no heartbeat round trip: {:?}", phone.link());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let sender = MirrorSender::open(&phone, 16, 16, true).await?;
+        let video = tokio::spawn(async move {
+            sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
+            for pts_us in 1.. {
+                sender.send(&Unit { pts_us, flags: 0, data: vec![2; 128 * 1024] }).await?;
+            }
+            Ok::<_, Error>(())
+        });
+        let transfers = pair.transfers.as_mut().ok_or("no transfer events")?;
+        let stream = loop {
+            match tokio::time::timeout(Duration::from_secs(10), transfers.recv()).await? {
+                Some(TransferEvent::Mirror { stream, .. }) => break stream,
+                Some(_) => {}
+                None => return Err("the transfer actor ended".into()),
+            }
+        };
+        let mut receiver = stream.take().ok_or("the mirror stream was taken")?;
+        let read = tokio::spawn(async move {
+            let mut bytes = 0;
+            while let Ok(Some(unit)) = receiver.next().await {
+                bytes += unit.data.len();
+            }
+            bytes
+        });
+
+        // Long past ACTIVE_EVERY + GRACE, which a starved heartbeat turns degraded in.
+        let end = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < end {
+            assert!(matches!(phone.link(), LinkState::Live { .. }), "phone: {:?}", phone.link());
+            assert!(matches!(desktop.link(), LinkState::Live { .. }), "desktop: {:?}", desktop.link());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!video.is_finished(), "the video stopped: {:?}", video.await);
+        video.abort();
+        drop(pair);
+        let bytes = read.await?;
+        assert!(bytes > 1_000_000, "only {bytes} bytes of video crossed, so the path was not full");
         Ok(())
     }
 
