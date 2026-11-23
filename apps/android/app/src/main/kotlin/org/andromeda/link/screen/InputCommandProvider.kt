@@ -9,6 +9,9 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.LinkedBlockingQueue
@@ -61,20 +64,22 @@ class InputCommandProvider : ContentProvider() {
     ) = 0
 
     companion object {
-        @Volatile
-        private var relay: OutputStream? = null
+        private val relay = MutableStateFlow<OutputStream?>(null)
 
         /** Lines for the helper; a stalled helper fills this and new lines are dropped, never blocking the caller. */
         private val lines = LinkedBlockingQueue<String>(QUEUE)
 
         /** Whether the shell helper reads input now. */
-        val connected: Boolean get() = relay != null
+        val connected: Boolean get() = relay.value != null
+
+        /** Whether a helper reads input within [timeoutMs]; the helper looks for Link's process every 3 s. */
+        suspend fun awaitConnected(timeoutMs: Long) = withTimeoutOrNull(timeoutMs) { relay.first { it != null } } != null
 
         private fun connected(stream: OutputStream) {
-            val old = relay
+            val old = relay.value
             // Cleared before the new helper shows as connected, so a command sent at once is not lost.
             lines.clear()
-            relay = stream
+            relay.value = stream
             old?.close()
             // A helper that comes back mid-mirror keeps Wi-Fi out of power saving, as the one before did.
             if (ScreenCapture.running) send("wifi-latency", code = 1)
@@ -85,12 +90,12 @@ class InputCommandProvider : ContentProvider() {
             thread(isDaemon = true, name = "input-relay") {
                 while (true) {
                     val line = lines.take()
-                    val stream = relay ?: continue
+                    val stream = relay.value ?: continue
                     try {
                         stream.write(line.toByteArray())
                         stream.flush()
                     } catch (_: IOException) {
-                        if (relay === stream) relay = null
+                        relay.compareAndSet(stream, null)
                     }
                 }
             }
@@ -107,7 +112,7 @@ class InputCommandProvider : ContentProvider() {
             meta: Int? = null,
             text: String? = null,
         ): Boolean {
-            if (relay == null) return false
+            if (relay.value == null) return false
             val encoded = text?.let { Base64.encodeToString(it.toByteArray(), Base64.NO_WRAP) }.orEmpty()
             val line = listOf(action, x ?: 0, y ?: 0, x2 ?: 0, y2 ?: 0, code ?: 0, meta ?: 0, encoded).joinToString(" ")
             if (!lines.offer(line + "\n")) Log.i("ScreenInput", "the helper is behind: dropped $action")

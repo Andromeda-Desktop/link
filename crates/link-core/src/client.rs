@@ -52,9 +52,9 @@ use crate::{Error, close_code_for};
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(30);
-/// The least time between two status messages; a desktop drops more than three in 30 s.
+/// The least time between two status messages that change no control field (battery, signal, storage).
 const STATUS_EVERY: Duration = Duration::from_secs(10);
-/// A change to media volume, ringer, DND, or lock only goes out this soon, so a slider moves live on the desktop.
+/// A change to a control field (volume, ringer, DND, lock, a toggle) goes out this soon, with any other change since.
 const CONTROL_EVERY: Duration = Duration::from_millis(150);
 /// How often a session on Bluetooth looks for an IP path to move to.
 const PROBE_EVERY: Duration = Duration::from_secs(30);
@@ -595,10 +595,7 @@ impl ClientActor {
     }
 
     fn status_every(&self) -> Duration {
-        match (self.status_last, self.status) {
-            (Some(last), Some(now)) if last.without_control() == now.without_control() => CONTROL_EVERY,
-            _ => STATUS_EVERY,
-        }
+        status_every(self.status_last, self.status)
     }
 
     /// Sends the latest status to every live session.
@@ -908,11 +905,48 @@ fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// How long after the status `last` sent the status `now` may go out.
+fn status_every(last: Option<Status>, now: Option<Status>) -> Duration {
+    let control = |status: Status| {
+        (status.media_volume, status.ringer, status.dnd, status.locked, status.wifi, status.bluetooth, status.torch)
+    };
+    match (last, now) {
+        (Some(last), Some(now)) if control(last) != control(now) || last.without_control() == now.without_control() => {
+            CONTROL_EVERY
+        }
+        _ => STATUS_EVERY,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use link_proto::message::NotificationButton;
 
     use super::*;
+
+    /// A torch turned on right after a battery change reaches the desktop at once, not with the next 10 s status.
+    #[test]
+    fn a_control_change_goes_out_soon_even_after_a_battery_change() {
+        let sent = Status {
+            battery: 80,
+            charging: false,
+            network: link_proto::message::NetworkKind::Wifi,
+            signal: None,
+            notifications_off: false,
+            media_volume: Some(50),
+            ringer: None,
+            dnd: None,
+            locked: None,
+            storage: None,
+            wifi: Some(true),
+            bluetooth: Some(false),
+            torch: Some(false),
+        };
+        let battery = Status { battery: 79, ..sent };
+        assert_eq!(status_every(Some(sent), Some(battery)), STATUS_EVERY);
+        assert_eq!(status_every(Some(sent), Some(Status { torch: Some(true), ..battery })), CONTROL_EVERY);
+        assert_eq!(status_every(Some(sent), Some(Status { media_volume: Some(60), ..sent })), CONTROL_EVERY);
+    }
 
     /// A `Mirroring { on }` that reaches the actor after its session ended leaves no mirroring behind, so the slot
     /// is not held busy (SM-156).

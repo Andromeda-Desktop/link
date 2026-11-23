@@ -132,7 +132,7 @@ class PhoneControl(
     }
 
     /** Throws with a message for the desktop's user when the command cannot be done. */
-    private fun run(command: IncomingSystemCommand) {
+    private suspend fun run(command: IncomingSystemCommand) {
         val value = command.value ?: error("${command.command} needs a value")
         when (command.command) {
             "set-media-volume" -> {
@@ -157,7 +157,8 @@ class PhoneControl(
             }
             "set-torch" -> camera.setTorchMode(torchCamera ?: error("This phone has no torch"), value == 1)
             "set-wifi", "set-bluetooth" -> {
-                check(InputCommandProvider.send(command.command, code = value)) {
+                // A helper started a moment ago, or a Link process Android just restarted, connects within 3 s.
+                check(InputCommandProvider.awaitConnected(HELPER_WAIT_MS) && InputCommandProvider.send(command.command, code = value)) {
                     "Link's helper is not running on the phone: start it with root, Shizuku, or Link Apps over adb"
                 }
             }
@@ -169,3 +170,6 @@ class PhoneControl(
         check(notifications.isNotificationPolicyAccessGranted) { "Allow Do Not Disturb access for Link on the phone" }
     }
 }
+
+/** One helper look for Link (3 s) and its connect; linkd waits 5 s for the answer. */
+private const val HELPER_WAIT_MS = 3_500L
