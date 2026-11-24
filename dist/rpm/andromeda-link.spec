@@ -9,7 +9,7 @@ License:        GPL-3.0-or-later
 Requires:       dbus fuse3 gstreamer1-plugins-base gstreamer1-plugins-bad-free
 # Below 1 is the old Qt app package; the Andromeda Link window (2026.x) keeps the name.
 Obsoletes:      andromeda-link-app < 1
-Recommends:     andromeda-link-app (xdg-desktop-portal-gnome or xdg-desktop-portal-kde)
+Recommends:     andromeda-link-app
 Suggests:       bluez NetworkManager iw
 %global debug_package %{nil}
 
