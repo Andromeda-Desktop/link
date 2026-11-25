@@ -343,9 +343,11 @@ impl Stream {
         let (width, height) = fit(rect.2, rect.3);
         // VA-API does the scaling and encoding on the GPU when the driver has them; software is the fallback.
         let mut chains = Vec::new();
-        if ["vapostproc", "vah264enc"].iter().all(|name| gst::ElementFactory::find(name).is_some()) {
+        // The source is system-memory BGRx (always-copy): vapostproc uploads that at only ~15 fps, so the CPU
+        // converts to NV12 and only the encode runs on the GPU.
+        if gst::ElementFactory::find("vah264enc").is_some() {
             chains.push(format!(
-                "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} \
+                "videoconvert ! videoscale ! video/x-raw,format=NV12,width={width},height={height},pixel-aspect-ratio=1/1 \
                  ! vah264enc b-frames=0 key-int-max=60 bitrate=8000 rate-control=cbr ! video/x-h264,profile=main"
             ));
         }
