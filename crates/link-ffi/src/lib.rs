@@ -143,6 +143,8 @@ pub struct Sharing {
     pub screen: bool,
     /// The desktop may read this phone's contacts and text messages and send texts; off after pairing.
     pub messages: bool,
+    /// The desktop may play its sound on this phone's speaker; on after pairing.
+    pub speaker: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -156,6 +158,7 @@ pub enum Feature {
     Browse,
     Screen,
     Messages,
+    Speaker,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -250,6 +253,15 @@ pub enum LinkEvent {
         desktop_id: String,
         lag_ms: u32,
     },
+    /// The desktop asks for this phone's microphone: answer with [`LinkClient::start_mic`] once the user allows it,
+    /// or [`LinkClient::stop_mic`].
+    MicRequested {
+        desktop_id: String,
+    },
+    /// The desktop ended the microphone.
+    MicStopped {
+        desktop_id: String,
+    },
     /// The desktop ended mirroring.
     MirrorStopped {
         desktop_id: String,
@@ -260,6 +272,11 @@ pub enum LinkEvent {
         desktop_id: String,
         sources: Vec<RemoteSource>,
         current: u32,
+    },
+    /// The desktop's sound for this phone's speaker: Opus units (48 kHz stereo) until the stream ends.
+    SpeakerStream {
+        desktop_id: String,
+        stream: Arc<RemoteView>,
     },
     /// Remote control's video and sound, width x height; a switch to another source sends a new one.
     RemoteStream {
@@ -1140,6 +1157,7 @@ impl LinkClient {
             Feature::Browse => store::Feature::Browse,
             Feature::Screen => store::Feature::Screen,
             Feature::Messages => store::Feature::Messages,
+            Feature::Speaker => store::Feature::Speaker,
         };
         self.run(async move { client.set_sharing(id, feature, on).await }).await
     }
@@ -1291,6 +1309,19 @@ impl LinkClient {
     }
 
     /// Ends mirroring, or refuses the desktop's request, with a reason when it failed.
+    /// Opens the microphone's stream to the desktop that asked for it; send Opus units (48 kHz mono) with flag 4.
+    pub async fn start_mic(&self, desktop_id: String) -> Result<Arc<MirrorSession>, LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        let sender = self.run(async move { client.start_mic(id).await }).await?;
+        Ok(Arc::new(MirrorSession { runtime: self.runtime.handle().clone(), sender: Arc::new(sender), codec: None }))
+    }
+
+    /// Tells the desktop the microphone ended, or that the user did not allow it.
+    pub async fn stop_mic(&self, desktop_id: String) -> Result<(), LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        self.run(async move { client.send(id, Message::MicStop).await }).await
+    }
+
     pub async fn stop_mirror(&self, desktop_id: String, reason: Option<String>) -> Result<(), LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
         self.run(async move { client.stop_mirror(id, reason).await }).await

@@ -22,6 +22,7 @@ import org.andromeda.link.clipboard.ClipboardSync
 import org.andromeda.link.clipboard.ClipboardWatcher
 import org.andromeda.link.clipboard.LogAccess
 import org.andromeda.link.clipboard.ScreenshotWatcher
+import org.andromeda.link.control.PhoneSpeaker
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.data.MediaLibrary
 import org.andromeda.link.core.data.Messaging
@@ -81,6 +82,7 @@ class AppContainer(
     private val widget = DesktopWidget(application, repository, scope)
     val ringer = Ringer(application, repository, scope)
     val screen = ScreenMirror(application, repository, scope)
+    private val speaker = PhoneSpeaker(repository, scope)
     private val mirrorAsk = MirrorAsk(application, repository, scope)
     val calls = Calls(application, repository, scope, mirror::appCall).also { mirror.onCallShown = it::appCallShown }
     private val bonding = BluetoothBonding(application, repository, scope)
@@ -107,6 +109,7 @@ class AppContainer(
         scope.launch { repository.setCamera(PhoneCamera(application)) }
         ringer.start()
         screen.start()
+        speaker.start()
         mirrorAsk.start()
         calls.start()
         bonding.start()

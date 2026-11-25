@@ -183,6 +183,30 @@
     <method name="MirrorKeyframe">
       <arg name="device_id" type="s" direction="in"/>
     </method>
+    <!-- Plays desktop sound on the phone's speaker: returns a socket that takes Opus packets (48 kHz stereo) in
+         OpenMirror's framing, each with flag 4. Closing it ends the sound; a new call replaces the phone's last
+         stream. Errors: .NotConnected; .Refused("unsupported") from a phone without the feature; .Refused("not-allowed")
+         while the phone's speaker switch is off. -->
+    <!-- Asks link-session to take the phone's microphone: it answers MicRequested with OpenMic. -->
+    <method name="StartMic">
+      <arg name="device_id" type="s" direction="in"/>
+    </method>
+    <!-- Asks the phone for its microphone and returns a socket of its Opus packets (48 kHz mono) in OpenMirror's
+         framing, each with flag 4, once the user allowed it on the phone (up to 60 s). Closing it or StopMic ends
+         the microphone. Errors: .NotConnected; .Refused("unsupported") from a phone without the feature;
+         .Refused("not-allowed") while the phone's microphone switch is off; .Refused(reason) when the phone
+         declined. -->
+    <method name="OpenMic">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
+    </method>
+    <method name="StopMic">
+      <arg name="device_id" type="s" direction="in"/>
+    </method>
+    <method name="OpenSpeaker">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
+    </method>
     <!-- Consent for a TransferOffered; .Rejected once the offer no longer waits (answered, withdrawn, or 120 s
          passed, which declines it). -->
     <method name="AcceptTransfer">
@@ -246,7 +270,8 @@
     <!-- Paired device id to its info: last_seen (x) is unix seconds of its last session, and transport (s) is wifi
          or bluetooth while connected, else empty; connected (b); storage_free and storage_total (t) are bytes of the
          phone's shared storage as it last reported them, kept in memory after it disconnects, absent until the phone
-         reports them (older phones never do); battery (i) is its percent while connected. PropertiesChanged reports
+         reports them (older phones never do); battery (i) is its percent while connected; speaker (b) is true while
+         connected to a phone that plays OpenSpeaker streams with its speaker switch on. PropertiesChanged reports
          each change. -->
     <property name="DeviceInfo" type="a{sa{sv}}" access="read"/>
     <!-- Devices whose offers are accepted without asking. -->
@@ -439,6 +464,10 @@
     <!-- A phone holding the input grant, on the same network, asks for this desktop's screen (remote control):
          source indexes the sources last served to it, -1 for the first. The session answers with
          ServeRemoteControl. -->
+    <!-- StartMic asked for the phone's microphone; link-session answers with OpenMic. -->
+    <signal name="MicRequested">
+      <arg name="device_id" type="s"/>
+    </signal>
     <signal name="RemoteControlRequested">
       <arg name="device_id" type="s"/>
       <arg name="source" type="i"/>

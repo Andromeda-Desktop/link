@@ -82,6 +82,10 @@ pub enum TransferEvent {
     ClipOffered { from: DeviceId, id: u64, mimes: Vec<String>, size: u64, text: Option<String> },
     /// A peer opened its screen's video stream; the handler takes it or drops it.
     Mirror { from: DeviceId, stream: crate::mirror::MirrorStream },
+    /// A desktop opened a stream of sound for the phone's speaker; the handler takes it or drops it.
+    Speaker { from: DeviceId, stream: crate::mirror::MirrorStream },
+    /// A phone opened its microphone's stream; the handler takes it or drops it.
+    Mic { from: DeviceId, stream: crate::mirror::MirrorStream },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,6 +867,14 @@ impl TransferActor {
                 self.mirrors.insert(peer.clone(), parts);
                 let stream = crate::mirror::MirrorStream::new(receiver);
                 return self.emit(TransferEvent::Mirror { from: peer.clone(), stream });
+            }
+            Ok(Envelope { message: Message::SpeakerData, .. }) => {
+                let stream = crate::mirror::MirrorStream::new(crate::mirror::MirrorReceiver::sound(recv));
+                return self.emit(TransferEvent::Speaker { from: peer.clone(), stream });
+            }
+            Ok(Envelope { message: Message::MicData, .. }) => {
+                let stream = crate::mirror::MirrorStream::new(crate::mirror::MirrorReceiver::sound(recv));
+                return self.emit(TransferEvent::Mic { from: peer.clone(), stream });
             }
             // A mirror's video stream may be reset before its header arrives.
             Err(Error::Timeout | Error::StreamEnded) => {

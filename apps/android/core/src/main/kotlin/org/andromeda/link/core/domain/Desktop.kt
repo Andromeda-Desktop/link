@@ -35,6 +35,7 @@ data class Sharing(
     val browse: Boolean = false,
     val screen: Boolean = false,
     val messages: Boolean = false,
+    val speaker: Boolean = true,
 ) {
     fun allows(feature: Feature): Boolean =
         when (feature) {
@@ -47,7 +48,8 @@ data class Sharing(
             Feature.Browse -> browse
             Feature.Screen -> screen
             Feature.Messages -> messages
+            Feature.Speaker -> speaker
         }
 }
 
-enum class Feature { Clipboard, Files, Notifications, Media, Ring, Calls, Browse, Screen, Messages }
+enum class Feature { Clipboard, Files, Notifications, Media, Ring, Calls, Browse, Screen, Messages, Speaker }

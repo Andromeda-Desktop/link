@@ -135,6 +135,12 @@ pub const MIRROR_LAG: &str = "feature:mirror-lag";
 /// A phone's hello carries this when it takes `usb-ready`; desktops send older phones none.
 pub const USB: &str = "feature:usb";
 
+/// A phone's hello carries this when it plays `speaker-data` streams; desktops open none to older phones.
+pub const SPEAKER: &str = "feature:speaker";
+
+/// A phone's hello carries this when it answers `mic-request` with a `mic-data` stream; desktops ask no older phone.
+pub const MIC: &str = "feature:mic";
+
 /// The largest lag a `mirror-lag` reports, in milliseconds.
 pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
 
@@ -593,6 +599,14 @@ pub enum Message {
     MirrorKeyframe,
     MirrorLag(MirrorLag),
     MirrorData(MirrorData),
+    /// The header of a desktop-to-phone stream of Opus units (48 kHz stereo) in mirroring's framing.
+    SpeakerData,
+    /// The desktop asks the phone for its microphone; the phone answers with a `mic-data` stream once allowed.
+    MicRequest,
+    /// Either side ends the microphone.
+    MicStop,
+    /// The header of a phone-to-desktop stream of Opus units (48 kHz mono) in mirroring's framing.
+    MicData,
     UsbReady,
     RemoteRequest(RemoteRequest),
     RemoteStarted(RemoteStarted),
@@ -691,6 +705,10 @@ impl Message {
             Self::MirrorKeyframe => "mirror-keyframe",
             Self::MirrorLag(_) => "mirror-lag",
             Self::MirrorData(_) => "mirror-data",
+            Self::SpeakerData => "speaker-data",
+            Self::MicRequest => "mic-request",
+            Self::MicStop => "mic-stop",
+            Self::MicData => "mic-data",
             Self::UsbReady => "usb-ready",
             Self::RemoteRequest(_) => "remote-request",
             Self::RemoteStarted(_) => "remote-started",
@@ -745,6 +763,10 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::SpeakerData
+            | Self::MicRequest
+            | Self::MicStop
+            | Self::MicData
             | Self::UsbReady
             | Self::ContactsChanged
             | Self::TextsChanged
@@ -874,6 +896,22 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::MirrorKeyframe
             }
+            "speaker-data" => {
+                body.deserialized::<Empty>()?;
+                Self::SpeakerData
+            }
+            "mic-request" => {
+                body.deserialized::<Empty>()?;
+                Self::MicRequest
+            }
+            "mic-stop" => {
+                body.deserialized::<Empty>()?;
+                Self::MicStop
+            }
+            "mic-data" => {
+                body.deserialized::<Empty>()?;
+                Self::MicData
+            }
             "usb-ready" => {
                 body.deserialized::<Empty>()?;
                 Self::UsbReady
@@ -959,6 +997,10 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::SpeakerData
+            | Self::MicRequest
+            | Self::MicStop
+            | Self::MicData
             | Self::UsbReady
             | Self::ShareAck(_)
             | Self::Heartbeat(_)

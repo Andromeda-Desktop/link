@@ -87,6 +87,13 @@ impl Client {
         Ok((sender, codec))
     }
 
+    /// Opens the stream of this phone's microphone to the desktop that sent `mic-request`; the caller sends Opus units
+    /// (48 kHz mono) and finishes it when the microphone stops.
+    pub async fn start_mic(&self, id: DeviceId) -> Result<MirrorSender, Error> {
+        let session = self.session(id).await?;
+        MirrorSender::open_sound(&session, Message::MicData).await
+    }
+
     /// Tells a mirroring desktop the screen's corners and cutouts; a desktop without [`SCREEN_SHAPE`] gets nothing.
     pub async fn send_screen_shape(&self, id: DeviceId, shape: ScreenShape) -> Result<(), Error> {
         let desktops = self.desktops().await?;

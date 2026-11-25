@@ -40,7 +40,7 @@ impl Remotes {
         let pumped = id.clone();
         let pump = self.pumps.spawn(async move {
             if let Err(error) = pump(socket, sender).await {
-                log::info!("{pumped}: remote control stream ended: {error}");
+                log::info!("{pumped}: the stream to the phone ended: {error}");
             }
             pumped
         });

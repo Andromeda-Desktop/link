@@ -57,9 +57,21 @@ pub struct Mirrors {
     running: HashMap<DeviceId, oneshot::Sender<()>>,
     pumps: JoinSet<DeviceId>,
     wifi: WifiPower,
+    /// A microphone's streams: Wi-Fi power save stays with the screen mirrors' instance, which runs its helper.
+    sound_only: bool,
 }
 
 impl Mirrors {
+    pub fn sound_only() -> Self {
+        Self { sound_only: true, ..Self::default() }
+    }
+
+    fn wifi_awake(&mut self, awake: bool) {
+        if !self.sound_only {
+            self.wifi.awake(awake);
+        }
+    }
+
     /// A phone's screen shows on this desktop.
     pub fn active(&self) -> bool {
         !self.running.is_empty()
@@ -100,7 +112,7 @@ impl Mirrors {
         if let Some(stop) = self.running.remove(id) {
             let _ = stop.send(());
         }
-        self.wifi.awake(self.active());
+        self.wifi_awake(self.active());
     }
 
     /// The phone's video stream: handed to the request waiting for it, or refused. `lag` is the session of a phone
@@ -131,7 +143,11 @@ impl Mirrors {
         if reply.send(Ok(Opened { stream: theirs.into(), width, height, codec })).is_err() {
             return receiver.stop();
         }
-        log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
+        if self.sound_only {
+            log::info!("{from}: the phone's microphone is on");
+        } else {
+            log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
+        }
         let id = from.clone();
         let (stop, stopped) = oneshot::channel();
         self.pumps.spawn(async move {
@@ -142,7 +158,7 @@ impl Mirrors {
             id
         });
         self.running.insert(from, stop);
-        self.wifi.awake(true);
+        self.wifi_awake(true);
     }
 
     /// The next pump to end, with its phone, which is told to stop in case the viewer closed first.
@@ -157,7 +173,7 @@ impl Mirrors {
             }
         };
         self.running.remove(&id);
-        self.wifi.awake(self.active());
+        self.wifi_awake(self.active());
         Some(id)
     }
 }

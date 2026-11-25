@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "andromeda-link"
-include(":app", ":core", ":fixture")
+include(":app", ":core", ":fixture", ":spike")

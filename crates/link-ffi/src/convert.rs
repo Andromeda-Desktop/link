@@ -26,7 +26,10 @@ pub(super) fn transfer_event(event: TransferEvent) -> Option<LinkEvent> {
         TransferEvent::ClipOffered { from, id, mimes, size, text } => {
             LinkEvent::ClipOffered { desktop_id: from.to_string(), clip_id: id, mimes, size, text }
         }
-        TransferEvent::Busy { .. } | TransferEvent::Mirror { .. } => return None,
+        TransferEvent::Busy { .. }
+        | TransferEvent::Mirror { .. }
+        | TransferEvent::Speaker { .. }
+        | TransferEvent::Mic { .. } => return None,
     })
 }
 
@@ -92,6 +95,13 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                 }),
             }
         }
+        ClientEvent::Transfer(TransferEvent::Speaker { from, stream }) => LinkEvent::SpeakerStream {
+            desktop_id: from.to_string(),
+            stream: Arc::new(RemoteView {
+                runtime: runtime.clone(),
+                receiver: Arc::new(tokio::sync::Mutex::new(stream.take()?)),
+            }),
+        },
         ClientEvent::Transfer(event) => return transfer_event(event),
         ClientEvent::SystemCommand { from, id, command } => LinkEvent::SystemCommand {
             desktop_id: from.to_string(),
@@ -158,6 +168,8 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                     profile: status.profile.map(|profile| profile.as_str().to_owned()),
                 },
                 Message::MirrorStop(stop) => LinkEvent::MirrorStopped { desktop_id, reason: stop.reason },
+                Message::MicRequest => LinkEvent::MicRequested { desktop_id },
+                Message::MicStop => LinkEvent::MicStopped { desktop_id },
                 Message::RemoteStarted(started) => LinkEvent::RemoteStarted {
                     desktop_id,
                     sources: started
@@ -216,8 +228,9 @@ impl From<client::DesktopLink> for DesktopLink {
 }
 
 pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Desktop {
-    let store::Grants { clipboard, files, notifications, media, ring, calls, browse, screen, messages, .. } =
-        peer.grants;
+    let store::Grants {
+        clipboard, files, notifications, media, ring, calls, browse, screen, messages, speaker, ..
+    } = peer.grants;
     Desktop {
         id: peer.id.to_string(),
         name: peer.name.clone(),
@@ -225,7 +238,7 @@ pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Deskt
         last_seen: peer.last_seen,
         link,
         bluetooth,
-        sharing: Sharing { clipboard, files, notifications, media, ring, calls, browse, screen, messages },
+        sharing: Sharing { clipboard, files, notifications, media, ring, calls, browse, screen, messages, speaker },
         bluetooth_address: peer.bluetooth.clone(),
         bt_pairing: peer.bt_pairing,
         control: peer.has(message::CONTROL),

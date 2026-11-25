@@ -49,6 +49,14 @@ pub async fn hold(phone: Phone, inbox: Inbox, id: DeviceId, options: Options) ->
             tokio::select! {
                 Some(event) = events.recv() => {
                     println!("{}", describe(&event));
+                    if let ClientEvent::Transfer(TransferEvent::Speaker { from, stream }) = &event
+                        && let Some(receiver) = stream.take()
+                    {
+                        tokio::spawn(count_speaker(from.clone(), receiver));
+                    }
+                    if let ClientEvent::Message { from, message: Message::MicRequest } = &event {
+                        tokio::spawn(send_mic(client.clone(), from.clone()));
+                    }
                     answer(&client, &event, on_offer).await;
                     held.on_event(&event).await;
                 }
@@ -282,6 +290,49 @@ async fn share_line(client: &Client, id: &DeviceId, line: &str) -> Value {
         Ok(Sent::Queued) => json!({ "event": "share-queued", "kind": kind.as_str(), "bytes": bytes }),
         Err(error) => json!({ "event": "share-failed", "kind": kind.as_str(), "error": error.to_string() }),
     }
+}
+
+/// Answers `mic-request` with 3 s of Opus silence (48 kHz mono, 20 ms frames) at real time, then finishes.
+async fn send_mic(client: Client, from: DeviceId) {
+    /// One 20 ms mono CELT frame of silence (RFC 6716 TOC 0xF8 and an empty body).
+    const SILENCE: [u8; 3] = [0xF8, 0xFF, 0xFE];
+    let sender = match client.start_mic(from.clone()).await {
+        Ok(sender) => sender,
+        Err(error) => {
+            return println!("{}", json!({ "event": "mic-failed", "desktop": from, "error": error.to_string() }));
+        }
+    };
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+    let mut sent = 0_u64;
+    for frame in 0..150_u64 {
+        tick.tick().await;
+        let unit = link_core::mirror::Unit { pts_us: frame * 20_000, flags: 4, data: SILENCE.to_vec() };
+        if sender.send(&unit).await.is_err() {
+            break;
+        }
+        sent += 1;
+    }
+    sender.finish().await;
+    println!("{}", json!({ "event": "mic-sent", "desktop": from, "units": sent }));
+}
+
+/// Plays nothing: counts the speaker stream's Opus units and reports them when it ends.
+async fn count_speaker(from: DeviceId, mut receiver: link_core::mirror::MirrorReceiver) {
+    let (mut units, mut bytes) = (0_u64, 0_usize);
+    let ended = loop {
+        match receiver.next().await {
+            Ok(Some(unit)) => {
+                units += 1;
+                bytes += unit.data.len();
+            }
+            Ok(None) => break None,
+            Err(error) => break Some(error.to_string()),
+        }
+    };
+    println!(
+        "{}",
+        json!({ "event": "speaker-ended", "desktop": from, "units": units, "bytes": bytes, "error": ended })
+    );
 }
 
 fn describe(event: &ClientEvent) -> Value {

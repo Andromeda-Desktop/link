@@ -283,6 +283,7 @@ private fun Grants(
                 { Toggle(Feature.Ring, R.string.feature_ring, Icons.Bell) },
                 { Toggle(Feature.Calls, R.string.feature_calls, Icons.Call) },
                 { Toggle(Feature.Messages, R.string.feature_messages, Icons.Msg) },
+                { Toggle(Feature.Speaker, R.string.feature_speaker, Icons.Vol) },
             ),
         )
     }

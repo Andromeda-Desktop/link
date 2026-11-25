@@ -10,6 +10,8 @@ mod link;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
+mod mic;
+#[cfg(target_os = "linux")]
 mod notify;
 #[cfg(target_os = "linux")]
 mod portal;
@@ -17,6 +19,8 @@ mod prefetch;
 mod ring;
 #[cfg(target_os = "linux")]
 mod screen;
+#[cfg(target_os = "linux")]
+mod speaker;
 #[cfg_attr(target_os = "macos", path = "macos/system.rs")]
 mod system;
 #[cfg_attr(target_os = "macos", path = "macos/volume.rs")]
@@ -227,6 +231,13 @@ async fn main() -> anyhow::Result<()> {
     // Remote control needs input too: the phone without it would only watch.
     let screen = input.is_some() && screen::available(&bus).await;
     let (screen_requests, screen_target) = screen::spawn(bus.clone(), link.clone());
+    let mut speakers = attempt("phone speakers", speaker::Speakers::new(link.clone()).map(Some));
+    let mut device_info = link.proxy.receive_device_info_changed().await;
+    let mut mics = attempt("phone microphones", mic::Mics::available().map(|()| Some(mic::Mics::default())));
+    let mut mic_requests = link.proxy.receive_mic_requested().await?;
+    if let Some(speakers) = speakers.as_mut() {
+        speakers.refresh().await;
+    }
     let mut touchpad = attempt("uinput touchpad", input::uinput::Touchpad::open().map(Some).map_err(Into::into));
     let optional = [
         (clipboard.is_some(), "clipboard"),
@@ -364,6 +375,16 @@ async fn main() -> anyhow::Result<()> {
             Some(change) = access_off.next() => notifications.set_access_off(change.get().await.unwrap_or_default()).await,
             Some(change) = keep_awake.next() => awake.set(change.get().await.unwrap_or(false)).await,
             // A restarted daemon starts with no capabilities and no status; a stopped one keeps nothing awake.
+            Some(signal) = mic_requests.next() => {
+                if let (Some(mics), Ok(args)) = (mics.as_mut(), signal.args()) {
+                    mics.start(link.clone(), args.device_id.to_owned());
+                }
+            }
+            Some(_) = device_info.next() => {
+                if let Some(speakers) = speakers.as_mut() {
+                    speakers.refresh().await;
+                }
+            }
             Some(owner) = daemon_owner.next() => match owner {
                 Some(_) => report(&link, &capabilities, volume.as_ref(), &system).await,
                 None => awake.set(false).await,

@@ -48,6 +48,17 @@ impl Hub {
                 return self.emit(Event::ClipboardOffered { from, id, mimes, size }).await;
             }
             TransferEvent::Busy { .. } => return,
+            TransferEvent::Mic { from, stream } => {
+                self.mics.stream(from, &stream, None);
+                return;
+            }
+            TransferEvent::Speaker { from, stream } => {
+                log::info!("{from}: refusing a speaker stream; only phones play one");
+                if let Some(mut receiver) = stream.take() {
+                    receiver.stop();
+                }
+                return;
+            }
             TransferEvent::Mirror { from, stream } => {
                 let lag = self.sessions.get(&from).filter(|_| self.phone_has(&from, MIRROR_LAG)).cloned();
                 self.mirrors.stream(from, &stream, lag);

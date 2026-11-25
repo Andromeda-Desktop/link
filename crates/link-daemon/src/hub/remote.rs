@@ -1,4 +1,8 @@
-use link_core::proto::message::{MIRROR_CODECS, MirrorRequest};
+use std::os::fd::OwnedFd;
+
+use crate::mirror::Failure;
+
+use link_core::proto::message::{MIC, MIRROR_CODECS, MirrorRequest, SPEAKER};
 
 use super::{DeviceId, Event, Feature, Hub, Message, Parked, RemoteStream, net};
 
@@ -68,6 +72,55 @@ impl Hub {
     }
 
     /// Tells the phone what it shows, then opens the video stream and pumps `link-session`'s socket into it.
+    /// Asks the phone for its microphone; `ask` gets the socket of its Opus units once the phone streams them.
+    pub(super) async fn open_mic(&mut self, id: DeviceId, ask: crate::mirror::Ask) {
+        let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
+            return drop(ask.reply.send(Err(Failure::NotConnected)));
+        };
+        if !self.phone_has(&id, MIC) {
+            return drop(ask.reply.send(Err(Failure::Refused("unsupported".to_owned()))));
+        }
+        if !self.shares(&id, Feature::Mic) {
+            return drop(ask.reply.send(Err(Failure::Refused("not-allowed".to_owned()))));
+        }
+        if self.mics.busy(&id) {
+            return drop(ask.reply.send(Err(Failure::Busy)));
+        }
+        log::info!("{id}: asking the phone for its microphone");
+        match session.send(Message::MicRequest).await {
+            Ok(()) => self.mics.wait(id, ask),
+            Err(error) => drop(ask.reply.send(Err(Failure::Failed(error.to_string())))),
+        }
+    }
+
+    pub(super) async fn tell_mic_stop(&self, id: &DeviceId) {
+        if let Some(session) = self.sessions.get(id)
+            && let Err(error) = session.send(Message::MicStop).await
+        {
+            log::info!("{id}: telling the phone to stop its microphone: {error}");
+        }
+    }
+
+    /// Refused when the phone plays no speaker streams or its switch is off; a new stream replaces the phone's last.
+    pub(super) async fn open_speaker(&mut self, id: DeviceId) -> Result<OwnedFd, Failure> {
+        let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
+        let session = session.ok_or(Failure::NotConnected)?;
+        if !self.phone_has(&id, SPEAKER) {
+            return Err(Failure::Refused("unsupported".to_owned()));
+        }
+        if !self.shares(&id, Feature::Speaker) {
+            return Err(Failure::Refused("not-allowed".to_owned()));
+        }
+        let failed = |error: &dyn std::fmt::Display| Failure::Failed(error.to_string());
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|error| failed(&error))?;
+        let sender = link_core::mirror::MirrorSender::open_sound(&session, Message::SpeakerData)
+            .await
+            .map_err(|error| failed(&error))?;
+        log::info!("{id}: playing desktop sound on the phone");
+        self.speakers.serve(id, ours.into(), sender).map_err(|error| failed(&error))?;
+        Ok(theirs.into())
+    }
+
     pub(super) async fn serve_remote(&mut self, id: DeviceId, stream: RemoteStream) -> Result<(), String> {
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or_else(|| format!("{id} is not connected"))?;

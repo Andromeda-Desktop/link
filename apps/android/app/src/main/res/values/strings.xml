@@ -137,6 +137,7 @@
     <string name="feature_notifications">Notifications</string>
     <string name="feature_media">Media</string>
     <string name="feature_ring">Find my phone</string>
+    <string name="feature_speaker">Play desktop sound</string>
     <string name="feature_calls">Calls</string>
     <string name="feature_messages">Contacts and texts</string>
     <string name="screen_control_off">Turn on control from the desktop</string>

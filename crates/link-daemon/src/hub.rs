@@ -96,6 +96,8 @@ pub struct DeviceInfo {
     pub storage: Option<(u64, u64)>,
     /// Percent, while connected.
     pub battery: Option<u8>,
+    /// Connected, plays `OpenSpeaker` streams, and its speaker switch is on.
+    pub speaker: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -297,6 +299,9 @@ enum Command {
     TakePhoto { id: DeviceId, reply: crate::messages::PhotoReply },
     OpenMirror { id: DeviceId, ask: crate::mirror::Ask },
     ServeRemote { id: DeviceId, stream: RemoteStream, reply: oneshot::Sender<Result<(), String>> },
+    OpenMic { id: DeviceId, ask: crate::mirror::Ask },
+    StopMic { id: DeviceId },
+    OpenSpeaker { id: DeviceId, reply: oneshot::Sender<Result<std::os::fd::OwnedFd, crate::mirror::Failure>> },
     StopRemote { id: DeviceId, reason: String },
     SetCommands { commands: Vec<StoredCommand>, reply: oneshot::Sender<bool> },
     SetCapabilities { owner: String, can: Vec<String> },
@@ -409,6 +414,10 @@ pub struct Hub {
     /// Phones whose presenter for this desktop is open.
     presenting: HashSet<DeviceId>,
     remotes: crate::remote::Remotes,
+    /// Each phone's pump of desktop sound for its speaker.
+    speakers: crate::remote::Remotes,
+    /// Phones' microphones: requests waiting for the phone, and the pumps to `OpenMic`'s sockets.
+    mics: crate::mirror::Mirrors,
     puncher: Puncher,
 }
 
@@ -541,6 +550,8 @@ impl Hub {
             mirrors: crate::mirror::Mirrors::default(),
             presenting: HashSet::new(),
             remotes: crate::remote::Remotes::default(),
+            speakers: crate::remote::Remotes::default(),
+            mics: crate::mirror::Mirrors::sound_only(),
             puncher,
         };
         hub.refresh();
@@ -562,6 +573,7 @@ impl Hub {
             let browse_deadline = self.browsing.deadline();
             let contacts_deadline = self.messages.deadline();
             let mirror_deadline = self.mirrors.deadline();
+            let mic_deadline = self.mics.deadline();
             let status_due = self.status_due;
             tokio::select! {
                 result = &mut shutdown => {
@@ -578,11 +590,24 @@ impl Hub {
                         self.tell_mirror_stop(&id, "nobody allowed it on the phone in time").await;
                     }
                 }
+                () = sleep_until(mic_deadline) => {
+                    for id in self.mics.expire() {
+                        self.tell_mic_stop(&id).await;
+                    }
+                }
+                Some(id) = self.mics.ended() => {
+                    log::info!("{id}: the microphone stream ended");
+                    self.tell_mic_stop(&id).await;
+                }
                 Some(id) = self.mirrors.ended() => {
                     self.tell_mirror_stop(&id, "the viewer closed").await;
                     self.publish();
                 }
                 Some(id) = self.remotes.ended() => log::debug!("{id}: a remote control stream ended"),
+                Some(id) = self.speakers.ended() => {
+                    log::info!("{id}: the speaker stream ended");
+                    self.speakers.stop(&id);
+                }
                 () = sleep_until(browse_deadline) => self.browsing.expire(),
                 () = sleep_until(contacts_deadline) => self.messages.expire(),
                 Some(step) = self.joining.join_next() => match step {
@@ -652,6 +677,12 @@ impl Hub {
             Command::Browse { id, request, reply } => self.browse(id, request, reply).await,
             Command::OpenMirror { id, ask } => self.open_mirror(id, ask).await,
             Command::ServeRemote { id, stream, reply } => drop(reply.send(self.serve_remote(id, stream).await)),
+            Command::OpenMic { id, ask } => self.open_mic(id, ask).await,
+            Command::StopMic { id } => {
+                self.mics.stopped(&id, Some("the desktop stopped the microphone".to_owned()));
+                self.tell_mic_stop(&id).await;
+            }
+            Command::OpenSpeaker { id, reply } => drop(reply.send(self.open_speaker(id).await)),
             Command::StopRemote { id, reason } => self.stop_remote(&id, &reason).await,
             Command::SetCommands { commands, reply } => drop(reply.send(self.set_commands(commands).await)),
             Command::SetCapabilities { owner, can } => {
@@ -797,6 +828,10 @@ impl Hub {
             SessionEvent::Message { from, message: Message::MirrorStarted(started) } => {
                 log::info!("{from}: the phone allowed mirroring at {}x{}", started.width, started.height);
             }
+            SessionEvent::Message { from, message: Message::MicStop } => {
+                log::info!("{from}: the phone stopped its microphone");
+                self.mics.stopped(&from, Some("the phone stopped its microphone".to_owned()));
+            }
             SessionEvent::Message { from, message: Message::MirrorStop(stop) } => {
                 log::info!("{from}: the phone stopped mirroring: {:?}", stop.reason);
                 self.mirrors.stopped(&from, stop.reason);
@@ -821,6 +856,7 @@ impl Hub {
             }
             SessionEvent::Message { from, message: Message::Sharing(sharing) } => {
                 self.set_sharing(from, &sharing.allows);
+                self.publish();
             }
             SessionEvent::Message { from, message: Message::Ping(ping) } if self.sessions.contains_key(&from) => {
                 self.emit(Event::Pinged { id: from, message: ping.message }).await;
@@ -1405,6 +1441,8 @@ impl Hub {
             self.browsing.disconnected(&id);
             self.messages.disconnected(&id);
             self.mirrors.fail(&id, crate::mirror::Failure::NotConnected);
+            self.mics.stopped(&id, Some("the phone disconnected".to_owned()));
+            self.speakers.stop(&id);
             if self.remotes.running(&id) {
                 self.remotes.stop(&id);
                 self.emit(Event::RemoteStopped { id: id.clone() }).await;
@@ -1528,6 +1566,9 @@ impl Hub {
                     link: self.link(&peer.id),
                     storage: self.storage.get(&peer.id).map(|storage| (storage.free, storage.total)),
                     battery: self.status.get(&peer.id).map(|status| status.battery),
+                    speaker: self.sessions.contains_key(&peer.id)
+                        && self.phone_has(&peer.id, link_core::proto::message::SPEAKER)
+                        && self.shares(&peer.id, Feature::Speaker),
                 }
             })
             .collect();

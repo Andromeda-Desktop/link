@@ -533,6 +533,22 @@ impl ClientActor {
             }
             return;
         }
+        if let TransferEvent::Speaker { from, stream } = &event
+            && !self.phone.desktops().iter().any(|peer| peer.id == *from && peer.grants.allows(Feature::Speaker))
+        {
+            log::info!("{from}: refusing sound for the speaker; its switch is off");
+            if let Some(mut receiver) = stream.take() {
+                receiver.stop();
+            }
+            return;
+        }
+        if let TransferEvent::Mic { from, stream } = &event {
+            log::info!("{from}: refusing a microphone stream; only desktops take one");
+            if let Some(mut receiver) = stream.take() {
+                receiver.stop();
+            }
+            return;
+        }
         if let TransferEvent::Busy { peer, busy } = &event {
             drop(self.slot.apply(slot::Event::Busy { peer: peer.clone(), busy: *busy }, Instant::now(), self.idle()));
             if *busy {

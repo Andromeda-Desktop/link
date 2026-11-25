@@ -666,6 +666,54 @@ impl Link {
         self.send(&device_id, Message::MirrorKeyframe).await
     }
 
+    /// Asks `link-session` to take the phone's microphone: it calls `OpenMic` on `MicRequested`.
+    async fn start_mic(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        device_id: String,
+    ) -> Result<(), LinkError> {
+        DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        Self::mic_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
+    }
+
+    /// Asks the phone for its microphone and returns the socket of its Opus units (48 kHz mono) in `OpenMirror`'s
+    /// framing, once the user allowed it on the phone (up to 60 s). Closing it, or `StopMic`, ends the microphone.
+    async fn open_mic(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
+        use crate::mirror::Failure;
+        let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        match self.hub.open_mic(id).await {
+            Ok(opened) => Ok(opened.stream.into()),
+            Err(Failure::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
+            Err(Failure::Busy) => Err(LinkError::Failed("that phone's microphone is already on".to_owned())),
+            Err(Failure::Refused(reason)) => Err(LinkError::Refused(reason)),
+            Err(Failure::TimedOut) => Err(LinkError::Failed("nobody allowed it on the phone in time".to_owned())),
+            Err(error) => Err(LinkError::Failed(format!("{error:?}"))),
+        }
+    }
+
+    async fn stop_mic(&self, device_id: String) -> Result<(), LinkError> {
+        let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        self.hub.stop_mic(id).await;
+        Ok(())
+    }
+
+    /// `StartMic` asked for the phone's microphone; `link-session` answers with `OpenMic`.
+    #[zbus(signal)]
+    async fn mic_requested(emitter: &SignalEmitter<'_>, device_id: &str) -> zbus::Result<()>;
+
+    /// Plays desktop sound on the phone's speaker: returns the socket that takes Opus units (48 kHz stereo) in
+    /// `OpenMirror`'s framing; closing it ends the sound. A new call replaces the phone's last stream.
+    async fn open_speaker(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
+        use crate::mirror::Failure;
+        let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        match self.hub.open_speaker(id).await {
+            Ok(socket) => Ok(socket.into()),
+            Err(Failure::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
+            Err(Failure::Refused(reason)) => Err(LinkError::Refused(reason)),
+            Err(error) => Err(LinkError::Failed(format!("{error:?}"))),
+        }
+    }
+
     /// Starts or stops ringing the phone.
     async fn ring(&self, device_id: String, on: bool) -> Result<(), LinkError> {
         self.send(&device_id, Message::Ring(Ring { on })).await
@@ -1190,6 +1238,7 @@ fn info_fields(info: &crate::hub::DeviceInfo) -> HashMap<String, zbus::Variant<'
         ("transport".to_owned(), info.transport.into()),
         ("link".to_owned(), info.link.into()),
         ("connected".to_owned(), (info.link == "live").into()),
+        ("speaker".to_owned(), info.speaker.into()),
     ]);
     if let Some((free, total)) = info.storage {
         fields.insert("storage_free".to_owned(), free.into());

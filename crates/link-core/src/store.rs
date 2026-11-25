@@ -88,10 +88,14 @@ pub enum Feature {
     /// The desktop joins the phone's Wi-Fi Direct group or hotspot without asking, even when that leaves its own Wi-Fi;
     /// a desktop-side switch, off after pairing.
     Nearby,
+    /// The desktop may play sound on the phone's speaker; a phone-side switch, on after pairing.
+    Speaker,
+    /// The desktop may ask for the phone's microphone; a phone-side switch, off after pairing.
+    Mic,
 }
 
 /// One switch per feature and paired device, all on after pairing but `browse`, `screen`, `messages`, `input`,
-/// `system`, `dnd_sync`, and `nearby`. A store from before a feature gets its value after pairing.
+/// `system`, `dnd_sync`, `nearby`, and `mic`. A store from before a feature gets its value after pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[expect(clippy::struct_excessive_bools, reason = "one independent switch per feature")]
@@ -110,6 +114,8 @@ pub struct Grants {
     pub system: bool,
     pub dnd_sync: bool,
     pub nearby: bool,
+    pub speaker: bool,
+    pub mic: bool,
 }
 
 impl Default for Grants {
@@ -129,12 +135,14 @@ impl Default for Grants {
             system: false,
             dnd_sync: false,
             nearby: false,
+            speaker: true,
+            mic: false,
         }
     }
 }
 
 impl Feature {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Clipboard,
         Self::Files,
         Self::Notifications,
@@ -149,6 +157,8 @@ impl Feature {
         Self::System,
         Self::DndSync,
         Self::Nearby,
+        Self::Speaker,
+        Self::Mic,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -167,6 +177,8 @@ impl Feature {
             Self::System => "system",
             Self::DndSync => "dnd-sync",
             Self::Nearby => "nearby",
+            Self::Speaker => "speaker",
+            Self::Mic => "mic",
         }
     }
 
@@ -232,6 +244,8 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
         | Message::Presenting(_) => Some(Feature::Input),
         Message::Commands(_) | Message::RunCommand(_) => Some(Feature::Commands),
         Message::SystemCommand(_) | Message::SystemResult(_) => Some(Feature::System),
+        Message::SpeakerData => Some(Feature::Speaker),
+        Message::MicRequest | Message::MicStop | Message::MicData => Some(Feature::Mic),
         _ => None,
     }
 }
@@ -262,6 +276,8 @@ impl Grants {
             Feature::System => self.system,
             Feature::DndSync => self.dnd_sync,
             Feature::Nearby => self.nearby,
+            Feature::Speaker => self.speaker,
+            Feature::Mic => self.mic,
         }
     }
 
@@ -281,6 +297,8 @@ impl Grants {
             Feature::System => &mut self.system,
             Feature::DndSync => &mut self.dnd_sync,
             Feature::Nearby => &mut self.nearby,
+            Feature::Speaker => &mut self.speaker,
+            Feature::Mic => &mut self.mic,
         };
         *flag = on;
     }

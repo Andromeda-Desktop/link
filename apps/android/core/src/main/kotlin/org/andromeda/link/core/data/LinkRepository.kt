@@ -63,6 +63,7 @@ import org.andromeda.link.core.domain.ScreenShape
 import org.andromeda.link.core.domain.ShareDelivery
 import org.andromeda.link.core.domain.ShareKind
 import org.andromeda.link.core.domain.Sharing
+import org.andromeda.link.core.domain.SpeakerStream
 import org.andromeda.link.core.domain.TransferEvent
 import org.andromeda.link.core.domain.TransferRecord
 import org.andromeda.link.core.domain.VideoCodec
@@ -150,6 +151,7 @@ class LinkRepository(
     private val _mirrorCommands = MutableSharedFlow<MirrorCommand>(extraBufferCapacity = MIRROR_BUFFER)
     private val _mirrorBlocked = MutableSharedFlow<String>(extraBufferCapacity = INCOMING_BUFFER)
     private val _remote = MutableSharedFlow<RemoteEvent>(extraBufferCapacity = MIRROR_BUFFER)
+    private val _speaker = MutableSharedFlow<SpeakerStream>(extraBufferCapacity = MIRROR_BUFFER)
     private val _commands = MutableStateFlow<Map<String, List<DesktopCommand>>>(emptyMap())
     private val _capabilities = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
     private val _desktopVolumes = MutableStateFlow<Map<String, DesktopVolume>>(emptyMap())
@@ -366,6 +368,9 @@ class LinkRepository(
     ): Result<Unit> = call { it.stopMirror(desktopId, reason) }
 
     override val remote: SharedFlow<RemoteEvent> = _remote.asSharedFlow()
+
+    /** Desktops' sound for this phone's speaker, one stream at a time per desktop. */
+    val speaker: SharedFlow<SpeakerStream> = _speaker.asSharedFlow()
 
     override suspend fun startRemote(
         desktopId: String,
@@ -768,6 +773,9 @@ class LinkRepository(
                         RemoteEvent.Stream(event.desktopId, event.width.toInt(), event.height.toInt(), FfiRemote(event.stream)),
                     )
                 is LinkEvent.RemoteStopped -> _remote.emit(RemoteEvent.Stopped(event.desktopId, event.reason))
+                is LinkEvent.SpeakerStream -> _speaker.emit(SpeakerStream(event.desktopId, FfiRemote(event.stream)))
+                // The microphone (B5b) has no Android side yet: its switch stays off, so linkd never sends these.
+                is LinkEvent.MicRequested, is LinkEvent.MicStopped -> Unit
                 is LinkEvent.CommandsChanged ->
                     _commands.update {
                         it + (event.desktopId to event.commands.map { command -> DesktopCommand(command.id, command.name) })
@@ -927,6 +935,7 @@ private fun FfiDesktop.toDomain() =
                 sharing.browse,
                 sharing.screen,
                 sharing.messages,
+                sharing.speaker,
             ),
         bluetoothAddress = bluetoothAddress,
         btPairing = btPairing,
@@ -1097,6 +1106,7 @@ private fun Feature.toFfi(): FfiFeature =
         Feature.Browse -> FfiFeature.BROWSE
         Feature.Screen -> FfiFeature.SCREEN
         Feature.Messages -> FfiFeature.MESSAGES
+        Feature.Speaker -> FfiFeature.SPEAKER
     }
 
 private fun PhoneNotification.toFfi() =

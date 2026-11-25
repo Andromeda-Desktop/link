@@ -41,6 +41,12 @@ interface RemoteScreens {
     suspend fun stopRemote(desktopId: String): Result<Unit>
 }
 
+/** A desktop's sound for this phone's speaker: Opus units (48 kHz stereo, [RemoteUnit.audio]) until it ends. */
+class SpeakerStream(
+    val desktopId: String,
+    val sound: RemoteVideo,
+)
+
 /** What a desktop answers this phone's request for its screen. */
 sealed interface RemoteEvent {
     val desktopId: String

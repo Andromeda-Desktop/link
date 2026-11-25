@@ -75,6 +75,26 @@ impl MirrorSender {
         Self::start(session.connection().clone(), session.tap().cloned(), width, height, codec, streams).await
     }
 
+    /// Opens a stream of sound only, Opus units under `header` (`speaker-data` or `mic-data`), at the mirror's
+    /// priority.
+    pub async fn open_sound(session: &SessionHandle, header: Message) -> Result<Self, Error> {
+        let connection = session.connection().clone();
+        let tap = session.tap().cloned();
+        let main = open_stream(&connection, tap.as_ref(), header).await?;
+        main.set_priority(MIRROR_PRIORITY);
+        Ok(Self {
+            codec: None,
+            connection,
+            tap,
+            width: 0,
+            height: 0,
+            main: Mutex::new(main),
+            video: None,
+            keys: watch::Sender::new(0),
+            finished: AtomicBool::new(false),
+        })
+    }
+
     async fn start(
         connection: Connection,
         tap: Option<Tap>,
@@ -84,7 +104,7 @@ impl MirrorSender {
         streams: bool,
     ) -> Result<Self, Error> {
         let header = MirrorData { width, height, gop: None, codec };
-        let main = open_stream(&connection, tap.as_ref(), header).await?;
+        let main = open_stream(&connection, tap.as_ref(), Message::MirrorData(header)).await?;
         if streams {
             main.set_priority(MIRROR_PRIORITY);
         }
@@ -128,7 +148,7 @@ impl MirrorSender {
             }
             video.gop = seq;
             let header = MirrorData { width: self.width, height: self.height, gop: Some(seq), codec: self.codec };
-            let stream = open_stream(&self.connection, self.tap.as_ref(), header).await?;
+            let stream = open_stream(&self.connection, self.tap.as_ref(), Message::MirrorData(header)).await?;
             stream.set_priority(i32::try_from(seq).unwrap_or(MIRROR_PRIORITY - 1).min(MIRROR_PRIORITY - 1));
             video.stream = Some(stream);
         }
@@ -162,9 +182,9 @@ impl MirrorSender {
     }
 }
 
-async fn open_stream(connection: &Connection, tap: Option<&Tap>, header: MirrorData) -> Result<SendStream, Error> {
+async fn open_stream(connection: &Connection, tap: Option<&Tap>, header: Message) -> Result<SendStream, Error> {
     let mut send = connection.open_uni().await?;
-    write_frame(&mut send, Message::MirrorData(header), tap).await?;
+    write_frame(&mut send, header, tap).await?;
     Ok(send)
 }
 
@@ -281,6 +301,11 @@ impl MirrorReceiver {
             ended: false,
         };
         (receiver, MirrorParts(tx))
+    }
+
+    /// The end of a `speaker-data` or `mic-data` stream: sound only, so no video streams join it.
+    pub(crate) fn sound(recv: RecvStream) -> Self {
+        Self::new(recv, &MirrorData { width: 0, height: 0, gop: None, codec: None }).0
     }
 
     /// The next unit, or None once the phone finished the first stream and the video stream's tail is read.
