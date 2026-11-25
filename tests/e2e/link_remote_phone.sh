@@ -50,7 +50,7 @@ chmod +x "$RUNTIME/chooser"
 printf '[screencast]\nchooser_cmd = "%s"\n' "$RUNTIME/chooser" > "$RUNTIME/home/.config/xdg-desktop-portal-andromeda/config.toml"
 private_bus system
 env -u WAYLAND_DISPLAY -u DISPLAY XDG_RUNTIME_DIR="$RUNTIME" WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-  WLR_HEADLESS_OUTPUTS=2 "$ANDROMEDA" -c "$RUNTIME/andromeda.toml" > "$OUT/andromeda.log" 2>&1 &
+  WLR_HEADLESS_OUTPUTS=2 "$ANDROMEDA" -c "$RUNTIME/andromeda.toml" --trust-binary "$DESKTOP/" --trust-binary /usr/bin/ > "$OUT/andromeda.log" 2>&1 &
 wait_for 5 "andromeda did not start" test -S "$RUNTIME/wayland-0"
 "${SESSION[@]}" "$NOCTALIA" > "$OUT/noctalia.log" 2>&1 &
 wait_for 10 "the shell did not start" eval '"${SESSION[@]}" "$NOCTALIA" msg settings-close > /dev/null 2>&1'
