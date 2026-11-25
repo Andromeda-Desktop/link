@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds every Link package for a release into target/dist: the Android APK (signed when
-# ~/.config/andromeda-link/signing.env exists), the macOS app zip, the Ubuntu 24.04 .deb and Fedora RPM (each built in
+# ~/.config/andromeda-link/signing.env exists), the Ubuntu 24.04 .deb and Fedora RPM (each built in
 # its distrobox, ubuntu-link and fedora-link, so they link the target's libraries), and the Flatpak bundle of the app.
-# Usage: release.sh [android macos deb rpm]; no argument builds them all.
+# Usage: release.sh [android deb rpm]; no argument builds them all.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/target/dist
@@ -28,13 +28,6 @@ android() {
   fi
 }
 
-macos() {
-  tools/macos/build.sh
-  rm -f "$OUT/Andromeda-Link-$VERSION-macos-arm64.zip"
-  # -y keeps the frameworks' symlinks, which the app's signature covers.
-  (cd target/macos && zip -qry "$OUT/Andromeda-Link-$VERSION-macos-arm64.zip" "Andromeda Link.app")
-}
-
 deb() {
   local target=$HOME/.cache/ubuntu-link/target
   distrobox enter ubuntu-link -- bash -c "
@@ -55,7 +48,7 @@ rpm() {
       --define 'linkversion 0~$VERSION' --define '_rpmdir $OUT'"
 }
 
-for kind in "${@:-android macos deb rpm}"; do
+for kind in "${@:-android deb rpm}"; do
   for step in $kind; do
     echo "== $step"
     "$step"

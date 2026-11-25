@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Browsing writes from the Qt app's Files page against the emulator, through a private andromeda-linkd. Proves:
-# 1. With All files access and the browse switch on, Send files on /Storage/Download copies a 150 KB file (4 writes)
-#    onto the phone, byte for byte, and the page lists it.
-# 2. Delete on that file removes it from the phone, and the page no longer lists it.
-# Needs ANDROID_SERIAL (the emulator), the debug APKs, and the app built (cargo build -p link-desk). Run under flock
-# /tmp/link-emulator.lock. Writes steps.txt, app.log, linkd.log, and files-*.png to $OUT (default
-# ./artifacts/link-files-phone).
+# Browsing writes through Link1 against the emulator, through a private andromeda-linkd. Proves:
+# 1. With All files access and the browse switch on, WriteFile copies a 150 KB file (4 writes of at most 48 KiB) into
+#    /Storage/Download on the phone, byte for byte, and ListFiles lists it with its size.
+# 2. DeleteFile removes it from the phone, and ListFiles no longer lists it.
+# Needs ANDROID_SERIAL (the emulator) and the debug APKs. Run under flock /tmp/link-emulator.lock. Writes steps.txt and
+# linkd.log to $OUT (default ./artifacts/link-files-phone).
 set -euo pipefail
 OUT=${OUT:-$(pwd)/artifacts/link-files-phone}
 source "$(dirname "$0")/link_phone_lib.sh"
@@ -19,7 +18,6 @@ trap 'adb shell rm -f /sdcard/Download/$NAME; forget_phone; kill $(jobs -p) 2>/d
 step() { printf '%s\n' "$*" | tee -a "$OUT/steps.txt"; }
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no phone at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
-[[ -x $BIN/andromeda-link ]] || fail "no $BIN/andromeda-link; cargo build -p link-desk"
 head -c 150000 /dev/urandom > "$RUNTIME/$NAME"
 
 private_bus
@@ -33,25 +31,33 @@ storage() { link ListFiles "'$ID'" "'/'" 2>/dev/null | grep -q Storage; }
 wait_for 30 "the phone's roots never showed Storage" storage
 link SetGrant "$ID" browse true > /dev/null
 
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=rhi QT_FORCE_STDERR_LOGGING=1 QML_XHR_ALLOW_FILE_READ=1 \
-  "$BIN/andromeda-link" --page files "$OUT" cd /Storage/Download upload "$RUNTIME/$NAME" await "$RUNTIME/checked" \
-  shot files-copied remove "/Storage/Download/$NAME" > "$OUT/app.log" 2>&1 &
-page_state() { grep -o 'PAGE state {.*}' "$OUT/app.log" | tail -1 | cut -d' ' -f3-; }
-listed() { page_state | python3 -c 'import json, sys; s = json.load(sys.stdin); sys.exit(sys.argv[1] not in s["names"])' "$NAME" 2>/dev/null; }
-wait_for 60 "the page never copied the file: $(tail -3 "$OUT/app.log")" grep -q "PAGE upload true" "$OUT/app.log"
+# upload LOCAL PHONE_PATH: WriteFile in chunks of 48 KiB; prints the number of writes and the size after the last one.
+upload() {
+  python3 -I -c '
+import sys
+import dbus
+device, local, path = sys.argv[1:]
+link = dbus.Interface(dbus.SessionBus().get_object("org.andromeda.Link1", "/org/andromeda/Link1"), "org.andromeda.Link1")
+data, writes, size = open(local, "rb").read(), 0, 0
+for offset in range(0, len(data), 48 * 1024):
+    size = link.WriteFile(device, path, dbus.UInt64(offset), dbus.ByteArray(data[offset:offset + 48 * 1024]))
+    writes += 1
+print(writes, int(size))' "$ID" "$1" "$2"
+}
+listed() { link ListFiles "'$ID'" "'/Storage/Download'" | grep -q "'$NAME', false, \(uint64 \)\?150000,"; }
 
+COPY=$(upload "$RUNTIME/$NAME" "/Storage/Download/$NAME") || fail "WriteFile refused the copy"
+[[ $COPY == "4 150000" ]] || fail "WriteFile: '$COPY' (writes, size), not '4 150000'"
 on_phone() { [[ $(adb shell "md5sum /sdcard/Download/$NAME 2>/dev/null" | cut -d' ' -f1) == $(md5sum < "$RUNTIME/$NAME" | cut -d' ' -f1) ]]; }
 wait_for 60 "the copy never reached the phone whole" on_phone
-step "$NAME (150000 bytes) is on the phone, same md5"
-wait_for 30 "the page never listed $NAME: $(page_state)" listed
-step "the Files page lists it in $(page_state | python3 -c 'import json, sys; print(json.load(sys.stdin)["path"])')"
-echo checked > "$RUNTIME/checked"
+step "$NAME (150000 bytes, 4 writes) is on the phone, same md5"
+wait_for 30 "ListFiles never listed $NAME: $(link ListFiles "'$ID'" "'/Storage/Download'")" listed
+step "ListFiles lists it in /Storage/Download with its size"
 
-wait_for 30 "the page never deleted the file: $(tail -3 "$OUT/app.log")" grep -q "PAGE remove true" "$OUT/app.log"
+link DeleteFile "'$ID'" "'/Storage/Download/$NAME'" > /dev/null || fail "DeleteFile refused"
 gone() { ! adb shell "ls /sdcard/Download/$NAME" > /dev/null 2>&1; }
 wait_for 30 "$NAME is still on the phone" gone
-step "Delete removed it from the phone"
-wait_for 30 "the page still lists $NAME: $(page_state)" eval '! listed'
-step "the Files page no longer lists it"
-[[ -s $OUT/files-light.png && -s $OUT/files-copied-light.png ]] || fail "no files-light.png or files-copied-light.png"
+step "DeleteFile removed it from the phone"
+wait_for 30 "ListFiles still lists $NAME" eval '! listed'
+step "ListFiles no longer lists it"
 echo PASS

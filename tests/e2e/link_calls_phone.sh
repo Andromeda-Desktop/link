@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# The Calls page against the emulator's call log, through a private andromeda-linkd. Proves:
+# Link1 Calls and Dial against the emulator's call log, through a private andromeda-linkd. Proves:
 # 1. Calls seeded into the emulator's call log (a missed, an incoming, an outgoing) reach D-Bus Calls with their kind,
-#    and the Qt app's Calls page lists them (its "PAGE state" line), with light and dark shots.
-# 2. Dial from the page places the call on the emulator (its call state goes off-hook); after it ends, the log's new
-#    outgoing call reaches the page through calls-changed.
-# Dial only on the emulator: it places a real call on a phone. Needs ANDROID_SERIAL=emulator-*, the debug APKs, and the
-# app built (cargo build -p link-desk). Run under flock /tmp/link-emulator.lock. Writes steps.txt, app.log, linkd.log,
-# and calls-light.png / calls-dark.png to $OUT (default ./artifacts/link-calls-phone).
+#    newest first.
+# 2. Link1 Dial places the call on the emulator (its call state goes off-hook); after it ends, the log's new outgoing
+#    call reaches D-Bus Calls through calls-changed.
+# Dial only on the emulator: it places a real call on a phone. Needs ANDROID_SERIAL=emulator-* and the debug APKs. Run
+# under flock /tmp/link-emulator.lock. Writes steps.txt and linkd.log to $OUT (default ./artifacts/link-calls-phone).
 set -euo pipefail
 OUT=${OUT:-$(pwd)/artifacts/link-calls-phone}
 source "$(dirname "$0")/link_phone_lib.sh"
@@ -22,7 +21,6 @@ trap 'adb shell input keyevent KEYCODE_ENDCALL; unseed; forget_phone; kill $(job
 step() { printf '%s\n' "$*" | tee -a "$OUT/steps.txt"; }
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no emulator at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
-[[ -x $BIN/andromeda-link ]] || fail "no $BIN/andromeda-link; cargo build -p link-desk"
 
 # seed NUMBER NAME TYPE MINUTES_AGO DURATION: one call in the log; TYPE 1 incoming, 2 outgoing, 3 missed.
 seed() {
@@ -46,25 +44,17 @@ for want in "'5550141', 'E2E Missed'.*'missed'" "'5550142', 'E2E Incoming'.*'inc
 done
 step "D-Bus Calls holds the 3 seeded calls with their kinds"
 
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=rhi QT_FORCE_STDERR_LOGGING=1 \
-  "$BIN/andromeda-link" --page calls "$OUT" dial "$DIALED" > "$OUT/app.log" 2>&1 &
-page_state() { grep -o 'PAGE state {.*}' "$OUT/app.log" | tail -1 | cut -d' ' -f3-; }
-wait_for 60 "the Calls page never got ready: $(tail -3 "$OUT/app.log")" grep -q "PAGE saved" "$OUT/app.log"
-wait_for 5 "no page state" eval '[[ -n $(page_state) ]]'
-python3 -c 'import json, sys
-s = json.loads(sys.argv[1])
-assert s["ready"] and s["refused"] == "", s
-seeded = [(n, k) for n, k in zip(s["numbers"], s["kinds"]) if n.startswith("555014")]
-assert seeded == [("5550141", "missed"), ("5550142", "incoming"), ("5550143", "outgoing")], seeded' "$(page_state)" || fail "Calls page state: $(page_state)"
-step "the Calls page lists them newest first: $(page_state)"
-[[ -s $OUT/calls-light.png && -s $OUT/calls-dark.png ]] || fail "no calls-light.png or calls-dark.png"
+# before NEWER OLDER: the phone's list holds NEWER ahead of OLDER (Calls is newest first).
+before() { python3 -I -c 'import sys; s = sys.stdin.read(); a, b = s.find(sys.argv[1]), s.find(sys.argv[2]); sys.exit(not 0 <= a < b)' "$1" "$2"; }
+calls | before 5550141 5550142 && calls | before 5550142 5550143 || fail "D-Bus Calls not newest first: $(calls)"
+step "D-Bus Calls lists them newest first"
 
-wait_for 10 "the page did not dial: $(tail -3 "$OUT/app.log")" grep -q "PAGE dial true" "$OUT/app.log"
+link Dial "$ID" "$DIALED" > /dev/null
 offhook() { adb shell dumpsys telephony.registry | grep -q "mCallState=2"; }
 wait_for 20 "the emulator never went off-hook for $DIALED" offhook
 step "the emulator placed the call to $DIALED"
 adb shell input keyevent KEYCODE_ENDCALL
-wait_for 30 "the page never listed the outgoing call to $DIALED: $(page_state)" eval \
-  'page_state | python3 -c "import json, sys; s = json.load(sys.stdin); assert s[\"numbers\"][0] == \"$DIALED\" and s[\"kinds\"][0] == \"outgoing\"" 2>/dev/null'
-step "the ended call reached the page: $(page_state)"
+wait_for 30 "D-Bus Calls never listed the outgoing call to $DIALED: $(calls)" eval \
+  'calls | grep -q "'"'"'$DIALED'"'"'.*'"'"'outgoing'"'"'" && calls | before "$DIALED" 5550141'
+step "the ended call reached D-Bus Calls through calls-changed"
 echo PASS

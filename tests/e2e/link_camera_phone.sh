@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Take a photo from the Qt app's Photos page with the emulator's camera, through a private andromeda-linkd. Proves:
-# 1. The page's camera button opens the phone's camera (Link may draw over apps, so it starts at once).
-# 2. After the shot (KEYCODE_CAMERA, then the camera's Done), the JPEG lands in Pictures/Phone on this computer and
-#    is handed to the desktop's opener (offscreen Qt has none; it logs the openDocument request instead).
-# Needs ANDROID_SERIAL (the emulator's virtual camera, or the OnePlus camera), the debug APKs, and the app built (cargo build -p
-# link-desk). Run under flock /tmp/link-emulator.lock. Writes steps.txt, app.log, linkd.log, ui-*.xml, the photo, and
-# photos-light.png / photos-dark.png to $OUT (default ./artifacts/link-camera-phone).
+# Take a photo through Link1 TakePhoto with the emulator's camera, through a private andromeda-linkd. Proves:
+# 1. TakePhoto opens the phone's camera (Link may draw over apps, so it starts at once).
+# 2. After the shot (KEYCODE_CAMERA, then the camera's Done), TakePhoto returns the photo's path, and ReadFile on it
+#    gives a JPEG, whole (its size matches StatFile).
+# Needs ANDROID_SERIAL (the emulator's virtual camera, or the OnePlus camera) and the debug APKs. Run under flock
+# /tmp/link-emulator.lock. Writes steps.txt, linkd.log, take.log, ui-*.xml and photo.jpg to $OUT (default
+# ./artifacts/link-camera-phone).
 set -euo pipefail
 OUT=${OUT:-$(pwd)/artifacts/link-camera-phone}
 source "$(dirname "$0")/link_phone_lib.sh"
@@ -19,11 +19,6 @@ trap 'adb shell "rm -f /sdcard/Pictures/Link/Link_*.jpg"; scan; adb shell input 
 step() { printf '%s\n' "$*" | tee -a "$OUT/steps.txt"; }
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no phone at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
-[[ -x $BIN/andromeda-link ]] || fail "no $BIN/andromeda-link; cargo build -p link-desk"
-
-# Pictures in the run's folder.
-mkdir -p "$RUNTIME/config" "$RUNTIME/pictures"
-printf 'XDG_PICTURES_DIR="%s"\n' "$RUNTIME/pictures" > "$RUNTIME/config/user-dirs.dirs"
 
 private_bus
 start_linkd
@@ -33,16 +28,19 @@ adb shell appops set "$PACKAGE" SYSTEM_ALERT_WINDOW allow
 pair_phone "$HOST:$PORT"
 phone_switches browse
 link SetGrant "$ID" browse true > /dev/null
-# The page is ready with at least one photo on the phone.
-magick -size 64x64 xc:teal "$RUNTIME/seed.jpg"
-adb shell mkdir -p /sdcard/Pictures/Link
-adb push -q "$RUNTIME/seed.jpg" /sdcard/Pictures/Link/Link_seed.jpg
-scan
-
-XDG_CONFIG_HOME=$RUNTIME/config \
-  QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=rhi QT_FORCE_STDERR_LOGGING=1 \
-  "$BIN/andromeda-link" --page photos "$OUT" camera now > "$OUT/app.log" 2>&1 &
-wait_for 60 "the page never asked for a photo: $(tail -3 "$OUT/app.log")" grep -q "PAGE camera true" "$OUT/app.log"
+# TakePhoto, then ReadFile to its end into $OUT/photo.jpg; take.log gets the phone path and the StatFile size.
+python3 -I -c '
+import sys
+import dbus
+device, out = sys.argv[1:]
+link = dbus.Interface(dbus.SessionBus().get_object("org.andromeda.Link1", "/org/andromeda/Link1"), "org.andromeda.Link1")
+path = link.TakePhoto(device, timeout=300)
+print("taken", path, flush=True)
+size = int(link.StatFile(device, path)[2])
+with open(out, "wb") as f:
+    while chunk := bytes(link.ReadFile(device, path, dbus.UInt64(f.tell()), dbus.UInt32(1024 * 1024))):
+        f.write(chunk)
+print("read", size, flush=True)' "$ID" "$OUT/photo.jpg" > "$OUT/take.log" 2>&1 &
 camera_up() { adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" | grep -qi camera; }
 wait_for 30 "the camera never opened" camera_up
 step "the camera opened on the phone"
@@ -72,11 +70,9 @@ done
 [[ -n $shot ]] || fail "the camera never showed its shutter"
 step "took the shot and tapped Done"
 
-photo() { ls "$RUNTIME/pictures/Phone/"*.jpg 2>/dev/null | head -1; }
-wait_for 60 "no photo in Pictures/Phone: $(tail -3 "$OUT/app.log")" eval '[[ -n $(photo) ]]'
-file -b "$(photo)" | grep -q "JPEG image" || fail "$(photo) is not a JPEG: $(file -b "$(photo)")"
-cp "$(photo)" "$OUT/"
-step "$(basename "$(photo)") arrived in Pictures/Phone, $(stat -c %s "$(photo)") bytes"
-wait_for 20 "the app never opened the photo: $(tail -3 "$OUT/app.log")" grep -qF "openDocument() for 'file://$(photo)'" "$OUT/app.log"
-step "the app opened it"
+wait_for 60 "TakePhoto never returned a photo: $(tail -3 "$OUT/take.log")" grep -q '^read ' "$OUT/take.log"
+SIZE=$(sed -n 's/^read //p' "$OUT/take.log")
+(( SIZE > 0 )) && [[ $(stat -c %s "$OUT/photo.jpg") == "$SIZE" ]] || fail "ReadFile gave $(stat -c %s "$OUT/photo.jpg") bytes, StatFile says $SIZE"
+file -b "$OUT/photo.jpg" | grep -q "JPEG image" || fail "photo.jpg is not a JPEG: $(file -b "$OUT/photo.jpg")"
+step "TakePhoto gave $(sed -n 's/^taken //p' "$OUT/take.log"); ReadFile read it whole, $SIZE bytes of JPEG"
 echo PASS
