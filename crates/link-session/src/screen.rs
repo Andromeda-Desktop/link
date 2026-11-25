@@ -296,6 +296,34 @@ impl Drop for Stream {
 }
 
 impl Stream {
+    /// Runs `chain` (convert, scale, encode) on `node` until the first frame; the pipeline stops when it fails.
+    fn first_frame(
+        remote: &OwnedFd,
+        node: u32,
+        chain: &str,
+    ) -> anyhow::Result<(gst::Pipeline, gst_app::AppSink, gst::Sample)> {
+        // The pipeline owns the duplicate descriptor and closes it.
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(rustix::io::dup(remote)?);
+        let video = pipeline(&format!(
+            "pipewiresrc fd={fd} path={node} do-timestamp=true always-copy=true keepalive-time={KEEPALIVE_MS} \
+             ! queue leaky=downstream max-size-buffers=2 ! {chain} \
+             ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au \
+             ! appsink name=sink sync=false"
+        ))?;
+        let sink = appsink(&video)?;
+        let first = video.set_state(gst::State::Playing).map_err(Into::into).and_then(|_| {
+            sink.try_pull_sample(gst::ClockTime::from_mseconds(u64::try_from(FIRST_FRAME.as_millis())?))
+                .context("no frame from the screen in 5 s")
+        });
+        match first {
+            Ok(first) => Ok((video, sink, first)),
+            Err(error) => {
+                video.set_state(gst::State::Null).unwrap_or(gst::StateChangeSuccess::Success);
+                Err(error)
+            }
+        }
+    }
+
     fn sent(&self) -> (u64, u64) {
         (self.counts.0.load(Ordering::Relaxed), self.counts.1.load(Ordering::Relaxed))
     }
@@ -312,29 +340,36 @@ impl Stream {
         gst::init()?;
         let (ours, theirs) = UnixStream::pair()?;
         let writer = Arc::new(Mutex::new(ours));
-        let fd = rustix::io::dup(remote)?;
         let (width, height) = fit(rect.2, rect.3);
+        // VA-API does the scaling and encoding on the GPU when the driver has them; software is the fallback.
+        let mut chains = Vec::new();
+        if ["vapostproc", "vah264enc"].iter().all(|name| gst::ElementFactory::find(name).is_some()) {
+            chains.push(format!(
+                "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width={width},height={height} \
+                 ! vah264enc b-frames=0 key-int-max=60 bitrate=8000 rate-control=cbr ! video/x-h264,profile=main"
+            ));
+        }
         let encoder = if gst::ElementFactory::find("x264enc").is_some() {
             "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=60 bitrate=8000 \
              ! video/x-h264,profile=constrained-baseline"
         } else {
             "openh264enc complexity=low gop-size=60 bitrate=8000000"
         };
-        // The pipeline owns the duplicate descriptor and closes it.
-        let video = pipeline(&format!(
-            "pipewiresrc fd={} path={node} do-timestamp=true always-copy=true keepalive-time={KEEPALIVE_MS} \
-             ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! videoscale \
-             ! video/x-raw,format=I420,width={width},height={height},pixel-aspect-ratio=1/1 ! {encoder} \
-             ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink sync=false",
-            std::os::fd::IntoRawFd::into_raw_fd(fd)
-        ))?;
+        chains.push(format!(
+            "videoconvert ! videoscale ! video/x-raw,format=I420,width={width},height={height},pixel-aspect-ratio=1/1 \
+             ! {encoder}"
+        ));
+        let mut started = Err(anyhow::anyhow!("no video pipeline"));
+        for chain in chains {
+            started = Self::first_frame(remote, node, &chain);
+            if let Err(error) = &started {
+                log::info!("remote control video with `{chain}`: {error:#}");
+            } else {
+                break;
+            }
+        }
+        let (video, sink, first) = started?;
         watch(&video, generation, ended.clone());
-        let sink = appsink(&video)?;
-        video.set_state(gst::State::Playing)?;
-        let first = sink
-            .try_pull_sample(gst::ClockTime::from_mseconds(u64::try_from(FIRST_FRAME.as_millis())?))
-            .context("no frame from the screen in 5 s")?;
         let caps = first.caps().context("a frame without caps")?;
         let structure = caps.structure(0).context("empty caps")?;
         let (width, height) =
