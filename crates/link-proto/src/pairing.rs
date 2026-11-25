@@ -3,6 +3,7 @@
 
 use ring::{hkdf, hmac};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
+use zeroize::Zeroizing;
 
 use crate::message::{PairConfirm, PairMethod, PairSpake};
 
@@ -12,12 +13,12 @@ pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-andromeda-link-pair";
 pub const EXPORTER_LEN: usize = 32;
 const TRANSCRIPT_PREFIX: &[u8] = b"andromeda-link-pair-v1";
 
-/// A pairing secret: the ASCII digits of the typed code, or the raw bytes of the QR secret.
-pub struct Secret(Vec<u8>);
+/// A pairing secret: the ASCII digits of the typed code, or the raw bytes of the QR secret. Wiped on drop.
+pub struct Secret(Zeroizing<Vec<u8>>);
 
 impl Secret {
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self(Zeroizing::new(bytes))
     }
 }
 

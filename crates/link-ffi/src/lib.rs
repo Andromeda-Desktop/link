@@ -942,14 +942,20 @@ pub enum PhotoOutcome {
     Failed,
 }
 
-/// A local-only hotspot's credentials, from [`PhoneHotspot::start`].
-#[derive(Debug, Clone, uniffi::Record)]
+/// A local-only hotspot's credentials, from [`PhoneHotspot::start`]. `Debug` leaves the passphrase out.
+#[derive(Clone, uniffi::Record)]
 pub struct HotspotCredentials {
     pub ssid: String,
     pub passphrase: String,
     /// A Wi-Fi Direct group's frequency.
     #[uniffi(default = None)]
     pub mhz: Option<u32>,
+}
+
+impl std::fmt::Debug for HotspotCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HotspotCredentials").field("ssid", &self.ssid).field("mhz", &self.mhz).finish_non_exhaustive()
+    }
 }
 
 /// How the app starts and stops a local-only hotspot when a transfer is too large for Bluetooth. `start` blocks until

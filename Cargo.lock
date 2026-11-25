@@ -2037,6 +2037,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "zbus 6.1.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -2141,6 +2142,7 @@ dependencies = [
  "serde_bytes",
  "spake2",
  "thiserror 2.0.21",
+ "zeroize",
 ]
 
 [[package]]

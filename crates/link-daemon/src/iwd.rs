@@ -25,7 +25,7 @@ pub struct Left {
 
 /// Answers iwd's passphrase request for the hotspot while `Connect` runs.
 struct Agent {
-    passphrase: String,
+    passphrase: zeroize::Zeroizing<String>,
 }
 
 #[zbus::interface(name = "net.connman.iwd.Agent")]
@@ -39,7 +39,7 @@ impl Agent {
 
     fn request_passphrase(&self, network: OwnedObjectPath) -> String {
         log::debug!("iwd asks the passphrase of {network}");
-        self.passphrase.clone()
+        self.passphrase.to_string()
     }
 
     fn cancel(&self, reason: String) {
@@ -61,7 +61,7 @@ pub async fn join(
     let before = ipv4_addresses(&interface);
 
     // One agent path: a second join at once would answer iwd with the first join's passphrase.
-    let agent = Agent { passphrase: passphrase.to_owned() };
+    let agent = Agent { passphrase: zeroize::Zeroizing::new(passphrase.to_owned()) };
     if bus.object_server().at(AGENT_PATH, agent).await.map_err(text)?.is_some() {
         return Err("another hotspot join is in progress".to_owned());
     }
@@ -192,7 +192,10 @@ mod tests {
         assert_eq!(calls.next().expect("a line").expect("ready"), "ready");
 
         let bus = zbus::connection::Builder::address(address.as_str()).build().await.expect("bus");
-        bus.object_server().at(AGENT_PATH, Agent { passphrase: "first".to_owned() }).await.expect("first agent");
+        bus.object_server()
+            .at(AGENT_PATH, Agent { passphrase: zeroize::Zeroizing::new("first".to_owned()) })
+            .await
+            .expect("first agent");
         let joined = join(&bus, "Phone-AP", "second", Duration::from_secs(5), Duration::from_secs(1)).await;
         for child in [&mut mock, &mut daemon] {
             drop(child.kill());

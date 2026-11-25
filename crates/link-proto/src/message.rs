@@ -1,7 +1,8 @@
 use std::fmt::{self, Write as _};
 
 use ciborium::Value;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroizing;
 
 use crate::pairing::{MAC_LEN, SPAKE_MSG_LEN};
 
@@ -304,12 +305,54 @@ pub struct Ringing {
     pub on: bool,
 }
 
+/// A Wi-Fi passphrase: wiped on drop, and `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Passphrase(Zeroizing<String>);
+
+impl Passphrase {
+    pub fn new(text: String) -> Self {
+        Self(Zeroizing::new(text))
+    }
+}
+
+impl From<String> for Passphrase {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+impl std::ops::Deref for Passphrase {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Passphrase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Passphrase(..)")
+    }
+}
+
+impl Serialize for Passphrase {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Passphrase {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
 /// The phone's own hotspot, offered over Bluetooth so the desktop can join it for full speed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hotspot {
     pub ssid: String,
-    pub passphrase: String,
+    pub passphrase: Passphrase,
     /// The group's frequency, so the desktop probes that one channel instead of scanning all of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mhz: Option<u32>,
