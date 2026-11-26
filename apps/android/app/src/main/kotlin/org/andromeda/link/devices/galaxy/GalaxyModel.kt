@@ -25,10 +25,9 @@ const val POINT_FLOATS = 8
 enum class GalaxyTier(
     val stars: Int,
     val fieldOctaves: Int,
-    val renderScale: Float,
 ) {
-    Full(90_000, 4, 1f),
-    Low(25_000, 1, 0.75f),
+    Full(45_000, 4),
+    Low(25_000, 1),
 }
 
 /**

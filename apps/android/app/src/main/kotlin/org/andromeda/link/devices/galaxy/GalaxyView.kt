@@ -1,7 +1,10 @@
 package org.andromeda.link.devices.galaxy
 
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
@@ -16,6 +19,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import android.view.TextureView
+import androidx.core.content.ContextCompat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.PI
@@ -51,7 +55,7 @@ object GalaxyCache {
 
 /**
  * The Home galaxy on its own GL thread. It draws only on demand (a gesture, a fly, a size or theme change), so an
- * idle Home costs no frames. Light adds up in an HDR target at [GalaxyTier.renderScale], then one pass tone-maps it.
+ * idle Home costs no frames. Soft light adds up in a small HDR target and is tone-mapped there; stars draw on the screen at full resolution, screen-blended.
  */
 class GalaxyView(
     context: Context,
@@ -75,6 +79,57 @@ class GalaxyView(
     init {
         surfaceTextureListener = this
         isOpaque = true
+    }
+
+    // Debug builds: `adb shell am broadcast -a org.andromeda.link.GALAXY_BENCH` runs one scripted motion (turn, zoom in
+    // through two infinite-zoom loops, zoom out, fly home) and logs its frame times.
+    private val benchReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                c: Context,
+                i: Intent,
+            ) = runBench()
+        }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (debuggable) ContextCompat.registerReceiver(context, benchReceiver, IntentFilter(BENCH_ACTION), ContextCompat.RECEIVER_EXPORTED)
+    }
+
+    private fun runBench() {
+        stopMotion()
+        gl.post { bench = mutableListOf() }
+        val start = SystemClock.uptimeMillis()
+        var last = start
+        val step =
+            object : Choreographer.FrameCallback {
+                override fun doFrame(now: Long) {
+                    val t = (now / 1_000_000 - start) / 1000.0
+                    val dt = ((now / 1_000_000 - last) / 1000.0).coerceIn(0.0, .1)
+                    last = now / 1_000_000
+                    synchronized(lock) {
+                        when {
+                            t < BENCH_TURN -> cam.yaw += dt * .6
+                            t < BENCH_IN -> zoomAt(vw / 2f, vh * .3f, exp(-3 * dt))
+                            t < BENCH_OUT -> zoomAt(vw / 2f, vh * .3f, exp(3 * dt))
+                        }
+                    }
+                    if (t < BENCH_OUT) {
+                        requestRender(motion = true)
+                        Choreographer.getInstance().postFrameCallback(this)
+                    } else {
+                        home()
+                        gl.postDelayed({
+                            val b = bench.orEmpty().sorted()
+                            bench = null
+                            if (b.isNotEmpty()) {
+                                Log.i(TAG, "bench n=${b.size} median=${b[b.size / 2]} p90=${b[b.size * 9 / 10]} max=${b.last()}")
+                            }
+                        }, FLY_MS.toLong() + 300)
+                    }
+                }
+            }
+        Choreographer.getInstance().postFrameCallback(step)
     }
 
     fun setPoints(p: GalaxyPoints) {
@@ -103,7 +158,7 @@ class GalaxyView(
         }
         velYaw = ky
         velPitch = kp
-        requestRender()
+        requestRender(motion = true)
     }
 
     fun zoom(
@@ -113,7 +168,7 @@ class GalaxyView(
     ) {
         stopMotion()
         synchronized(lock) { zoomAt(cx, cy, 1.0 / factor) }
-        requestRender()
+        requestRender(motion = true)
     }
 
     /** Lets the last drag speed carry the turn on and slow down. */
@@ -171,7 +226,7 @@ class GalaxyView(
                     busy = true
                 }
             }
-            requestRender()
+            requestRender(motion = busy)
             moving = busy
             if (busy) Choreographer.getInstance().postFrameCallback(this.tick)
         }
@@ -351,13 +406,17 @@ class GalaxyView(
 
     // ---- GL thread ----
 
-    fun requestRender() {
+    /** [motion] frames are timed for the debug bench. */
+    fun requestRender(motion: Boolean = false) {
         synchronized(lock) {
+            if (motion) moved = true
             if (pending) return
             pending = true
         }
         gl.post(::frame)
     }
+
+    private var moved = false
 
     private var egl: Egl? = null
     private var scene: Scene? = null
@@ -408,6 +467,7 @@ class GalaxyView(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        if (debuggable) context.unregisterReceiver(benchReceiver)
         stopMotion()
         thread.quitSafely()
     }
@@ -446,21 +506,27 @@ class GalaxyView(
             w = vw
             h = vh
         }
+        val motion: Boolean
+        synchronized(lock) {
+            motion = moved
+            moved = false
+        }
         val egl = egl ?: return
         val scene = scene ?: return
         val t0 = SystemClock.elapsedRealtimeNanos()
-        val scale = tier.renderScale
-        val fw = max(1, (w * scale).toInt())
-        val fh = max(1, (h * scale).toInt())
-        val dl = if (light) ((ln(dist / (homeDist * .15)) / ln(1 / .15)).coerceIn(0.0, 1.0)) else 0.0
-        scene.draw(p, Frame(m, mc, mainA, e, o, dist), fw, fh, w, h, density * scale, light, dl.toFloat())
+        val dl = if (light) ((ln(dist / (homeDist * DUSK_FROM)) / ln(1 / DUSK_FROM)).coerceIn(0.0, 1.0)) else 0.0
+        scene.draw(p, Frame(m, mc, mainA, e, o, dist), w, h, density, light, dl.toFloat())
+        val timed = motion && bench != null
+        // The bench waits for the GPU before the swap; after it, the time would include the wait for a free buffer.
+        if (timed) {
+            GLES20.glFinish()
+            bench?.add(((SystemClock.elapsedRealtimeNanos() - t0) / 1e6).toFloat())
+        }
         egl.swap()
         frames++
-        if (debuggable) {
-            GLES20.glFinish()
-            Log.d(TAG, "frame $frames ${(SystemClock.elapsedRealtimeNanos() - t0) / 1e6} ms ${tier.name} ${fw}x$fh")
-        }
     }
+
+    private var bench: MutableList<Float>? = null
 
     private class Egl(
         st: SurfaceTexture,
@@ -482,6 +548,8 @@ class GalaxyView(
                         EGL14.EGL_GREEN_SIZE,
                         8,
                         EGL14.EGL_BLUE_SIZE,
+                        8,
+                        EGL14.EGL_ALPHA_SIZE,
                         8,
                         EGL14.EGL_RENDERABLE_TYPE,
                         renderable,
@@ -535,11 +603,12 @@ class GalaxyView(
         private val star = program(VS, FS)
         private val field = program(FVS, FS)
         private val tone = program(TVS, TFS)
+        private val blit = program(TVS, BFS)
         private var uploaded: GalaxyPoints? = null
         private val vbo = IntArray(BUFFERS)
         private val counts = IntArray(BUFFERS)
         private val tri = IntArray(1)
-        private val sharp = Target()
+        private val toned = Target()
         private val soft = Target()
 
         // RGBA8 has no headroom, so light is stored at 1/4 and the tone pass scales it back.
@@ -623,8 +692,6 @@ class GalaxyView(
         fun draw(
             p: GalaxyPoints,
             frame: Frame,
-            fw: Int,
-            fh: Int,
             w: Int,
             h: Int,
             dpr: Float,
@@ -638,13 +705,40 @@ class GalaxyView(
             GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
 
             // Soft glow covers most of the pixels and has no detail to lose: it draws at GLOW_PER_DP px per dp on any screen.
-            val gw = max(1, (fw / dpr * GLOW_PER_DP).toInt())
-            val gh = max(1, (fh / dpr * GLOW_PER_DP).toInt())
+            val gw = max(1, (w / dpr * GLOW_PER_DP).toInt())
+            val gh = max(1, (h / dpr * GLOW_PER_DP).toInt())
             soft.bind(gw, gh)
-            galaxy(vbo[1], p.galaxyGlow, counts[1], frame, (gh * F / 2).toFloat(), dpr * gh / fh)
+            galaxy(vbo[1], p.galaxyGlow, counts[1], frame, (gh * F / 2).toFloat(), dpr * gh / h, hs = store)
 
-            sharp.bind(fw, fh)
-            val k = (fh * F / 2).toFloat()
+            // Tone-map the soft light at its own small size; the screen pass only scales it up.
+            toned.bind(gw, gh)
+            GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glUseProgram(tone)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, soft.tex[0])
+            GLES20.glUniform1i(loc(tone, "y"), 0)
+            GLES20.glUniform1f(loc(tone, "hs"), 1f / store)
+            GLES20.glUniform1f(loc(tone, "lt"), if (light) 1f else 0f)
+            GLES20.glUniform1f(loc(tone, "dl"), dl)
+            fullScreen(tone)
+
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, w, h)
+            GLES20.glUseProgram(blit)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, toned.tex[0])
+            GLES20.glUniform1i(loc(blit, "x"), 0)
+            fullScreen(blit)
+
+            val k = (h * F / 2).toFloat()
+            // Dust absorbs star light only: it leaves its transmittance in the screen's alpha (the view is opaque).
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glColorMask(false, false, false, true)
+            GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            galaxy(vbo[2], counts[2], counts[2], frame, k, dpr, hs = 1f)
+            GLES20.glColorMask(true, true, true, true)
+            // Stars screen-blend onto it, b + a(1-b), with a dimmed by the dust: summed faint light follows the same 1-e^-x
+            // curve as the tone map, so the screen needs no full-size HDR target.
+            GLES20.glBlendFunc(GLES20.GL_DST_ALPHA, GLES20.GL_ONE_MINUS_SRC_COLOR)
             // Field stars: one unit cube wrapped around the eye at octaves 4x apart that cross-fade with zoom.
             use(field, vbo[3], size = false)
             GLES20.glUniformMatrix4fv(loc(field, "M"), 1, false, m, 0)
@@ -652,7 +746,8 @@ class GalaxyView(
             GLES20.glUniform3f(loc(field, "O"), frame.fo[0].toFloat(), frame.fo[1].toFloat(), frame.fo[2].toFloat())
             GLES20.glUniform1f(loc(field, "K"), k)
             GLES20.glUniform1f(loc(field, "dpr"), dpr)
-            GLES20.glUniform1f(loc(field, "hs"), store)
+            GLES20.glUniform1f(loc(field, "hs"), 1f)
+            GLES20.glUniform1f(loc(field, "ex"), EXPOSURE)
             val l = ln(frame.dist) / ln(4.0)
             val lf = floor(l)
             val fr = l - lf
@@ -671,28 +766,8 @@ class GalaxyView(
                 GLES20.glUniform1f(loc(field, "A"), a.toFloat())
                 GLES20.glDrawArrays(GLES20.GL_POINTS, 0, counts[3])
             }
-            galaxy(vbo[0], p.galaxyStars, counts[0], frame, k, dpr)
-            GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-            galaxy(vbo[2], counts[2], counts[2], frame, k, dpr)
-
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            galaxy(vbo[0], p.galaxyStars, counts[0], frame, k, dpr, hs = 1f, ex = EXPOSURE)
             GLES20.glDisable(GLES20.GL_BLEND)
-            GLES20.glViewport(0, 0, w, h)
-            GLES20.glUseProgram(tone)
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sharp.tex[0])
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, soft.tex[0])
-            GLES20.glUniform1i(loc(tone, "x"), 0)
-            GLES20.glUniform1i(loc(tone, "y"), 1)
-            GLES20.glUniform1f(loc(tone, "hs"), 1f / store)
-            GLES20.glUniform1f(loc(tone, "lt"), if (light) 1f else 0f)
-            GLES20.glUniform1f(loc(tone, "dl"), dl)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, tri[0])
-            val q = GLES20.glGetAttribLocation(tone, "q")
-            GLES20.glEnableVertexAttribArray(q)
-            GLES20.glVertexAttribPointer(q, 2, GLES20.GL_FLOAT, false, 8, 0)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 3)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
 
@@ -704,11 +779,16 @@ class GalaxyView(
             frame: Frame,
             k: Float,
             dpr: Float,
+            /** Light scale of the target. */
+            hs: Float,
+            /** Exposure of the 1-e^-x curve for light drawn on the screen; 0 for light that adds up in an HDR target. */
+            ex: Float = 0f,
         ) {
             use(star, buffer, size = true)
             GLES20.glUniform1f(loc(star, "K"), k)
             GLES20.glUniform1f(loc(star, "dpr"), dpr)
-            GLES20.glUniform1f(loc(star, "hs"), store)
+            GLES20.glUniform1f(loc(star, "hs"), hs)
+            GLES20.glUniform1f(loc(star, "ex"), ex)
             GLES20.glUniform1f(loc(star, "pmax"), pointMax)
 
             fun pass(
@@ -727,6 +807,14 @@ class GalaxyView(
             pass(frame.m, 1f, 1f, split, count - split)
             pass(frame.m, frame.mainA, 1f, 0, split)
             frame.mc?.let { pass(it, 1f, LS.toFloat(), 0, split) }
+        }
+
+        private fun fullScreen(prog: Int) {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, tri[0])
+            val q = GLES20.glGetAttribLocation(prog, "q")
+            GLES20.glEnableVertexAttribArray(q)
+            GLES20.glVertexAttribPointer(q, 2, GLES20.GL_FLOAT, false, 8, 0)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 3)
         }
 
         private fun use(
@@ -753,9 +841,9 @@ class GalaxyView(
         fun release() {
             GLES20.glDeleteBuffers(BUFFERS, vbo, 0)
             GLES20.glDeleteBuffers(1, tri, 0)
-            sharp.release()
+            toned.release()
             soft.release()
-            for (p in intArrayOf(star, field, tone)) GLES20.glDeleteProgram(p)
+            for (p in intArrayOf(star, field, tone, blit)) GLES20.glDeleteProgram(p)
         }
     }
 
@@ -766,6 +854,9 @@ class GalaxyView(
         const val EGL_OPENGL_ES3_BIT = 0x40
         const val BUFFERS = 4
         const val GLOW_PER_DP = .5f
+
+        /** The tone map's light scale, for stars drawn straight on the screen. */
+        const val EXPOSURE = 1.5f
         const val TAU = 2 * PI
         val F = 1 / tan(40 * PI / 180 / 2)
 
@@ -777,6 +868,16 @@ class GalaxyView(
         const val SPIN_DECAY = .93
         const val FLY_MS = 1000.0
         const val DIST_MIN = 1e-5
+
+        const val BENCH_ACTION = "org.andromeda.link.GALAXY_BENCH"
+
+        /** Bench script phases, s: turn, zoom in, zoom out; then the fly home. */
+        const val BENCH_TURN = 1.5
+        const val BENCH_IN = 5.5
+        const val BENCH_OUT = 7.0
+
+        /** Light mode: the dusk sky shows down to this share of the home distance; nearer, it fades to plain space. */
+        const val DUSK_FROM = .15
 
         /** The zoom copy's scale, the distance (x its home distance) where it is seeded, and the fade range of the big one. */
         const val LS = 1.0 / 256
@@ -866,11 +967,12 @@ class GalaxyView(
             """attribute vec3 p;attribute vec4 c;attribute float s;uniform mat4 M;uniform float K,dpr,A,Z,hs,pmax;varying vec4 v;varying float h;
 void main(){vec4 q=M*vec4(p,1.);gl_Position=q;float d=max(q.w,1e-4),a=c.a*A,z;
  if(s>0.){z=s*Z*K/d;float m=1.3*dpr,x=2.2*dpr;if(z<m){a*=z*z/(m*m);z=m;}else if(z>x){a*=min(z/x,2.);z=x;}h=1.;}
- else{z=-s*Z*K/d;float b=140.*dpr;if(z>b){a*=b*b*b/(z*z*z);}z=min(z,min(300.*dpr,pmax));if(z<1.){a*=z;z=1.;}h=0.;}
+ else{z=-s*Z*K/d;float b=140.*dpr;if(z>b){a*=b*b*b/(z*z*z);}z=min(z,min(300.*dpr,pmax));if(z<3.){a*=z*z/9.;z=3.;}h=0.;}
  if(q.w<=0.)a=0.;gl_PointSize=z;v=vec4(c.rgb*hs,a);}"""
         const val FS =
-            """precision mediump float;varying vec4 v;varying float h;
-void main(){vec2 d=gl_PointCoord-.5;float r2=dot(d,d)*4.;float f=h>.5?exp(-r2*7.):exp(-r2*3.5);f*=step(r2,1.);gl_FragColor=vec4(v.rgb*v.a*f,v.a*f);}"""
+            """precision mediump float;uniform float ex;varying vec4 v;varying float h;
+void main(){vec2 d=gl_PointCoord-.5;float r2=dot(d,d)*4.;float f=h>.5?exp(-r2*7.):exp(-r2*3.5);f*=step(r2,1.);vec3 c=v.rgb*v.a*f;
+ if(ex>0.){float l=dot(c,vec3(.3,.59,.11));c=1.-exp(-max(mix(vec3(l),c,1.5),0.)*ex);}gl_FragColor=vec4(c,v.a*f);}"""
         const val FVS =
             """attribute vec3 p;attribute vec4 c;uniform mat4 M;uniform vec3 E,O;uniform float S,A,K,dpr,hs;varying vec4 v;varying float h;
 void main(){vec3 w=E+mod(p*S-(E-O)+S*.5,S)-S*.5;vec4 q=M*vec4(w,1.);gl_Position=q;float d=max(q.w,1e-6);
@@ -879,12 +981,12 @@ void main(){vec3 w=E+mod(p*S-(E-O)+S*.5,S)-S*.5;vec4 q=M*vec4(w,1.);gl_Position=
         const val TVS = "attribute vec2 q;varying vec2 t;void main(){t=q*.5+.5;gl_Position=vec4(q,0.,1.);}"
 
         // Dark: space, tone-mapped 1-exp. Light: dusk sky (deep blue top, dusk blue toward the sheet), galaxy screen-blended;
-        // zoomed in (dl to 0) it turns to night.
+        // zoomed in (dl to 0) it fades to the same plain space as dark.
         const val TFS =
-            """precision mediump float;uniform sampler2D x,y;uniform float lt,dl,hs;varying vec2 t;
-void main(){vec3 h=(texture2D(x,t).rgb+texture2D(y,t).rgb)*hs*1.5;vec3 c=1.-exp(-h);float l=dot(c,vec3(.3,.59,.11));c=max(mix(vec3(l),c,1.5),0.);
- if(lt>.5){vec3 sky=mix(vec3(.5,.56,.74),vec3(.1,.12,.26),smoothstep(.25,1.,t.y));vec3 night=1.-(1.-sky)*(1.-c*.85);
-  vec3 day=mix(vec3(.2,.24,.48),vec3(.04,.05,.15),smoothstep(.2,1.,t.y));day=1.-(1.-day)*(1.-c);c=mix(night,day,dl);}
+            """precision mediump float;uniform sampler2D y;uniform float lt,dl,hs;varying vec2 t;
+void main(){vec3 h=texture2D(y,t).rgb*hs*1.5;vec3 c=1.-exp(-h);float l=dot(c,vec3(.3,.59,.11));c=max(mix(vec3(l),c,1.5),0.);
+ if(lt>.5){vec3 day=mix(vec3(.2,.24,.48),vec3(.04,.05,.15),smoothstep(.2,1.,t.y));day=1.-(1.-day)*(1.-c);c=mix(c,day,dl);}
  gl_FragColor=vec4(pow(c,vec3(.9)),1.);}"""
+        const val BFS = "precision mediump float;uniform sampler2D x;varying vec2 t;void main(){gl_FragColor=texture2D(x,t);}"
     }
 }
