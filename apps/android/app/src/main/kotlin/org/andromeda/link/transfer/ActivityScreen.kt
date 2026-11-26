@@ -6,7 +6,6 @@ import android.content.Intent
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +19,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -44,21 +43,20 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
 import org.andromeda.link.clipboard.ClipEntry
 import org.andromeda.link.core.domain.TransferRecord
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
-import org.andromeda.link.ui.kit.FilterChips
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Pill
 import org.andromeda.link.ui.kit.PillKind
 import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
+import org.andromeda.link.ui.kit.Segmented
+import org.andromeda.link.ui.kit.Separator
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.text
@@ -146,25 +144,13 @@ fun ActivityScreen(
         )
     val gutter = Modifier.padding(horizontal = Tok.Space.p16.dp)
     val header: @Composable () -> Unit = {
-        Column {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = Tok.Space.p12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                BackKey(LinkTheme.scheme.label1, onBack)
-                FolderKey { open { Intent(DownloadManager.ACTION_VIEW_DOWNLOADS) } }
-            }
-            Text(
-                stringResource(R.string.activity_title),
-                LinkTheme.phoneType.large,
-                modifier = gutter.padding(vertical = Tok.Space.p4.dp),
-                maxLines = 1,
-            )
-            FilterChips(filters, filter, { filter = it }, Modifier.padding(vertical = Tok.Space.p4.dp))
-        }
+        Segmented(filters, filter, { filter = it }, gutter.padding(top = Tok.Space.p8.dp))
     }
     Box(modifier) {
         Screen(
+            title = stringResource(R.string.activity_title),
+            onBack = onBack,
+            actions = { FolderKey { open { Intent(DownloadManager.ACTION_VIEW_DOWNLOADS) } } },
             toast = toast,
             onToastEnd = {
                 openFailure = null
@@ -191,19 +177,21 @@ fun ActivityScreen(
                 }
                 days.forEach { (day, entries) ->
                     item(key = "day-$day") { SectionTitle(dayLabel(day), gutter) }
-                    items(entries, key = { it.key() }) { entry ->
-                        Box(gutter.padding(bottom = Tok.Space.p8.dp)) {
+                    itemsIndexed(entries, key = { _, entry -> entry.key() }) { i, entry ->
+                        val place = Place(first = i == 0, last = i == entries.lastIndex)
+                        Box(gutter) {
                             when (entry) {
                                 is Entry.Move ->
                                     MoveCard(
                                         entry.record,
+                                        place,
                                         showDesktop,
                                         entry.record.transferId in busy,
                                         { viewModel.accept(entry.record.transferId) },
                                         { viewModel.decline(entry.record.transferId) },
                                         { viewModel.cancel(entry.record.transferId) },
                                     ) { uri -> open { viewIntent(context, uri) } }
-                                is Entry.Clip -> ClipCard(entry.clip, showDesktop) { viewModel.copyAgain(entry.clip) }
+                                is Entry.Clip -> ClipCard(entry.clip, place, showDesktop) { viewModel.copyAgain(entry.clip) }
                             }
                         }
                     }
@@ -285,24 +273,49 @@ private fun Empty(
     }
 }
 
-/** A view card r16 with a stroke ring; the direction symbol sits on the first line, actions at the trailing edge. */
+/** Where an entry sits in its day's card: only the day's first and last entries round the card's corners. */
+private data class Place(
+    val first: Boolean,
+    val last: Boolean,
+)
+
+/**
+ * One entry as a segment of its day's view card r16, a separator above all but the first (a ring per segment would
+ * double at the joins); the
+ * direction symbol sits on the first line, actions at the trailing edge.
+ */
 @Composable
 private fun EntryCard(
+    symbol: ImageVector,
+    place: Place,
+    trailing: @Composable () -> Unit,
+    below: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val s = LinkTheme.scheme
+    val top = if (place.first) Tok.Radius.r16.dp else 0.dp
+    val bottom = if (place.last) Tok.Radius.r16.dp else 0.dp
+    val shape = RoundedCornerShape(top, top, bottom, bottom)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(s.view),
+    ) {
+        if (!place.first) Separator()
+        EntryBody(symbol, trailing, below, content)
+    }
+}
+
+@Composable
+private fun EntryBody(
     symbol: ImageVector,
     trailing: @Composable () -> Unit,
     below: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
     val s = LinkTheme.scheme
-    val shape = RoundedCornerShape(Tok.Radius.r16.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(s.view)
-            .border(Dp.Hairline, s.stroke, shape)
-            .padding(start = Tok.Space.p12.dp, end = Tok.Space.p4.dp, top = Tok.Space.p12.dp, bottom = Tok.Space.p12.dp),
-    ) {
+    Column(Modifier.padding(start = Tok.Space.p12.dp, end = Tok.Space.p4.dp, top = Tok.Space.p12.dp, bottom = Tok.Space.p12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) {
             Symbol(
                 symbol,
@@ -344,6 +357,7 @@ private data class FileRow(
 @Composable
 private fun MoveCard(
     transfer: TransferRecord,
+    place: Place,
     showDesktop: Boolean,
     busy: Boolean,
     onAccept: () -> Unit,
@@ -380,6 +394,7 @@ private fun MoveCard(
     val openUri = rows.singleOrNull()?.uri?.takeIf { transfer.status == "done" }
     EntryCard(
         if (incoming) Icons.Down else Icons.Up,
+        place,
         trailing = {
             if (!busy) {
                 when (transfer.status) {
@@ -501,12 +516,14 @@ private fun FileLine(
 @Composable
 private fun ClipCard(
     clip: ClipEntry,
+    place: Place,
     showDesktop: Boolean,
     onCopy: () -> Unit,
 ) {
     val context = LocalContext.current
     EntryCard(
         Icons.Clip,
+        place,
         trailing = { if (clip.text != null) Pill(stringResource(R.string.activity_copy), onCopy) },
         below = {},
     ) {

@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -38,10 +41,16 @@ import org.andromeda.link.ui.theme.Tok
 import org.andromeda.link.ui.theme.elevation
 import org.andromeda.link.ui.theme.spring
 
-/** A screen below the status bar, with an [overlay] over it and a toast host for the screen's one-line messages. */
+/**
+ * A screen below the status bar, with an [overlay] over it and a toast host for the screen's one-line messages. A page
+ * with a [title] gets the [PageHeader], which stays put while [content] scrolls.
+ */
 @Composable
 fun Screen(
     modifier: Modifier = Modifier,
+    title: String? = null,
+    onBack: () -> Unit = {},
+    actions: @Composable RowScope.() -> Unit = {},
     toast: String? = null,
     onToastEnd: () -> Unit = {},
     /** Room under the toast: more on a screen with a floating dock. */
@@ -51,9 +60,39 @@ fun Screen(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Box(modifier.fillMaxSize().background(background)) {
-        Column(Modifier.fillMaxSize().statusBarsPadding(), content = content)
+        if (title == null) {
+            Column(Modifier.fillMaxSize().statusBarsPadding(), content = content)
+        } else {
+            Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                PageHeader(title, onBack, actions = actions)
+                Column(Modifier.weight(1f).fillMaxWidth(), content = content)
+            }
+        }
         overlay()
         ToastHost(toast, onToastEnd, toastInset, Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+/** A page's top row: back, [title] in title_1 on one line, and [actions] at the trailing edge. */
+@Composable
+fun PageHeader(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    Row(
+        modifier.fillMaxWidth().heightIn(min = Tok.Phone.hit.dp).padding(horizontal = Tok.Space.p4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BackKey(LinkTheme.scheme.label1, onBack)
+        Text(
+            title,
+            LinkTheme.phoneType.title1,
+            modifier = Modifier.weight(1f).padding(start = Tok.Space.p4.dp),
+            maxLines = 1,
+        )
+        actions()
     }
 }
 
