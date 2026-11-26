@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.R
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * A desktop asked to mirror while its Screen switch is off: a notification asks the user. Allow turns the switch on and
@@ -89,7 +90,7 @@ class MirrorAsk(
         const val ACTION_ALLOW = "org.andromeda.link.MIRROR_ALLOW"
         const val ACTION_REFUSE = "org.andromeda.link.MIRROR_REFUSE"
         const val EXTRA_DESKTOP = "desktop"
-        const val NOTIFICATION = 43
+        val NOTIFICATION = NotificationId.MirrorAsk.id
 
         /** The desktop stops waiting after its 60 s consent timeout (link-daemon mirror.rs). */
         const val TIMEOUT_MS = 60_000L

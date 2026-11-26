@@ -16,6 +16,7 @@ import org.andromeda.link.R
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.domain.MicCommand
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * Desktops' microphone requests. Android starts a microphone service only while the app is visible, so a request
@@ -116,7 +117,7 @@ class PhoneMic(
 
     companion object {
         const val EXTRA_DESKTOP = "desktop"
-        const val NOTIFICATION = 44
+        val NOTIFICATION = NotificationId.MicRequest.id
         private const val TAG = "PhoneMic"
         private const val ACTION_REFUSE = "org.andromeda.link.MIC_REFUSE"
 

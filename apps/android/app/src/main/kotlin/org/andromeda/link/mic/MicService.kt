@@ -30,6 +30,7 @@ import org.andromeda.link.audio.RATE
 import org.andromeda.link.audio.encodeOpus
 import org.andromeda.link.audio.packetBytes
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * This phone's microphone for one desktop: the phone's voice processing (echo and noise suppression), 48 kHz mono Opus
@@ -188,7 +189,7 @@ class MicService : Service() {
 
         private const val TAG = "MicService"
         private const val ACTION_STOP = "org.andromeda.link.mic.STOP"
-        private const val NOTIFICATION_ID = 45
+        private val NOTIFICATION_ID = NotificationId.Mic.id
         private const val CHANNELS = 1
         private const val BITRATE = 32_000
     }

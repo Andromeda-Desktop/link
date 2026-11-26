@@ -25,7 +25,7 @@ fun showTrashPrompt(
     context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification)
 }
 
-private const val NOTIFICATION = 45
+private val NOTIFICATION = NotificationId.Trash.id
 
 /** The phone stops waiting for the answer after 55 s (MediaLibrary). */
 private const val TIMEOUT_MS = 55_000L

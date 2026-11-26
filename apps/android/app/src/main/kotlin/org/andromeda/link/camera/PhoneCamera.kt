@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import org.andromeda.link.R
 import org.andromeda.link.ffi.PhotoOutcome
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -108,7 +109,7 @@ class PhoneCamera(
     companion object {
         private const val TAG = "PhoneCamera"
         private const val ALBUM = "Link"
-        private const val NOTIFICATION = 44
+        private val NOTIFICATION = NotificationId.Camera.id
         private const val WAIT_MIN = 5L
         private val pending = AtomicReference<Shot?>(null)
 

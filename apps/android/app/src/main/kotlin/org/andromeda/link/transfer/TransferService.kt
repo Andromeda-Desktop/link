@@ -8,6 +8,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import org.andromeda.link.R
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * Runs while a file transfer is open, since Android freezes a cached process and its sockets with it. It holds no
@@ -34,6 +35,6 @@ class TransferService : Service() {
     }
 
     private companion object {
-        const val NOTIFICATION_ID = 2
+        val NOTIFICATION_ID = NotificationId.Transfer.id
     }
 }

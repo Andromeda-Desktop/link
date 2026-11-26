@@ -25,6 +25,7 @@ import org.andromeda.link.LinkApplication
 import org.andromeda.link.R
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * Find my phone: rings on the alarm stream at full volume, through silent mode, until stopped here or by the desktop,
@@ -144,7 +145,7 @@ class Ringer(
 
     private companion object {
         const val TAG = "Ringer"
-        const val NOTIFICATION_ID = 2
+        val NOTIFICATION_ID = NotificationId.Ring.id
         const val LIMIT_MS = 2 * 60 * 1000L
     }
 }

@@ -35,6 +35,7 @@ import org.andromeda.link.R
 import org.andromeda.link.core.domain.MirrorStream
 import org.andromeda.link.core.domain.VideoCodec
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.lang.reflect.Method
 
@@ -541,7 +542,7 @@ class ScreenCapture : Service() {
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
         const val EXTRA_MODE = "mode"
-        private const val NOTIFICATION_ID = 41
+        private val NOTIFICATION_ID = NotificationId.ScreenCapture.id
 
         // The OnePlus 12's own panel, 1440 by 3168, sent unscaled on a fast link.
         private const val MAX_SHORT_SIDE = 1440

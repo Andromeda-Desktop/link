@@ -20,6 +20,7 @@ import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.domain.MirrorCommand
 import org.andromeda.link.core.domain.SoundCommand
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * Mirroring this phone's screen to a desktop. A request becomes a notification whose Allow opens Android's capture
@@ -218,9 +219,9 @@ class ScreenMirror(
 
     companion object {
         const val EXTRA_DESKTOP = "desktop"
-        private const val REQUEST_NOTIFICATION = 40
-        private const val SOUND_REQUEST_NOTIFICATION = 46
-        private const val CONTROL_NOTIFICATION = 42
+        private val REQUEST_NOTIFICATION = NotificationId.MirrorRequest.id
+        private val SOUND_REQUEST_NOTIFICATION = NotificationId.SoundRequest.id
+        private val CONTROL_NOTIFICATION = NotificationId.ScreenControl.id
 
         // The desktop gives up after 60 s.
         const val REQUEST_TIMEOUT_MS = 60_000L

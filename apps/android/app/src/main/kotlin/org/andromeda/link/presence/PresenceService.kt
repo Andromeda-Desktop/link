@@ -21,6 +21,7 @@ import org.andromeda.link.clipboard.ClipboardReadActivity
 import org.andromeda.link.core.data.LinkRepository
 import org.andromeda.link.core.domain.DesktopLink
 import org.andromeda.link.notifications.Channels
+import org.andromeda.link.notifications.NotificationId
 
 /**
  * Runs only while "Stay connected" is on, so its notification exists only then. It holds no state: [Presence] keeps
@@ -51,7 +52,7 @@ class PresenceService : Service() {
     }
 
     companion object {
-        const val NOTIFICATION_ID = 1
+        val NOTIFICATION_ID = NotificationId.Presence.id
         private const val GROUP = "presence"
 
         /** "Connected to Arch" with Send clipboard, Lock (where granted), and Ring, or "Looking for Arch". */
