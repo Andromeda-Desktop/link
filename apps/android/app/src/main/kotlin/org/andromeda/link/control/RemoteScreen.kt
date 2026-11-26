@@ -186,26 +186,13 @@ private fun Pad(
     modifier: Modifier = Modifier,
 ) {
     val s = LinkTheme.scheme
-    val raw = touchpad
     val context = LocalContext.current
-    DisposableEffect(raw) {
-        val restore = if (raw) keepMultiFingerTouches(context) else null
-        onDispose { restore?.invoke() }
-    }
     val surface = Modifier.fillMaxSize().dots(s.fill2)
-    val touchpad = stringResource(R.string.remote_touchpad)
+    val label = stringResource(R.string.remote_touchpad)
     val off = Modifier.alpha(if (desk.input) 1f else Tok.Phone.offAlpha)
     Box(modifier) {
         Box(
-            when {
-                !desk.input -> surface
-                raw ->
-                    surface.rawTouchpad(
-                        LocalResources.current.displayMetrics,
-                        onTick = actions::tick,
-                    ) { actions.send(RemoteInput.Touch(it)) }
-                else -> surface.pointerInput(actions) { interpret(actions, actions::move) }
-            }.semantics { contentDescription = touchpad },
+            (if (desk.input) surface.touchpad(actions, touchpad) else surface).semantics { contentDescription = label },
         )
         if (mode == RemoteMode.Pad) Tips(off)
         if (mode != RemoteMode.Typing) {
@@ -253,7 +240,7 @@ private fun Pad(
             )
         }
         TopBar(desk, onBack, Modifier.align(Alignment.TopStart))
-        if (raw && needsMultiFingerGrant(context)) {
+        if (touchpad && needsMultiFingerGrant(context)) {
             Text(
                 stringResource(R.string.remote_multi_finger_grant, context.packageName),
                 LinkTheme.phoneType.footnote,
@@ -439,10 +426,41 @@ private fun Rail(
 }
 
 /**
+ * The one touchpad of the Remote and the Viewer: raw fingers when the desktop makes a real touchpad of them ([raw]),
+ * else the phone's own gestures. [onUse] runs at each touch.
+ */
+@Composable
+fun Modifier.touchpad(
+    actions: RemoteActions,
+    raw: Boolean,
+    onUse: () -> Unit = {},
+): Modifier {
+    val context = LocalContext.current
+    DisposableEffect(raw) {
+        val restore = if (raw) keepMultiFingerTouches(context) else null
+        onDispose { restore?.invoke() }
+    }
+    val use by rememberUpdatedState(onUse)
+    return if (raw) {
+        rawTouchpad(LocalResources.current.displayMetrics, onTick = actions::tick) {
+            use()
+            actions.send(RemoteInput.Touch(it))
+        }
+    } else {
+        pointerInput(actions) {
+            interpret(actions) { dx, dy ->
+                use()
+                actions.move(dx, dy)
+            }
+        }
+    }
+}
+
+/**
  * For a desktop without a real touchpad: one finger moves by [move] and taps, two scroll and tap to right-click, a hold
  * drags.
  */
-internal suspend fun PointerInputScope.interpret(
+private suspend fun PointerInputScope.interpret(
     actions: RemoteActions,
     move: (Float, Float) -> Unit,
 ) {
