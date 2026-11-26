@@ -31,38 +31,13 @@ fi
 RUNTIME=$(mktemp -d /tmp/link-browse.XXXX)
 MNT=$RUNTIME/Phone
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; umount -l "$MNT" 2>/dev/null || true; rm -rf "$RUNTIME"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
+source "$(dirname "$0")/link_lib.sh"
 
 ip link set lo up
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
+private_bus system
 
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-devices() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 Devices; }
 connected() { devices | grep -q "'phone', true"; }
-XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$RUNTIME/downloads "$BIN/andromeda-linkd" >> "$OUT/linkd.log" 2>&1 &
-for _ in $(seq 100); do link CancelPairing > /dev/null 2>&1 && break; sleep 0.05; done
-link CancelPairing > /dev/null || fail "andromeda-linkd did not come up"
+run_linkd
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$RUNTIME/desktop/andromeda-link/devices.json")
 
 STORAGE=$RUNTIME/storage

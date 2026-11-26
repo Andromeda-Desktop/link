@@ -20,13 +20,7 @@ fi
 
 RUNTIME=$(mktemp -d /tmp/link-system.XXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
+source "$(dirname "$0")/link_lib.sh"
 
 ip link set lo up
 ip link add d0 type veth peer name p0
@@ -41,23 +35,8 @@ in_phone ip link set lo up
 in_phone ip addr add 10.79.0.2/24 dev p0
 in_phone ip link set p0 up
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
 # One private bus stands in for both, so the mocks never meet the real logind.
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
+private_bus system
 unset WAYLAND_DISPLAY DISPLAY
 
 # A stand-in wpctl keeps the volume in a file; pactl fails, so link-session has no watcher.
@@ -80,8 +59,6 @@ python3 "$ROOT/tests/e2e/link_system_mocks.py" "$OUT/mocks.log" "$RUNTIME/backli
   > "$RUNTIME/mocks.out" 2>> "$OUT/mocks.log" &
 wait_for 10 "the mock services never started" grep -q ready "$RUNTIME/mocks.out"
 
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-prop() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 "$1"; }
 mock_prop() { gdbus call --session -d "$1" -o "$2" -m org.freedesktop.DBus.Properties.Get "$3" "$4"; }
 mock_set() { gdbus call --session -d "$1" -o "$2" -m org.freedesktop.DBus.Properties.Set "$3" "$4" "$5" > /dev/null; }
 shell_dnd() { mock_prop org.andromeda.Shell1 /org/andromeda/Shell1 org.andromeda.Shell1 DoNotDisturb; }
@@ -98,8 +75,7 @@ ask() {
   last system-result
 }
 
-XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$RUNTIME/downloads "$BIN/andromeda-linkd" > "$OUT/linkd.log" 2>&1 &
-for _ in $(seq 100); do link CancelPairing > /dev/null 2>&1 && break; sleep 0.05; done
+run_linkd
 PATH=$RUNTIME/bin:$PATH ANDROMEDA_LINK_BACKLIGHT=$RUNTIME/backlight "$BIN/andromeda-link-session" \
   > "$OUT/session.log" 2>&1 &
 wait_for 10 "andromeda-link-session did not start" grep -q running "$OUT/session.log"

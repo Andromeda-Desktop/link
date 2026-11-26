@@ -1,8 +1,7 @@
 # Shared by the real-phone E2E scripts (link_*_phone.sh): the phone lock, a private bus, a private andromeda-linkd, the
 # debug app paired with it, and taps on Android's own UI through uiautomator. Source it after setting OUT.
 # Needs ANDROID_SERIAL, the debug APKs, and the phone on USB debugging.
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-BIN=${LINK_BIN:-$ROOT/target/debug}
+source "$(dirname "${BASH_SOURCE[0]}")/link_lib.sh"
 ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
 SERIAL=${ANDROID_SERIAL:?set ANDROID_SERIAL to the phone}
 APK=${APK:-$ROOT/apps/android/app/build/outputs/apk/debug/app-debug.apk}
@@ -10,45 +9,9 @@ FIXTURE=${FIXTURE:-$ROOT/apps/android/fixture/build/outputs/apk/debug/fixture-de
 PACKAGE=org.andromeda.link
 export ANDROMEDA_LINK_NO_USB=1 # a test linkd runs no adb reverse, so the phone keeps the path the test set up
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
 adb() { "$ADB" -s "$SERIAL" "$@"; }
 # A server first started under the phone lock keeps the lock's descriptor and holds the lock for good.
 [[ -n ${LINK_PHONE_LOCKED:-} ]] || "$ADB" start-server > /dev/null 2>&1 || true
-now_ms() { date +%s%3N; }
-# stamp: each line of stdin with the Unix time in ms in front.
-stamp() { while IFS= read -r line; do printf '%s %s\n' "$(date +%s%3N)" "$line"; done; }
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-prop() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 "$1"; }
-devices() { prop Devices; }
-connected() { devices | grep -q "', true)"; }
-
-# private_bus: a session bus of the run's own; with "system", also its system bus.
-private_bus() {
-  cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-  dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-  for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-  export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus
-  [[ ${1:-} == system ]] && export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
-  true
-}
 
 start_linkd() {
   # The firewall admits only Link's own port, so the user's daemon gives it up for the run; the EXIT trap (set before
@@ -63,11 +26,7 @@ start_linkd() {
 systemctl --user unmask --runtime -q andromeda-linkd
 systemctl --user start andromeda-linkd" EXIT
   fi
-  mkdir -p "$RUNTIME/downloads"
-  XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$RUNTIME/downloads RUST_LOG=info,zbus=warn,tracing=warn \
-    "$BIN/andromeda-linkd" 2>&1 | stamp > "$OUT/linkd.log" &
-  for _ in $(seq 100); do link CancelPairing > /dev/null 2>&1 && break; sleep 0.05; done
-  link CancelPairing > /dev/null || fail "andromeda-linkd did not come up"
+  LINKD_LOG_FILTER=stamp run_linkd
   wait_for 5 "andromeda-linkd logged no port" grep -q 'listening on port' "$OUT/linkd.log"
   dbus-monitor --session "type='signal',interface='org.andromeda.Link1'" > "$OUT/signals.txt" 2>&1 &
   # The user allows every hotspot question, as a tap on "Use hotspot".

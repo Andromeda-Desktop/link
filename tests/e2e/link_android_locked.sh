@@ -34,13 +34,8 @@ cleanup() {
   rm -rf "$RUNTIME"
 }
 trap cleanup EXIT
+source "$(dirname "$0")/link_lib.sh"
 fail() { echo "FAIL: $*" >&2; adb logcat -d > "$OUT/logcat.txt" 2>&1 || true; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
 maestro() { "$MAESTRO" --device "$SERIAL" test -e OUT="$OUT" "$@" >> "$OUT/maestro.log" 2>&1 || fail "maestro $*"; }
 screenshot() { adb exec-out screencap -p > "$OUT/$1.png"; }
 locked() { adb shell dumpsys window | grep -q 'isKeyguardShowing=true'; }
@@ -51,25 +46,7 @@ unlocked() { ! locked; }
 [[ -s $FIXTURE_APK ]] || fail "no fixture APK at $FIXTURE_APK"
 [[ $(adb shell locksettings get-disabled | tr -d '\r') == false ]] || fail "the emulator's lock screen is disabled"
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-devices() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 Devices; }
-connected() { devices | grep -q "', true)"; }
+private_bus system
 signal() { grep -F "org.andromeda.Link1.$1 " "$OUT/signals.txt" | grep -F -- "$2" | tail -1; }
 heard() { [[ -n $(signal "$1" "$2") ]]; }
 

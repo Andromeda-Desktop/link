@@ -34,13 +34,8 @@ mkdir -p "$OUT"
 # A fresh directory per run: dbus-daemon unlinks its socket path on exit, so a reused path would race the old one.
 RUNTIME=$(mktemp -d /tmp/link-android-features.XXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
+source "$(dirname "$0")/link_lib.sh"
 fail() { echo "FAIL: $*" >&2; "$ADB" -s "$SERIAL" logcat -d > "$OUT/logcat.txt" 2>&1 || true; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
 adb() { "$ADB" -s "$SERIAL" "$@"; }
 maestro() { "$MAESTRO" --device "$SERIAL" test -e OUT="$OUT" "$@" >> "$OUT/maestro.log" 2>&1 || fail "maestro $*"; }
 screenshot() { adb exec-out screencap -p > "$OUT/$1.png"; }
@@ -50,26 +45,7 @@ notifications() { adb shell dumpsys notification --noredact > "$OUT/notification
 [[ -s $APK ]] || fail "no APK at $APK"
 [[ -s $FIXTURE_APK ]] || fail "no fixture APK at $FIXTURE_APK"
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-prop() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 "$1"; }
-devices() { prop Devices; }
-connected() { devices | grep -q "', true)"; }
+private_bus system
 # One line per signal: gdbus monitor prints each with all its arguments.
 signal() { grep -F "org.andromeda.Link1.$1 " "$OUT/signals.txt" | grep -F -- "$2" | tail -1; }
 heard() { [[ -n $(signal "$1" "$2") ]]; }

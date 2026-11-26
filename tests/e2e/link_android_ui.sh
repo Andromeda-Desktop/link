@@ -23,7 +23,7 @@ mkdir -p "$OUT"
 RUNTIME=$(mktemp -d /tmp/link-android-ui.XXXX)
 # The test desktop unpairs while its linkd still runs, so the phone drops it too and no dead desktop stays its primary.
 trap '[[ -n ${ID:-} ]] && link Unpair "$ID" > /dev/null 2>&1; adb shell cmd uimode night no > /dev/null 2>&1 || true; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
+source "$(dirname "$0")/link_lib.sh"
 adb() { "$ADB" -s "$SERIAL" "$@"; }
 maestro() { "$MAESTRO" --device "$SERIAL" test -e OUT="$OUT" "$@" >> "$OUT/maestro.log" 2>&1 || fail "maestro $*"; }
 theme() { adb shell cmd uimode night "$1" > /dev/null; sleep 1; }
@@ -31,24 +31,7 @@ theme() { adb shell cmd uimode night "$1" > /dev/null; sleep 1; }
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no emulator at $SERIAL"
 [[ -s $APK ]] || fail "no APK at $APK"
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-prop() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 "$1"; }
+private_bus system
 
 # A real phone dials over Wi-Fi: the desktop's own linkd holds 4717, so this one takes the store's last port, which ufw opens.
 mkdir -p "$RUNTIME/desktop/andromeda-link"

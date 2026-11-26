@@ -19,8 +19,7 @@ fi
 
 RUNTIME=$(mktemp -d /tmp/link-e2e.XXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
+source "$(dirname "$0")/link_lib.sh"
 
 ip link set lo up
 ip link add d0 type veth peer name p0
@@ -35,25 +34,8 @@ in_phone ip link set lo up
 in_phone ip addr add 10.77.0.2/24 dev p0
 in_phone ip link set p0 up
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
+private_bus system
 
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-devices() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 Devices; }
 start_linkd() {
   XDG_STATE_HOME=$RUNTIME/desktop "$BIN/andromeda-linkd" >> "$OUT/linkd.log" 2>&1 &
   LINKD=$!

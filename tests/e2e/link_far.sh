@@ -26,13 +26,7 @@ fi
 
 RUNTIME=$(mktemp -d /tmp/link-far.XXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
-record() { printf '%s\n' "$1" >> "$OUT/results.jsonl"; }
-wait_for() {
-  local tries=$(( $1 * 10 )) what=$2; shift 2
-  for _ in $(seq "$tries"); do "$@" && return; sleep 0.1; done
-  fail "$what"
-}
+source "$(dirname "$0")/link_lib.sh"
 
 # This namespace is the internet: relay 10.9.1.2, desktop NAT 10.9.2.2 (LAN 192.168.2.0/24), phone NAT 10.9.3.2
 # (LAN 192.168.3.0/24).
@@ -91,22 +85,7 @@ for nat in DESK_NAT PHONE_NAT; do
   in_ns "${!nat}" tcpdump -l -n -i wan -tt udp > "$OUT/${nat,,}.txt" 2> /dev/null &
 done
 
-cat > "$RUNTIME/bus.conf" <<CONF
-<busconfig>
-  <type>session</type>
-  <listen>unix:path=$RUNTIME/bus</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-CONF
-dbus-daemon --config-file="$RUNTIME/bus.conf" --nofork 2> "$OUT/dbus.log" &
-for _ in $(seq 50); do [[ -S $RUNTIME/bus ]] && break; sleep 0.02; done
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$RUNTIME/bus
+private_bus system
 
 mkdir -p "$RUNTIME/relay" "$RUNTIME/desktop/andromeda-link" "$RUNTIME/downloads" "$RUNTIME/phone-downloads"
 touch "$RUNTIME/relay/allow"
@@ -116,8 +95,6 @@ wait_for 10 "the relay did not start" grep -q 'key [0-9a-f]\{64\}' "$OUT/relay.l
 KEY=$(grep -o 'key [0-9a-f]\{64\}' "$OUT/relay.log" | head -1 | cut -d' ' -f2)
 echo "10.9.1.2:4433#$KEY" > "$RUNTIME/desktop/andromeda-link/relay"
 
-link() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m "org.andromeda.Link1.$1" "${@:2}"; }
-devices() { gdbus call --session -d org.andromeda.Link1 -o /org/andromeda/Link1 -m org.freedesktop.DBus.Properties.Get org.andromeda.Link1 Devices; }
 XDG_STATE_HOME=$RUNTIME/desktop XDG_DOWNLOAD_DIR=$RUNTIME/downloads RUST_LOG=info \
   in_ns "$DESK_NS" "$BIN/andromeda-linkd" >> "$OUT/linkd.log" 2>&1 &
 wait_for 10 "andromeda-linkd did not come up" grep -q 'listening on port' "$OUT/linkd.log"
