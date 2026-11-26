@@ -534,6 +534,7 @@ object Tok {
         val heroScene = 0.28f
         val heroIdentity = 0.6f
         val sheetRadius = 32.0f
+        val sheetLift = 24.0f
         val levelGap = 12.0f
     }
 }

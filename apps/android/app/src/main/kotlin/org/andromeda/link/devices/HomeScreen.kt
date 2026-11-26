@@ -18,11 +18,14 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,7 +48,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -216,7 +222,17 @@ fun HomeScreen(
                 if (primary != null) {
                     // Under the open picker, Home's controls would duplicate the sheet's for TalkBack.
                     val hidden = if (pickOpen) Modifier.clearAndSetSemantics {} else Modifier
-                    BottomFade(Tok.Phone.fadeDock.dp, Modifier.align(Alignment.BottomCenter))
+                    // Opaque from the dock's top edge down, so no sheet row shows between its keys.
+                    val nav =
+                        WindowInsets.navigationBars
+                            .asPaddingValues()
+                            .calculateBottomPadding()
+                            .value
+                    BottomFade(
+                        (Tok.Phone.fadeDock + nav).dp,
+                        Modifier.align(Alignment.BottomCenter),
+                        solid = 1 - (Tok.Phone.dockInset + Tok.Phone.hit + nav) / (Tok.Phone.fadeDock + nav),
+                    )
                     Dock(
                         primary,
                         fan,
@@ -461,18 +477,34 @@ private const val ART_DIM = 0.75f
 
 /** The dark scrim under the name covers this share of the hero, from its foot. */
 private const val HERO_SCRIM = 0.45f
+
+/** Peak alpha of the sheet's shadow over the light sky. */
+private const val SHEET_SHADOW = 0.25f
 private const val QUARTER_TURN = 90f
 
-/** The sheet's rounded top edge with its grab bar; the sheet scrolls over the galaxy. */
+/**
+ * The sheet's rounded top edge with its grab bar; the sheet scrolls over the galaxy. Its top is a step lighter and fades
+ * into the sheet; over the light sky a soft shadow rises above it.
+ */
 @Composable
 private fun SheetTop() {
     val s = LinkTheme.scheme
     val r = Tok.Phone.sheetRadius.dp
+    val dark = LinkTheme.dark
+    val shadow = Tok.Phone.sheetLift.dp
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = r, topEnd = r))
-            .background(s.solidRegular)
+            .drawBehind {
+                if (dark) return@drawBehind
+                val lift = shadow.toPx()
+                drawRect(
+                    Brush.verticalGradient(listOf(Color.Transparent, s.shadow.copy(alpha = SHEET_SHADOW)), startY = -lift, endY = r.toPx()),
+                    topLeft = Offset(0f, -lift),
+                    size = Size(size.width, lift + r.toPx()),
+                )
+            }.clip(RoundedCornerShape(topStart = r, topEnd = r))
+            .background(Brush.verticalGradient(listOf(s.solidThick, s.solidRegular)))
             .padding(top = Tok.Space.p12.dp, bottom = Tok.Space.p12.dp),
         contentAlignment = Alignment.Center,
     ) {

@@ -473,6 +473,8 @@ fun RoundKey(
 fun BottomFade(
     height: Dp,
     modifier: Modifier = Modifier,
+    /** Share of the height, from the top, where the plane is opaque. */
+    solid: Float = 0.8f,
 ) {
     val plane = LinkTheme.scheme.solidRegular
     Box(
@@ -482,8 +484,8 @@ fun BottomFade(
             .background(
                 Brush.verticalGradient(
                     0f to plane.copy(alpha = 0f),
-                    0.45f to plane.copy(alpha = 0.85f),
-                    0.8f to plane,
+                    solid * 0.5625f to plane.copy(alpha = 0.85f),
+                    solid to plane,
                 ),
             ),
     )
