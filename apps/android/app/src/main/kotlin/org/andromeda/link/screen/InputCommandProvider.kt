@@ -83,7 +83,7 @@ class InputCommandProvider : ContentProvider() {
             old?.close()
             // A helper that comes back mid-mirror keeps Wi-Fi out of power saving, as the one before did.
             if (ScreenCapture.running) send("wifi-latency", code = 1)
-            Log.i("ScreenInput", "the shell helper reads input")
+            Log.i(TAG, "the shell helper reads input")
         }
 
         init {
@@ -94,7 +94,7 @@ class InputCommandProvider : ContentProvider() {
                     try {
                         stream.write(line.toByteArray())
                         stream.flush()
-                        if (Log.isLoggable("ScreenInput", Log.DEBUG)) Log.d("ScreenInput", "written ${line.substringBefore(' ')}")
+                        if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "written ${line.substringBefore(' ')}")
                     } catch (_: IOException) {
                         relay.compareAndSet(stream, null)
                     }
@@ -116,10 +116,11 @@ class InputCommandProvider : ContentProvider() {
             if (relay.value == null) return false
             val encoded = text?.let { Base64.encodeToString(it.toByteArray(), Base64.NO_WRAP) }.orEmpty()
             val line = listOf(action, x ?: 0, y ?: 0, x2 ?: 0, y2 ?: 0, code ?: 0, meta ?: 0, encoded).joinToString(" ")
-            if (!lines.offer(line + "\n")) Log.i("ScreenInput", "the helper is behind: dropped $action")
+            if (!lines.offer(line + "\n")) Log.i(TAG, "the helper is behind: dropped $action")
             return true
         }
 
         private const val QUEUE = 256
+        private const val TAG = "ScreenInput"
     }
 }
