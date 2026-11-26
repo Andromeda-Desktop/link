@@ -311,8 +311,7 @@ fun HomeScreen(
                             scroll = scroll,
                             onOpen = {
                                 if (state.desktops.size > 1) {
-                                    galaxy.overview()
-                                    overview = true
+                                    overview = galaxy.overview()
                                 } else {
                                     onDesktop(primary)
                                 }

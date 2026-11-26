@@ -48,8 +48,8 @@ class GalaxyControl {
         view?.setDesks(ids, selected)
     }
 
-    /** Flies out to show every desktop's galaxy. */
-    fun overview() = view?.overview()
+    /** Flies out to show every desktop's galaxy; false when the view has no other desktop yet. */
+    fun overview() = view?.overview() == true
 
     /** Flies into [id]'s galaxy from the overview. */
     fun enter(id: String) = view?.enter(id)

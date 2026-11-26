@@ -113,7 +113,7 @@ class GalaxyView(
     }
 
     // Debug builds: `adb shell am broadcast -a org.andromeda.link.GALAXY_BENCH` runs one scripted motion (turn, zoom in
-    // through two infinite-zoom loops, zoom out, fly home) and logs its frame times.
+    // through two infinite-zoom loops, zoom out, fly home; in the overview it only turns) and logs its frame times.
     private val benchReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(
@@ -130,6 +130,7 @@ class GalaxyView(
     private fun runBench() {
         stopMotion()
         gl.post { bench = mutableListOf() }
+        val over = synchronized(lock) { mode == Mode.Overview }
         val start = SystemClock.uptimeMillis()
         var last = start
         val step =
@@ -140,7 +141,7 @@ class GalaxyView(
                     last = now / 1_000_000
                     synchronized(lock) {
                         when {
-                            t < BENCH_TURN -> cam.yaw += dt * .6
+                            over || t < BENCH_TURN -> cam.yaw += dt * .6
                             t < BENCH_IN -> zoomAt(vw / 2f, vh * .3f, exp(-3 * dt))
                             t < BENCH_OUT -> zoomAt(vw / 2f, vh * .3f, exp(3 * dt))
                         }
@@ -149,12 +150,12 @@ class GalaxyView(
                         requestRender(motion = true)
                         Choreographer.getInstance().postFrameCallback(this)
                     } else {
-                        home()
+                        if (over) synchronized(lock) { fly(overCam()) } else home()
                         gl.postDelayed({
                             val b = bench.orEmpty().sorted()
                             bench = null
                             if (b.isNotEmpty()) {
-                                Log.i(TAG, "bench n=${b.size} median=${b[b.size / 2]} p90=${b[b.size * 9 / 10]} max=${b.last()}")
+                                Log.i(TAG, "bench over=$over n=${b.size} median=${b[b.size / 2]} p90=${b[b.size * 9 / 10]} max=${b.last()}")
                             }
                         }, FLY_MS.toLong() + 300)
                     }
@@ -222,13 +223,14 @@ class GalaxyView(
         requestRender()
     }
 
-    fun overview() {
+    fun overview(): Boolean =
         synchronized(lock) {
-            if (mode == Mode.Overview || others.isEmpty()) return
+            if (mode == Mode.Overview) return true
+            if (others.isEmpty()) return false
             mode = Mode.Overview
             fly(overCam())
+            true
         }
-    }
 
     /** Flies into [id]'s galaxy; on arrival it becomes the origin. */
     fun enter(id: String) {
@@ -783,27 +785,21 @@ class GalaxyView(
         val target = (mode as? Mode.Entering)?.id
         return others.mapIndexed { r, id ->
             val p = deskPos(r)
-            val c = cos(deskSpin(r)) * DESK_SCALE
-            val sn = sin(deskSpin(r)) * DESK_SCALE
-            val model =
-                floatArrayOf(
-                    c.toFloat(),
-                    0f,
-                    (-sn).toFloat(),
-                    0f,
-                    0f,
-                    DESK_SCALE.toFloat(),
-                    0f,
-                    0f,
-                    sn.toFloat(),
-                    0f,
-                    c.toFloat(),
-                    0f,
-                    p[0].toFloat(),
-                    p[1].toFloat(),
-                    p[2].toFloat(),
-                    1f,
-                )
+            // Tilted about the overview camera's right axis to open the disc; the target levels out as it lands.
+            val t = if (id == target) DESK_TILT * (1 - k) else DESK_TILT
+            val r3 = tilt(t)
+            val y = deskSpin(r)
+            val ry = doubleArrayOf(cos(y), 0.0, sin(y), 0.0, 1.0, 0.0, -sin(y), 0.0, cos(y))
+            val model = FloatArray(16)
+            for (col in 0..2) {
+                for (row in 0..2) {
+                    model[col * 4 + row] = ((0..2).sumOf { r3[row * 3 + it] * ry[it * 3 + col] } * DESK_SCALE).toFloat()
+                }
+            }
+            model[12] = p[0].toFloat()
+            model[13] = p[1].toFloat()
+            model[14] = p[2].toFloat()
+            model[15] = 1f
             val a =
                 when {
                     id == target -> DESK_DIM + (1 - DESK_DIM) * k
@@ -813,6 +809,25 @@ class GalaxyView(
             val part = if (id == target) DESK_PART + (1 - DESK_PART) * k else DESK_PART
             Other(times(m, model), a.toFloat(), DESK_SCALE.toFloat(), part.toFloat())
         }
+    }
+
+    /** Row-major rotation by [t] about the overview camera's right axis. */
+    private fun tilt(t: Double): DoubleArray {
+        val ax = cos(OVER_YAW)
+        val az = -sin(OVER_YAW)
+        val c = cos(t)
+        val s = sin(t)
+        return doubleArrayOf(
+            c + (1 - c) * ax * ax,
+            -s * az,
+            (1 - c) * ax * az,
+            s * az,
+            c,
+            -s * ax,
+            (1 - c) * ax * az,
+            s * ax,
+            c + (1 - c) * az * az,
+        )
     }
 
     private class Scene(
@@ -1112,12 +1127,13 @@ class GalaxyView(
         const val DESK_SPREAD = .35
         const val DESK_SPIN = 1.9
         const val DESK_SCALE = .75
-        const val DESK_DIM = .5
+        const val DESK_DIM = .85
         const val DESK_PART = 1.0 / 3
+        const val DESK_TILT = .6
         const val OVER_YAW = .15
-        const val OVER_PITCH = .5
-        const val OVER_DIST = 3.4
-        const val OVER_SH = .05
+        const val OVER_PITCH = .3
+        const val OVER_DIST = 3.0
+        const val OVER_SH = .2
         const val PICK_DP = 90f
 
         fun sub(
