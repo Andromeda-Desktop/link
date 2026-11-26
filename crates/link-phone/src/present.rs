@@ -292,10 +292,14 @@ async fn share_line(client: &Client, id: &DeviceId, line: &str) -> Value {
     }
 }
 
-/// Answers `mic-request` with 3 s of Opus silence (48 kHz mono, 20 ms frames) at real time, then finishes.
+/// Answers `mic-request` with 3 s of a 1 kHz Opus tone (48 kHz mono, 20 ms frames) at real time, then finishes.
 async fn send_mic(client: Client, from: DeviceId) {
-    /// One 20 ms mono CELT frame of silence (RFC 6716 TOC 0xF8 and an empty body).
-    const SILENCE: [u8; 3] = [0xF8, 0xFF, 0xFE];
+    /// One 20 ms mono frame of a 1 kHz tone at half scale (opusenc 16 kbit/s CBR); repeated, it decodes to a tone.
+    const TONE: [u8; 40] = [
+        0x78, 0xa8, 0x90, 0x50, 0x76, 0xa4, 0xe4, 0xde, 0x66, 0x43, 0x0f, 0x81, 0xaf, 0xe8, 0xfd, 0x38, 0xfa, 0x8a,
+        0xac, 0xa4, 0x58, 0xea, 0xfd, 0x36, 0xdc, 0xae, 0x9c, 0xed, 0xb0, 0xda, 0x49, 0x19, 0xcf, 0x97, 0x9d, 0x5b,
+        0xc4, 0xac, 0xa3, 0x86,
+    ];
     let sender = match client.start_mic(from.clone()).await {
         Ok(sender) => sender,
         Err(error) => {
@@ -306,7 +310,7 @@ async fn send_mic(client: Client, from: DeviceId) {
     let mut sent = 0_u64;
     for frame in 0..150_u64 {
         tick.tick().await;
-        let unit = link_core::mirror::Unit { pts_us: frame * 20_000, flags: 4, data: SILENCE.to_vec() };
+        let unit = link_core::mirror::Unit { pts_us: frame * 20_000, flags: 4, data: TONE.to_vec() };
         if sender.send(&unit).await.is_err() {
             break;
         }

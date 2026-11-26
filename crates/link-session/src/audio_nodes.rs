@@ -113,6 +113,10 @@ fn serve(commands: pw::channel::Receiver<Command>, ready: &std::sync::mpsc::Send
         Ok(both) => both,
         Err(error) => return drop(ready.send(Err(anyhow::anyhow!("PipeWire: {error}")))),
     };
+    let _errors = core
+        .add_listener_local()
+        .error(|id, _, res, message| log::warn!("PipeWire object {id}: {message} ({res})"))
+        .register();
     let streams: Rc<RefCell<HashMap<String, Box<dyn std::any::Any>>>> = Rc::default();
     let quit = main_loop.downgrade();
     let _attached = commands.attach(main_loop.loop_(), move |command| {
@@ -179,13 +183,30 @@ fn sink(
     Ok((stream, listener))
 }
 
-/// The source node and the stream that feeds it the queued PCM, silence when the queue runs dry.
-fn source(
-    core: &pw::core::CoreRc,
-    key: &str,
-    name: &str,
-    pcm: Pcm,
-) -> Result<(pw::node::Node, pw::stream::StreamRc, pw::stream::StreamListener<Pcm>), pw::Error> {
+/// Global ids of the microphone feed's output port and the source node's input port, and the link between them.
+#[derive(Default)]
+struct Wiring {
+    feed: Option<u32>,
+    source: Option<u32>,
+    output: Option<u32>,
+    input: Option<u32>,
+    link: Option<pw::link::Link>,
+}
+
+/// What `source` keeps alive: the source node, its feed stream, and the registry watch that links them and owns the link.
+/// Fields drop in order, so the link goes before the nodes it joins.
+type Source = (
+    pw::registry::Listener,
+    pw::registry::RegistryRc,
+    pw::stream::StreamListener<Pcm>,
+    pw::stream::StreamRc,
+    pw::node::Node,
+);
+
+/// The source node and the stream that feeds it the queued PCM, silence when the queue runs dry. `WirePlumber` ignores
+/// a `target.object` that names a source and links the feed to the default sink, so the feed is not autoconnected:
+/// once `WirePlumber` has given both nodes their ports, the registry watch links them.
+fn source(core: &pw::core::CoreRc, key: &str, name: &str, pcm: Pcm) -> Result<Source, pw::Error> {
     let node = core.create_object::<pw::node::Node>(
         "adapter",
         &pw::properties::properties! {
@@ -197,12 +218,58 @@ fn source(
             *pw::keys::OBJECT_LINGER => "false",
         },
     )?;
+    let feed_name = format!("{key}-feed");
     let props = pw::properties::properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
-        *pw::keys::NODE_NAME => format!("{key}-feed"),
-        *pw::keys::TARGET_OBJECT => key,
-        "node.dont-reconnect" => "true",
+        *pw::keys::NODE_NAME => feed_name.as_str(),
+        *pw::keys::NODE_AUTOCONNECT => "false",
+    };
+    let wiring = RefCell::new(Wiring::default());
+    let registry = core.get_registry_rc()?;
+    let watch = {
+        let (core, source_name) = (core.clone(), key.to_owned());
+        registry
+            .add_listener_local()
+            .global(move |global| {
+                let Some(props) = global.props else { return };
+                let mut wiring = wiring.borrow_mut();
+                match global.type_ {
+                    pw::types::ObjectType::Node if props.get(*pw::keys::NODE_NAME) == Some(feed_name.as_str()) => {
+                        wiring.feed = Some(global.id);
+                    }
+                    pw::types::ObjectType::Node if props.get(*pw::keys::NODE_NAME) == Some(source_name.as_str()) => {
+                        wiring.source = Some(global.id);
+                    }
+                    pw::types::ObjectType::Port => {
+                        let owner = props.get(*pw::keys::NODE_ID).and_then(|id| id.parse().ok());
+                        match props.get(*pw::keys::PORT_DIRECTION) {
+                            Some("out") if owner.is_some() && owner == wiring.feed => wiring.output = Some(global.id),
+                            Some("in") if owner.is_some() && owner == wiring.source => wiring.input = Some(global.id),
+                            _ => return,
+                        }
+                    }
+                    _ => return,
+                }
+                if let (None, Some(feed), Some(output), Some(source), Some(input)) =
+                    (&wiring.link, wiring.feed, wiring.output, wiring.source, wiring.input)
+                {
+                    match core.create_object::<pw::link::Link>(
+                        "link-factory",
+                        &pw::properties::properties! {
+                            *pw::keys::LINK_OUTPUT_NODE => feed.to_string(),
+                            *pw::keys::LINK_OUTPUT_PORT => output.to_string(),
+                            *pw::keys::LINK_INPUT_NODE => source.to_string(),
+                            *pw::keys::LINK_INPUT_PORT => input.to_string(),
+                            *pw::keys::OBJECT_LINGER => "false",
+                        },
+                    ) {
+                        Ok(link) => wiring.link = Some(link),
+                        Err(error) => log::warn!("no link from {feed_name} to {source_name}: {error}"),
+                    }
+                }
+            })
+            .register()
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "phone microphone", props)?;
     let listener = stream
@@ -232,9 +299,8 @@ fn source(
     position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_MONO;
     let format = format(1, position)?;
     let pod = pw::spa::pod::Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?;
-    let flags = pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS;
-    stream.connect(pw::spa::utils::Direction::Output, None, flags, &mut [pod])?;
-    Ok((node, stream, listener))
+    stream.connect(pw::spa::utils::Direction::Output, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut [pod])?;
+    Ok((watch, registry, listener, stream, node))
 }
 
 /// An S16LE `EnumFormat` pod at `RATE`.
