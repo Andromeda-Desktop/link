@@ -1,6 +1,7 @@
 package org.andromeda.link.devices
 
 import android.Manifest
+import android.app.Activity
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.os.Build
@@ -13,8 +14,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,12 +28,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -41,9 +45,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -55,6 +65,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -69,6 +80,9 @@ import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.core.domain.MediaCommandKind
 import org.andromeda.link.core.domain.PlaybackState
 import org.andromeda.link.core.domain.TransferRecord
+import org.andromeda.link.devices.galaxy.GalaxyBackdrop
+import org.andromeda.link.devices.galaxy.galaxyGestures
+import org.andromeda.link.devices.galaxy.rememberGalaxy
 import org.andromeda.link.files.PickerActions
 import org.andromeda.link.files.PickerSheet
 import org.andromeda.link.files.PickerTab
@@ -86,6 +100,7 @@ import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.OfferRow
 import org.andromeda.link.ui.kit.Pill
 import org.andromeda.link.ui.kit.PillKind
+import org.andromeda.link.ui.kit.PillSlider
 import org.andromeda.link.ui.kit.PullRefresh
 import org.andromeda.link.ui.kit.RoundKey
 import org.andromeda.link.ui.kit.Screen
@@ -97,6 +112,7 @@ import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.kit.hairline
 import org.andromeda.link.ui.text
+import org.andromeda.link.ui.theme.DarkSurface
 import org.andromeda.link.ui.theme.LinkTheme
 import org.andromeda.link.ui.theme.Tok
 import org.andromeda.link.ui.theme.elevation
@@ -176,8 +192,23 @@ fun HomeScreen(
     }
     var fan by rememberSaveable { mutableStateOf(false) }
     var sheet by rememberSaveable { mutableStateOf(HomeSheet.None) }
+    val galaxy = rememberGalaxy()
+    val list = rememberLazyListState()
+    var heroPx by remember { mutableFloatStateOf(0f) }
+    val scroll = { if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset.toFloat() else heroPx }
+    val view = LocalView.current
+    val dark = LinkTheme.dark
+    // The status bar sits on the night or dusk sky in both themes.
+    DisposableEffect(dark, primary != null) {
+        val window = (view.context as? Activity)?.window
+        val insets = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (primary != null) insets?.isAppearanceLightStatusBars = false
+        onDispose { insets?.isAppearanceLightStatusBars = !dark }
+    }
     Box(modifier) {
+        if (primary != null) GalaxyBackdrop(galaxy, scroll, Tok.Phone.heroScene, Modifier.fillMaxSize())
         Screen(
+            background = if (primary != null) Color.Transparent else LinkTheme.scheme.solidRegular,
             toast = toast,
             onToastEnd = viewModel::messageShown,
             toastInset = (Tok.Phone.dockInset + Tok.Phone.hit + Tok.Space.p12).dp,
@@ -245,56 +276,74 @@ fun HomeScreen(
             val player = desk.player(primary.id)?.takeIf { live }
             val hidden = if (pickOpen) Modifier.clearAndSetSemantics {} else Modifier
             PullRefresh(state.refreshing, viewModel::refresh, Modifier.fillMaxSize().then(hidden)) {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Phone.fadeDock.dp),
-                ) {
+                LazyColumn(Modifier.fillMaxSize(), state = list) {
                     item {
-                        IdentityRow(
+                        Hero(
                             primary,
                             state.refreshing,
                             missing.size,
+                            scrim = dark,
+                            scroll = scroll,
                             onOpen = { if (state.desktops.size > 1) sheet = HomeSheet.Desks else onDesktop(primary) },
                             onFixes = { sheet = HomeSheet.Fixes },
                             onActivity = onActivity,
                             onSettings = onSettings,
+                            modifier =
+                                Modifier
+                                    .fillParentMaxHeight(Tok.Phone.hero)
+                                    .onSizeChanged { heroPx = it.height.toFloat() }
+                                    .galaxyGestures(galaxy),
                         )
                     }
+                    item { SheetTop() }
                     if (primary.link == DesktopLink.Offline) {
-                        item { StatusCard(primary, state.refreshing) { viewModel.connect(primary) } }
+                        item { SheetPart { StatusCard(primary, state.refreshing) { viewModel.connect(primary) } } }
                     } else if (player != null) {
                         item {
-                            Column {
-                                MediaCard(player, onOpen = onMedia) { command, value -> viewModel.media(player, command, value) }
-                                Levels(primary, desk.can(primary.id), status, desk.volumes[primary.id], controls, volumeEnabled = true)
+                            SheetPart {
+                                MediaLevels(
+                                    player,
+                                    primary,
+                                    desk.can(primary.id),
+                                    status,
+                                    desk.volumes[primary.id],
+                                    controls,
+                                    onOpen = onMedia,
+                                ) { command, value -> viewModel.media(player, command, value) }
                             }
                         }
                     }
                     val offers = desk.transfers.filter { it.incoming == true && it.status in OFFER_STATUSES }
                     if (live && offers.isNotEmpty()) {
                         item {
-                            Offers(
-                                offers,
-                                onSave = viewModel::acceptTransfer,
-                                onDecline = viewModel::declineTransfer,
-                                onCancel = viewModel::cancelTransfer,
-                            )
+                            SheetPart {
+                                Offers(
+                                    offers,
+                                    onSave = viewModel::acceptTransfer,
+                                    onDecline = viewModel::declineTransfer,
+                                    onCancel = viewModel::cancelTransfer,
+                                )
+                            }
                         }
                     }
                     item {
-                        Controls(
-                            primary,
-                            desk.can(primary.id),
-                            status,
-                            desk.volumes[primary.id],
-                            levels = player == null,
-                            primary.id in state.ringing,
-                            autoClipboard,
-                            controls,
-                            onViewer = { onViewer(primary) },
-                            onClipboardSetup = onClipboardSetup,
-                        )
+                        SheetPart {
+                            Controls(
+                                primary,
+                                desk.can(primary.id),
+                                status,
+                                desk.volumes[primary.id],
+                                levels = player == null,
+                                primary.id in state.ringing,
+                                autoClipboard,
+                                controls,
+                                onViewer = { onViewer(primary) },
+                                onClipboardSetup = onClipboardSetup,
+                            )
+                        }
                     }
+                    // The sheet reaches the bottom edge however short its content is, and leaves room under the dock.
+                    item { SheetPart(Modifier.fillParentMaxHeight(1 - Tok.Phone.hero)) {} }
                 }
             }
         }
@@ -345,52 +394,103 @@ private fun DeskRow(
     }
 }
 
-/** The desktop: glyph, name (2 lines at most), presence and the fix chip; Activity and Settings keys at the end. */
+/**
+ * The desktop over the galaxy: Activity and Settings keys at the top, the name, presence and fix chip at the foot. The
+ * name block moves hero_identity of the sheet's scroll; the scene behind it hero_scene.
+ */
 @Composable
-private fun IdentityRow(
+private fun Hero(
     desktop: Desktop,
     refreshing: Boolean,
     fixes: Int,
+    scrim: Boolean,
+    scroll: () -> Float,
     onOpen: () -> Unit,
     onFixes: () -> Unit,
     onActivity: () -> Unit,
     onSettings: () -> Unit,
-) {
+    modifier: Modifier = Modifier,
+) = DarkSurface {
     val s = LinkTheme.scheme
     val t = LinkTheme.phoneType
-    val live = desktop.connected
-    Row(Modifier.fillMaxWidth().padding(top = Tok.Space.p8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Row(
-            Modifier
-                .weight(1f)
-                .heightIn(min = Tok.Phone.identity.dp)
-                .clip(RoundedCornerShape(Tok.Radius.r16.dp))
-                .clickable(role = Role.Button, onClickLabel = stringResource(R.string.desktop_open), onClick = onOpen),
-            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    Box(modifier.fillMaxWidth()) {
+        // Night only: the dusk sky is already dark behind the name.
+        if (scrim) {
             Box(
                 Modifier
-                    .size(Tok.Phone.glyph.dp)
-                    .clip(RoundedCornerShape(Tok.Radius.r16.dp))
-                    .background(if (live) s.accent.copy(alpha = Tok.Phone.glyphTint) else s.fill1),
-                contentAlignment = Alignment.Center,
-            ) { Symbol(Icons.Laptop, if (live) s.accentText else s.label2, size = Tok.Size.controlS.dp + Tok.Space.p2.dp) }
-            Column(Modifier.weight(1f)) {
-                Text(desktop.name, t.title1, maxLines = 2)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp + Tok.Space.p2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Presence(desktop, refreshing, Modifier.weight(1f, fill = false))
-                    if (fixes > 0) FixChip(fixes, onFixes)
-                }
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(HERO_SCRIM)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, s.scrim))),
+            )
+        }
+        Row(Modifier.align(Alignment.TopEnd).padding(end = Tok.Space.p8.dp)) {
+            IconKey(Icons.Clock, stringResource(R.string.activity_title), onActivity)
+            IconKey(Icons.Gear, stringResource(R.string.settings_title), onSettings)
+        }
+        Column(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = Tok.Space.p24.dp, end = Tok.Space.p24.dp, bottom = Tok.Space.p24.dp)
+                .graphicsLayer { translationY = scroll() * (1 - Tok.Phone.heroIdentity) },
+        ) {
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(Tok.Radius.r12.dp))
+                    .clickable(role = Role.Button, onClickLabel = stringResource(R.string.desktop_open), onClick = onOpen),
+                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(desktop.name, t.large, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                Symbol(Icons.Chev, s.label2, size = Tok.Phone.symbol.dp, modifier = Modifier.rotate(QUARTER_TURN))
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp + Tok.Space.p2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Presence(desktop, refreshing, Modifier.weight(1f, fill = false))
+                if (fixes > 0) FixChip(fixes, onFixes)
             }
         }
-        IconKey(Icons.Clock, stringResource(R.string.activity_title), onActivity)
-        IconKey(Icons.Gear, stringResource(R.string.settings_title), onSettings)
     }
 }
+
+/** The media tile's art: a scrim at the top, dimmed to ART_DIM at ART_FADE of its height, solid at the foot. */
+private const val ART_FADE = 0.45f
+private const val ART_DIM = 0.75f
+
+/** The dark scrim under the name covers this share of the hero, from its foot. */
+private const val HERO_SCRIM = 0.45f
+private const val QUARTER_TURN = 90f
+
+/** The sheet's rounded top edge with its grab bar; the sheet scrolls over the galaxy. */
+@Composable
+private fun SheetTop() {
+    val s = LinkTheme.scheme
+    val r = Tok.Phone.sheetRadius.dp
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = r, topEnd = r))
+            .background(s.solidRegular)
+            .padding(top = Tok.Space.p12.dp, bottom = Tok.Space.p12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(Tok.Phone.grab.dp, Tok.Space.p4.dp).clip(CircleShape).background(s.label3))
+    }
+}
+
+/** One slice of the sheet: its colour edge to edge, the content inset like the rest of Home. */
+@Composable
+private fun SheetPart(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) = Box(
+    modifier
+        .fillMaxWidth()
+        .background(LinkTheme.scheme.solidRegular)
+        .padding(horizontal = Tok.Space.p24.dp),
+) { content() }
 
 @Composable
 private fun Presence(
@@ -498,43 +598,87 @@ private fun StatusCard(
     }
 }
 
-/** Only while a player plays: art with title and artist, the seek line with times, then previous / play / next. */
+/** The player as a square tile of its art, beside the two level pills (volume, brightness) at the same height. */
 @Composable
-private fun MediaCard(
+private fun MediaLevels(
     shown: DesktopPlayer,
+    desktop: Desktop,
+    capabilities: Set<String>?,
+    status: DesktopStatus?,
+    volume: DesktopVolume?,
+    controls: DeskControls,
     onOpen: () -> Unit,
     onCommand: (MediaCommandKind, Long?) -> Unit,
 ) {
+    val control = desktop.connected && CAN_CONTROL in capabilities.orEmpty()
+    // The pills' shadow falls into this part's own bottom room; the next sheet part would paint over it.
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = Tok.Space.p16.dp)) {
+        val gap = Tok.Phone.levelGap.dp
+        val tile = (maxWidth - gap * 2) / 2
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            MediaTile(shown, tile, onOpen, onCommand)
+            PillSlider(
+                volume?.percent,
+                if (volume?.muted == true) Icons.VolOff else Icons.Vol,
+                stringResource(R.string.home_volume),
+                control,
+                { controls.setVolume(desktop, it, unmute = volume?.muted == true) },
+                Modifier.weight(1f).height(tile),
+                onIcon =
+                    volume?.let {
+                        stringResource(if (it.muted) R.string.home_unmute else R.string.home_mute) to
+                            { controls.setMuted(desktop, !it.muted) }
+                    },
+            )
+            PillSlider(
+                status?.brightness?.takeIf { capabilities?.contains("brightness") != false },
+                Icons.Sun,
+                stringResource(R.string.home_brightness),
+                control,
+                { controls.setBrightness(desktop, it) },
+                Modifier.weight(1f).height(tile),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MediaTile(
+    shown: DesktopPlayer,
+    size: Dp,
+    onOpen: () -> Unit,
+    onCommand: (MediaCommandKind, Long?) -> Unit,
+) = DarkSurface {
     val s = LinkTheme.scheme
     val t = LinkTheme.phoneType
     val player = shown.player
     val playing = player.state == PlaybackState.Playing
-    val shape = RoundedCornerShape(Tok.Radius.r16.dp)
-    Column(
+    Box(
         Modifier
-            .padding(top = Tok.Space.p12.dp)
-            .fillMaxWidth()
-            .clip(shape)
-            .background(s.view)
-            .border(Dp.Hairline, s.stroke, shape)
-            .padding(Tok.Space.p12.dp),
+            .size(size)
+            .clip(RoundedCornerShape(Tok.Radius.r28.dp))
+            .clickable(role = Role.Button, onClick = onOpen),
     ) {
-        Row(
-            Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onOpen),
-            horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Artwork(player.artwork, Tok.Size.rowTwo.dp, Tok.Radius.r12.dp)
-            Column(Modifier.weight(1f)) {
-                Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
-                val by = if (player.artist.isEmpty()) player.name else stringResource(R.string.home_on_app, player.artist, player.name)
-                Text(by, t.footnote, color = s.label2, maxLines = 1)
+        Artwork(player.artwork, size, 0.dp)
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    0f to s.scrim,
+                    ART_FADE to s.solidRegular.copy(alpha = ART_DIM),
+                    1f to s.solidRegular,
+                ),
+            ),
+        )
+        Column(Modifier.matchParentSize().padding(Tok.Space.p12.dp)) {
+            Text(player.name, t.caption, color = s.label2, maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            Text(player.title.ifEmpty { player.name }, t.headline, maxLines = 1)
+            if (player.artist.isNotEmpty()) Text(player.artist, t.footnote, color = s.label2, maxLines = 1)
+            Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
+                onCommand(MediaCommandKind.Seek, it)
             }
+            MediaKeys(player, onCommand, compact = true)
         }
-        Progress(player.positionMs, player.lengthMs, player.receivedAt, playing, MediaCommandKind.Seek in player.can) {
-            onCommand(MediaCommandKind.Seek, it)
-        }
-        MediaKeys(player, onCommand, Modifier.padding(top = Tok.Space.p4.dp))
     }
 }
 

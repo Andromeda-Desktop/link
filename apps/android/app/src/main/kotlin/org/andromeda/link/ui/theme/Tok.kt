@@ -530,5 +530,10 @@ object Tok {
         val pickBadge = 24.0f
         val pickBadgeRing = 1.5f
         val pickMaxTop = 64.0f
+        val hero = 0.5f
+        val heroScene = 0.28f
+        val heroIdentity = 0.6f
+        val sheetRadius = 32.0f
+        val levelGap = 12.0f
     }
 }

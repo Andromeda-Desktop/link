@@ -58,21 +58,31 @@ internal fun MediaKeys(
     player: MediaPlayer,
     onCommand: (MediaCommandKind, Long?) -> Unit,
     modifier: Modifier = Modifier,
+    /** Keys spread over a narrow tile, the play key at control_l. */
+    compact: Boolean = false,
 ) {
     val s = LinkTheme.scheme
     val playing = player.state == PlaybackState.Playing
     Row(
         modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p24.dp, Alignment.CenterHorizontally),
+        horizontalArrangement =
+            if (compact) {
+                Arrangement.SpaceBetween
+            } else {
+                Arrangement.spacedBy(
+                    Tok.Space.p24.dp,
+                    Alignment.CenterHorizontally,
+                )
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MediaKey(Icons.Prev, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can) {
+        MediaKey(Icons.Prev, stringResource(R.string.media_previous), MediaCommandKind.Previous in player.can, compact) {
             onCommand(MediaCommandKind.Previous, null)
         }
         val playLabel = stringResource(if (playing) R.string.home_pause else R.string.home_play)
         Box(
             Modifier
-                .size(Tok.Phone.roundKeyL.dp)
+                .size(if (compact) Tok.Size.controlL.dp else Tok.Phone.roundKeyL.dp)
                 .clip(CircleShape)
                 .background(s.label1)
                 .clickable(enabled = MediaCommandKind.PlayPause in player.can, role = Role.Button) {
@@ -80,7 +90,7 @@ internal fun MediaKeys(
                 }.semantics { contentDescription = playLabel },
             contentAlignment = Alignment.Center,
         ) { Symbol(if (playing) Icons.Pause else Icons.Play, s.view, size = Tok.Phone.symbol.dp) }
-        MediaKey(Icons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can) {
+        MediaKey(Icons.Next, stringResource(R.string.media_next), MediaCommandKind.Next in player.can, compact) {
             onCommand(MediaCommandKind.Next, null)
         }
     }
@@ -91,12 +101,13 @@ private fun MediaKey(
     icon: ImageVector,
     label: String,
     enabled: Boolean,
+    compact: Boolean,
     onClick: () -> Unit,
 ) {
     val s = LinkTheme.scheme
     Box(
         Modifier
-            .size(Tok.Phone.hit.dp)
+            .size(if (compact) Tok.Size.controlL.dp else Tok.Phone.hit.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = label },

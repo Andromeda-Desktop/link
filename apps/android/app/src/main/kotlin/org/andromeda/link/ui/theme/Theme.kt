@@ -23,14 +23,24 @@ object LinkTheme {
     val dark: Boolean @Composable get() = LocalDark.current
 }
 
+/** The dark scheme for one surface that stays dark in both themes (art, the night sky), with no window side effects. */
+@Composable
+fun DarkSurface(content: @Composable () -> Unit) {
+    val scheme = monochrome(Tok.Scheme.dark)
+    CompositionLocalProvider(
+        LocalDark provides true,
+        LocalScheme provides scheme,
+        LocalIndication provides PressHighlight(scheme.fill2),
+        content = content,
+    )
+}
+
 @Composable
 fun LinkTheme(
     dark: Boolean = preferredDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val base = if (dark) Tok.Scheme.dark else Tok.Scheme.light
-    // Link on the phone is monochrome: the accent is the primary label (black on light, white on dark).
-    val scheme = base.copy(accent = base.label1, accentText = base.label1, onAccent = base.view)
+    val scheme = monochrome(if (dark) Tok.Scheme.dark else Tok.Scheme.light)
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -50,3 +60,6 @@ fun LinkTheme(
         content = content,
     )
 }
+
+// Link on the phone is monochrome: the accent is the primary label (black on light, white on dark).
+private fun monochrome(base: Tok.SchemeToken) = base.copy(accent = base.label1, accentText = base.label1, onAccent = base.view)
