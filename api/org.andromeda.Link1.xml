@@ -187,7 +187,8 @@
          OpenMirror's framing, each with flag 4. Closing it ends the sound; a new call replaces the phone's last
          stream. Errors: .NotConnected; .Refused("unsupported") from a phone without the feature; .Refused("not-allowed")
          while the phone's speaker switch is off. -->
-    <!-- Asks link-session to take the phone's microphone: it answers MicRequested with OpenMic. -->
+    <!-- Asks link-session to take the phone's microphone: it answers MicRequested with OpenMic. Errors:
+         .Refused("unavailable") while DeviceInfo mic is empty; .Failed while it is asking or on. -->
     <method name="StartMic">
       <arg name="device_id" type="s" direction="in"/>
     </method>
@@ -271,7 +272,8 @@
          or bluetooth while connected, else empty; connected (b); storage_free and storage_total (t) are bytes of the
          phone's shared storage as it last reported them, kept in memory after it disconnects, absent until the phone
          reports them (older phones never do); battery (i) is its percent while connected; speaker (b) is true while
-         connected to a phone that plays OpenSpeaker streams with its speaker switch on. PropertiesChanged reports
+         connected to a phone that plays OpenSpeaker streams with its speaker switch on. mic (s) is ready (connected, the
+         phone has a microphone and its switch is on), asking (StartMic waits for the phone), on, or empty. PropertiesChanged reports
          each change. -->
     <property name="DeviceInfo" type="a{sa{sv}}" access="read"/>
     <!-- Devices whose offers are accepted without asking. -->

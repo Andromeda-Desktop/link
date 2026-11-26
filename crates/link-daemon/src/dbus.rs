@@ -666,13 +666,21 @@ impl Link {
         self.send(&device_id, Message::MirrorKeyframe).await
     }
 
-    /// Asks `link-session` to take the phone's microphone: it calls `OpenMic` on `MicRequested`.
+    /// Asks `link-session` to take the phone's microphone: it calls `OpenMic` on `MicRequested`. Refuses at once
+    /// ("unavailable") a phone whose `DeviceInfo` mic is empty: not connected, no microphone, or its switch off.
     async fn start_mic(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         device_id: String,
     ) -> Result<(), LinkError> {
         DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        let state = self.snapshots.borrow().info.iter().find(|info| info.id == device_id).map(|info| info.mic);
+        match state {
+            None => return Err(LinkError::Rejected("not a paired device".to_owned())),
+            Some("") => return Err(LinkError::Refused("unavailable".to_owned())),
+            Some("ready") => {}
+            Some(_) => return Err(LinkError::Failed("that phone's microphone is already on".to_owned())),
+        }
         Self::mic_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
     }
 
@@ -1240,6 +1248,7 @@ fn info_fields(info: &crate::hub::DeviceInfo) -> HashMap<String, zbus::Variant<'
         ("link".to_owned(), info.link.into()),
         ("connected".to_owned(), (info.link == "live").into()),
         ("speaker".to_owned(), info.speaker.into()),
+        ("mic".to_owned(), info.mic.into()),
     ]);
     if let Some((free, total)) = info.storage {
         fields.insert("storage_free".to_owned(), free.into());

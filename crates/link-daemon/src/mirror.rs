@@ -59,6 +59,8 @@ pub struct Mirrors {
     wifi: WifiPower,
     /// A microphone's streams: Wi-Fi power save stays with the screen mirrors' instance, which runs its helper.
     sound_only: bool,
+    /// A phone started or stopped waiting or running since [`Mirrors::take_changed`].
+    changed: bool,
 }
 
 impl Mirrors {
@@ -83,6 +85,22 @@ impl Mirrors {
 
     pub fn wait(&mut self, id: DeviceId, ask: Ask) {
         self.waiting.insert(id, (ask, Instant::now() + CONSENT_TIMEOUT));
+        self.changed = true;
+    }
+
+    /// `asking` while the phone has not answered, `on` while its stream runs.
+    pub fn state(&self, id: &DeviceId) -> Option<&'static str> {
+        if self.running.contains_key(id) {
+            Some("on")
+        } else if self.waiting.contains_key(id) {
+            Some("asking")
+        } else {
+            None
+        }
+    }
+
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
     }
 
     pub fn deadline(&self) -> Option<Instant> {
@@ -103,6 +121,7 @@ impl Mirrors {
     pub fn fail(&mut self, id: &DeviceId, failure: Failure) {
         if let Some((ask, _)) = self.waiting.remove(id) {
             drop(ask.reply.send(Err(failure)));
+            self.changed = true;
         }
     }
 
@@ -111,6 +130,7 @@ impl Mirrors {
         self.fail(id, Failure::Refused(reason.unwrap_or_else(|| "the phone stopped mirroring".to_owned())));
         if let Some(stop) = self.running.remove(id) {
             let _ = stop.send(());
+            self.changed = true;
         }
         self.wifi_awake(self.active());
     }
@@ -123,6 +143,7 @@ impl Mirrors {
             log::info!("{from}: refusing a mirror stream nobody asked for");
             return receiver.stop();
         };
+        self.changed = true;
         let codec = receiver.codec;
         if codec.is_some_and(|codec| !codecs.contains(&codec)) {
             receiver.stop();
@@ -172,7 +193,7 @@ impl Mirrors {
                 return None;
             }
         };
-        self.running.remove(&id);
+        self.changed |= self.running.remove(&id).is_some();
         self.wifi_awake(self.active());
         Some(id)
     }

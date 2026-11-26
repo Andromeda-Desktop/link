@@ -98,6 +98,9 @@ pub struct DeviceInfo {
     pub battery: Option<u8>,
     /// Connected, plays `OpenSpeaker` streams, and its speaker switch is on.
     pub speaker: bool,
+    /// The phone's microphone: ready (connected, has one, its switch on), asking (waiting for the phone's consent),
+    /// on, or empty when it cannot give one.
+    pub mic: &'static str,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -627,6 +630,9 @@ impl Hub {
                     log::info!("pairing window expired");
                     self.close_window();
                 }
+            }
+            if self.mics.take_changed() {
+                self.publish();
             }
         }
     }
@@ -1546,6 +1552,20 @@ impl Hub {
             .collect()
     }
 
+    /// The D-Bus `DeviceInfo` mic field: see [`DeviceInfo::mic`].
+    fn mic_state(&self, id: &DeviceId) -> &'static str {
+        self.mics.state(id).unwrap_or(
+            if self.sessions.contains_key(id)
+                && self.phone_has(id, link_core::proto::message::MIC)
+                && self.shares(id, Feature::Mic)
+            {
+                "ready"
+            } else {
+                ""
+            },
+        )
+    }
+
     fn publish(&self) {
         let devices = self
             .store
@@ -1569,6 +1589,7 @@ impl Hub {
                     speaker: self.sessions.contains_key(&peer.id)
                         && self.phone_has(&peer.id, link_core::proto::message::SPEAKER)
                         && self.shares(&peer.id, Feature::Speaker),
+                    mic: self.mic_state(&peer.id),
                 }
             })
             .collect();

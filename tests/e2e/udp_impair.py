@@ -6,7 +6,7 @@ Usage: udp_impair.py LISTEN_PORT TARGET_PORT CONTROL STATS
 Datagrams from any client to LISTEN_PORT go to 127.0.0.1:TARGET_PORT from a socket per client, and answers go back.
 The client-to-target direction is impaired as CONTROL says, re-read each second: a line such as
 "rate=2000000 loss=0.03 delay=0.02" (bits per second, a drop probability, seconds), or "clean". A rate limit queues
-at most 100 ms of data and drops the rest. Each second STATS gets one line: time, forwarded, and dropped datagrams.
+at most 100 ms of data and drops the rest. Each second STATS gets one line: time, forwarded, dropped, and returned (target-to-client) datagrams.
 """
 import heapq
 import random
@@ -43,7 +43,7 @@ def main():
     pending = []
     settings = read_control(control)
     next_free = 0.0
-    forwarded = dropped = 0
+    forwarded = dropped = returned = 0
     tick = time.monotonic() + 1
     stats = open(stats_path, "a", buffering=1)
     while True:
@@ -75,14 +75,15 @@ def main():
             else:
                 data, _ = key.fileobj.recvfrom(65535)
                 front.sendto(data, key.data)
+                returned += 1
         now = time.monotonic()
         while pending and pending[0][0] <= now:
             _, _, upstream, data = heapq.heappop(pending)
             upstream.sendto(data, target)
             forwarded += 1
         if now >= tick:
-            print(f"{time.time():.1f} {forwarded} {dropped}", file=stats)
-            forwarded = dropped = 0
+            print(f"{time.time():.1f} {forwarded} {dropped} {returned}", file=stats)
+            forwarded = dropped = returned = 0
             settings = read_control(control)
             tick = now + 1
 

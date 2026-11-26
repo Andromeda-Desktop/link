@@ -13,6 +13,8 @@ use crate::wire::{CONTROL_PRIORITY, Connection, RecvStream, SendStream};
 
 /// How long a peer may take for one handshake step before the attempt is abandoned.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+/// A control write that waits longer than this is logged: control messages are small and go first.
+const SLOW_WRITE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -90,9 +92,15 @@ impl ControlWriter {
     pub async fn send(&mut self, message: Message) -> Result<u64, Error> {
         let id = self.next_id;
         self.next_id += 1;
+        let kind = message.kind();
         let bytes = frame::encode(&Envelope::new(id, message));
         observe(self.tap.as_ref(), Direction::Sent, &bytes[HEADER_LEN..]);
+        let started = std::time::Instant::now();
         self.send.write_all(&bytes).await?;
+        let waited = started.elapsed();
+        if waited > SLOW_WRITE {
+            log::warn!("control write of a {} waited {} ms for flow control", kind, waited.as_millis());
+        }
         Ok(id)
     }
 }
