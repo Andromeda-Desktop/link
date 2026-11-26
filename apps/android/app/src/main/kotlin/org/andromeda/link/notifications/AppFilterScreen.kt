@@ -14,7 +14,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.Separator
 import org.andromeda.link.ui.kit.SwitchRow
@@ -34,23 +33,16 @@ fun AppFilterScreen(
     val s = LinkTheme.scheme
     val t = LinkTheme.phoneType
     Box(modifier) {
-        Screen(background = s.solidRegular) {
-            BackKey(s.label1, onBack, Modifier.padding(horizontal = Tok.Space.p12.dp))
+        Screen(title = stringResource(R.string.mirror_apps_title), onBack = onBack, background = s.solidRegular) {
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Space.p48.dp),
             ) {
                 item {
                     Text(
-                        stringResource(R.string.mirror_apps_title),
-                        t.large,
-                        Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p8.dp),
-                        maxLines = 2,
-                    )
-                    Text(
                         stringResource(R.string.mirror_apps_hint),
                         t.paragraph,
-                        Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p4.dp, bottom = Tok.Space.p16.dp),
+                        Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p8.dp, bottom = Tok.Space.p16.dp),
                         color = s.label2,
                     )
                 }

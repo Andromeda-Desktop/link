@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,7 +49,6 @@ import org.andromeda.link.clipboard.title
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.onboarding.Grant
 import org.andromeda.link.onboarding.OPTIONAL
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
@@ -110,8 +110,11 @@ fun SettingsScreen(
         ClipEventsScreen({ page = SettingsPage.Advanced }, modifier)
         return
     }
+    val advanced = page == SettingsPage.Advanced
     Box(modifier) {
         Screen(
+            title = stringResource(if (advanced) R.string.settings_advanced else R.string.settings_title),
+            onBack = if (advanced) ({ page = SettingsPage.Main }) else onBack,
             background = LinkTheme.scheme.solidRegular,
             overlay = {
                 BottomFade(Tok.Space.p48.dp, Modifier.align(Alignment.BottomCenter))
@@ -125,20 +128,8 @@ fun SettingsScreen(
                 )
             },
         ) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                val advanced = page == SettingsPage.Advanced
-                BackKey(
-                    LinkTheme.scheme.label1,
-                    if (advanced) ({ page = SettingsPage.Main }) else onBack,
-                    Modifier.padding(horizontal = Tok.Space.p12.dp),
-                )
+            Column(Modifier.fillMaxSize().verticalScroll(key(advanced) { rememberScrollState() })) {
                 Column(Modifier.padding(horizontal = Tok.Space.p16.dp)) {
-                    Text(
-                        stringResource(if (advanced) R.string.settings_advanced else R.string.settings_title),
-                        LinkTheme.phoneType.large,
-                        modifier = Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p8.dp),
-                        maxLines = 1,
-                    )
                     if (advanced) {
                         Advanced(
                             prefs,

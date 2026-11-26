@@ -106,6 +106,7 @@ import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.PageHeader
 import org.andromeda.link.ui.kit.RoundKey
 import org.andromeda.link.ui.kit.Segmented
 import org.andromeda.link.ui.kit.Sheet
@@ -405,14 +406,8 @@ fun ViewerScreen(
         } else {
             Box(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
-                    Row(
-                        Modifier.fillMaxWidth().height(Tok.Size.rowTwo.dp).padding(horizontal = Tok.Space.p8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        BackKey(LinkTheme.scheme.label1, leave)
-                        chip(Modifier.weight(1f, fill = false))
-                        Spacer(Modifier.weight(1f))
+                    PageHeader(desk.name, leave, Modifier.padding(end = Tok.Space.p8.dp)) {
+                        if (!desk.input) chip(Modifier.weight(1f, fill = false))
                         zoom()
                     }
                     picture(Modifier.fillMaxWidth().fillMaxHeight(Tok.Phone.picture))

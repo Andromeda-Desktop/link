@@ -6,14 +6,12 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,7 +22,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -329,7 +326,7 @@ fun Switch(
     }
 }
 
-/** A short heading over a group: headline, 32 above, 8 below; [detail] follows it in label_2. */
+/** A short heading over a group: headline in label_2, 32 above, 8 below; [detail] follows it. */
 @Composable
 fun SectionTitle(
     text: String,
@@ -341,7 +338,7 @@ fun SectionTitle(
         horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
-        Text(text, LinkTheme.phoneType.headline, maxLines = 1)
+        Text(text, LinkTheme.phoneType.headline, color = LinkTheme.scheme.label2, maxLines = 1)
         if (detail != null) Text(detail, LinkTheme.phoneType.body, color = LinkTheme.scheme.label2, maxLines = 1)
     }
 }
@@ -390,51 +387,6 @@ fun <T> Segmented(
                         modifier = Modifier.fillMaxWidth().align(Alignment.Center),
                         maxLines = 1,
                         align = TextAlign.Center,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** A scrolling row of filters: 36 visible in a 48 hit, fill_1; the selected one is an accent tint with accent text. */
-@Composable
-fun <T> FilterChips(
-    options: List<Pair<T, String>>,
-    selected: T,
-    onSelect: (T) -> Unit,
-    modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(horizontal = Tok.Space.p16.dp),
-) {
-    val s = LinkTheme.scheme
-    Row(
-        modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(contentPadding),
-        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp),
-    ) {
-        for ((value, label) in options) {
-            val cur = value == selected
-            Box(
-                Modifier
-                    .height(Tok.Phone.hit.dp)
-                    .selectable(cur, role = Role.Tab, interactionSource = null, indication = null) { onSelect(value) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(
-                    Modifier
-                        .height(Tok.Phone.chip.dp)
-                        .clip(CircleShape)
-                        .background(if (cur) s.accent.copy(alpha = Tok.Phone.chipTint) else s.fill1)
-                        .padding(horizontal = Tok.Phone.pillPad.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        label,
-                        LinkTheme.phoneType.footnote.copy(fontWeight = FontWeight.SemiBold),
-                        color = if (cur) s.accentText else s.label1,
-                        maxLines = 1,
                     )
                 }
             }

@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
@@ -18,13 +17,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.GroupCard
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.SectionTitle
 import org.andromeda.link.ui.kit.Separator
-import org.andromeda.link.ui.kit.Text
 import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.kit.groupSlice
 import org.andromeda.link.ui.theme.LinkTheme
@@ -77,19 +74,12 @@ fun ClipEventsScreen(
     val s = LinkTheme.scheme
     val t = LinkTheme.phoneType
     Box(modifier) {
-        Screen(background = s.solidRegular) {
-            BackKey(s.label1, onBack, Modifier.padding(horizontal = Tok.Space.p12.dp))
+        Screen(title = stringResource(R.string.clip_log), onBack = onBack, background = s.solidRegular) {
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = Tok.Space.p16.dp, end = Tok.Space.p16.dp, bottom = Tok.Space.p48.dp),
             ) {
                 item {
-                    Text(
-                        stringResource(R.string.clip_log),
-                        t.large,
-                        Modifier.padding(start = Tok.Space.p4.dp, top = Tok.Space.p8.dp, bottom = Tok.Space.p16.dp),
-                        maxLines = 2,
-                    )
                     GroupCard {
                         ValueRow(stringResource(R.string.clip_log_mode), icon = Icons.Clip, subtitle = stringResource(mode.title()))
                     }

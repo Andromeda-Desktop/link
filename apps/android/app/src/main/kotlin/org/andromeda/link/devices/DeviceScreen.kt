@@ -46,7 +46,6 @@ import org.andromeda.link.core.domain.Feature
 import org.andromeda.link.files.MediaAccess
 import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.screen.ScreenInput
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.BottomFade
 import org.andromeda.link.ui.kit.Capsule
 import org.andromeda.link.ui.kit.CapsuleKind
@@ -102,6 +101,8 @@ fun DeviceScreen(
     val desktop = state.desktop
     Box(modifier) {
         Screen(
+            title = desktop?.name.orEmpty(),
+            onBack = onBack,
             toast = state.failure?.text(resources),
             onToastEnd = viewModel::failureShown,
             background = LinkTheme.scheme.solidRegular,
@@ -132,7 +133,6 @@ fun DeviceScreen(
             },
         ) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                BackKey(LinkTheme.scheme.label1, onBack, Modifier.padding(horizontal = Tok.Space.p12.dp))
                 if (desktop == null) return@Column
                 Column(Modifier.padding(horizontal = Tok.Space.p16.dp)) {
                     Identity(desktop, state.busy, viewModel::connect)

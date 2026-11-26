@@ -93,8 +93,8 @@ import org.andromeda.link.R
 import org.andromeda.link.core.domain.PointerButton
 import org.andromeda.link.core.domain.RemoteInput
 import org.andromeda.link.core.domain.RemoteKey
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.Icons
+import org.andromeda.link.ui.kit.PageHeader
 import org.andromeda.link.ui.kit.RoundKey
 import org.andromeda.link.ui.kit.Screen
 import org.andromeda.link.ui.kit.Symbol
@@ -278,19 +278,14 @@ internal fun Modifier.dots(dot: Color): Modifier =
         }
     }
 
-/** Back and the desktop chip: the dot and the name, or why input is off. */
+/** The page header with the desktop chip: the dot and the name, or why input is off. */
 @Composable
 private fun TopBar(
     desk: RemoteDesk,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier.fillMaxWidth().padding(start = Tok.Space.p8.dp, end = Tok.Space.p8.dp, top = Tok.Space.p4.dp),
-        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BackKey(LinkTheme.scheme.label1, onBack)
+    PageHeader(stringResource(R.string.remote_touchpad), onBack, modifier.padding(end = Tok.Space.p8.dp)) {
         DeskChip(desk, if (desk.input) null else stringResource(R.string.remote_input_off), Modifier.weight(1f, fill = false))
     }
 }
@@ -958,7 +953,7 @@ private fun Presenter(
                 }
             }.semantics { contentDescription = area },
     ) {
-        BackKey(s.onAccent, { go(RemoteMode.Pad) }, Modifier.padding(start = Tok.Space.p8.dp, top = Tok.Space.p4.dp))
+        PageHeader(stringResource(R.string.presenter_title), { go(RemoteMode.Pad) }, ink = s.onAccent)
         Box(
             Modifier
                 .align(Alignment.TopEnd)

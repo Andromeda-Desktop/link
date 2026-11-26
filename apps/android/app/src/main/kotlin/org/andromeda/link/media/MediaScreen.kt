@@ -20,7 +20,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.MediaCommandKind
 import org.andromeda.link.core.domain.PlaybackState
-import org.andromeda.link.ui.kit.BackKey
 import org.andromeda.link.ui.kit.CapsuleSlider
 import org.andromeda.link.ui.kit.Icons
 import org.andromeda.link.ui.kit.Screen
@@ -40,8 +39,7 @@ fun MediaScreen(
     val players by viewModel.players.collectAsStateWithLifecycle()
     val s = LinkTheme.scheme
     Box(modifier) {
-        Screen(background = s.solidRegular) {
-            BackKey(s.label1, onBack, Modifier.padding(horizontal = Tok.Space.p12.dp))
+        Screen(title = stringResource(R.string.media_title), onBack = onBack, background = s.solidRegular) {
             if (players.isEmpty()) {
                 Empty()
                 return@Screen

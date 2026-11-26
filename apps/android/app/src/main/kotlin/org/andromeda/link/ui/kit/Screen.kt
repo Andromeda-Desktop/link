@@ -73,22 +73,24 @@ fun Screen(
     }
 }
 
-/** A page's top row: back, [title] in title_1 on one line, and [actions] at the trailing edge. */
+/** A page's top row: back, [title] in title_1 on one line, and [actions] at the trailing edge; [ink] colours back and title. */
 @Composable
 fun PageHeader(
     title: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    ink: Color = LinkTheme.scheme.label1,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     Row(
         modifier.fillMaxWidth().heightIn(min = Tok.Phone.hit.dp).padding(horizontal = Tok.Space.p4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BackKey(LinkTheme.scheme.label1, onBack)
+        BackKey(ink, onBack)
         Text(
             title,
             LinkTheme.phoneType.title1,
+            color = ink,
             modifier = Modifier.weight(1f).padding(start = Tok.Space.p4.dp),
             maxLines = 1,
         )
