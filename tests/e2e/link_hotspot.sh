@@ -162,12 +162,12 @@ wait_for 60 "a 2 MiB send whose hotspot failed never arrived over Bluetooth" tes
 (( $(nm_calls add-and-activate) > JOINS )) || fail "a 2 MiB send over Bluetooth did not ask for the hotspot"
 [[ $(last_via) == bluetooth ]] || fail "the 2 MiB fallback did not stay on Bluetooth"
 record '{"step":"small-send-tries-hotspot-then-bluetooth","bytes":2097152,"sha256_match":true}'
-FALLBACKS=$(grep -c "hub\] .*sending over Bluetooth: hotspot" "$OUT/linkd.log" || true)
+FALLBACKS=$(grep -c "hub::nearby\] .*sending over Bluetooth: hotspot" "$OUT/linkd.log" || true)
 python3 "$ROOT/tests/e2e/link_send_files.py" "$ID" "$RUNTIME/src/small.bin" > /dev/null \
   || fail "a desktop 2 MiB SendFiles whose hotspot failed was refused"
 wait_for 60 "the desktop's 2 MiB never reached the phone over Bluetooth" test -f "$PHONE_DL/small.bin"
 [[ $(sha "$RUNTIME/src/small.bin") == $(sha "$PHONE_DL/small.bin") ]] || fail "the desktop's 2 MiB differs on the phone"
-(( $(grep -c "hub\] .*sending over Bluetooth: hotspot" "$OUT/linkd.log") > FALLBACKS )) \
+(( $(grep -c "hub::nearby\] .*sending over Bluetooth: hotspot" "$OUT/linkd.log") > FALLBACKS )) \
   || fail "a desktop 2 MiB send over Bluetooth did not ask for the hotspot first"
 record '{"step":"desktop-small-send-tries-hotspot-then-bluetooth","bytes":2097152,"sha256_match":true}'
 
