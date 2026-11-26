@@ -22,10 +22,15 @@ const SOUND_STRIDE: usize = 4;
 
 /// Decoded phone sound waiting for the graph to pull it, S16LE at `RATE`: mono for a microphone, stereo for sound.
 pub type Pcm = Arc<Mutex<Jitter>>;
-/// Sound a `Jitter` holds before it plays, and keeps after it drops a backlog.
-const TARGET_MS: usize = 40;
+/// Sound a phone sound `Jitter` holds before it plays, and keeps after it drops a backlog: units arrive within
+/// +-10 ms of their 20 ms cadence, and its stream pulls every `PLAYBACK_LATENCY`.
+const SOUND_TARGET_MS: usize = 30;
+/// The same for a microphone, whose feed pulls at the graph's quantum (21 ms by default).
+const MIC_TARGET_MS: usize = 40;
 /// Sound a `Jitter` holds at most.
 const MAX_MS: usize = 100;
+/// The graph period phone sound asks for; `PipeWire`'s default of 1024 frames adds 21 ms.
+const PLAYBACK_LATENCY: &str = "480/48000";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Level {
@@ -33,17 +38,18 @@ enum Level {
     Playing,
 }
 
-/// A jitter buffer of whole frames: silence until it holds `TARGET_MS`, then the sound; it fills again when it runs
-/// dry, and above `MAX_MS` it drops the oldest sound down to `TARGET_MS`.
+/// A jitter buffer of whole frames: silence until it holds `target_ms`, then the sound; it fills again when it runs
+/// dry, and above `MAX_MS` it drops the oldest sound down to `target_ms`.
 pub struct Jitter {
     bytes: VecDeque<u8>,
     level: Level,
     stride: usize,
+    target_ms: usize,
 }
 
 impl Jitter {
-    fn new(stride: usize) -> Self {
-        Self { bytes: VecDeque::new(), level: Level::Filling, stride }
+    fn new(stride: usize, target_ms: usize) -> Self {
+        Self { bytes: VecDeque::new(), level: Level::Filling, stride, target_ms }
     }
 
     fn bytes_for(&self, ms: usize) -> usize {
@@ -54,14 +60,14 @@ impl Jitter {
     pub fn push(&mut self, pcm: &[u8]) {
         self.bytes.extend(pcm);
         if self.bytes.len() > self.bytes_for(MAX_MS) {
-            let over = self.bytes.len() - self.bytes_for(TARGET_MS);
+            let over = self.bytes.len() - self.bytes_for(self.target_ms);
             self.bytes.drain(..over);
         }
     }
 
     /// Fills `out` (whole frames) with the next sound, silence where there is none.
     fn pull(&mut self, out: &mut [u8]) {
-        if self.level == Level::Filling && self.bytes.len() >= self.bytes_for(TARGET_MS) {
+        if self.level == Level::Filling && self.bytes.len() >= self.bytes_for(self.target_ms) {
             self.level = Level::Playing;
         }
         let taken = match self.level {
@@ -142,7 +148,7 @@ impl Nodes {
 
     /// Source "<name> microphone" that plays what is pushed into the returned `Pcm`, silence when it runs dry.
     pub fn source(&self, id: &str, name: &str) -> anyhow::Result<(Node, Pcm)> {
-        let pcm = Arc::new(Mutex::new(Jitter::new(MIC_STRIDE)));
+        let pcm = Arc::new(Mutex::new(Jitter::new(MIC_STRIDE, MIC_TARGET_MS)));
         let shared = Arc::clone(&pcm);
         let node = self.add(format!("andromeda-link-mic-{id}"), |key| Command::Source {
             key,
@@ -154,7 +160,7 @@ impl Nodes {
 
     /// Playback stream "<name> sound" to the default sink that plays what is pushed into the returned `Pcm` (stereo).
     pub fn playback(&self, id: &str, name: &str) -> anyhow::Result<(Node, Pcm)> {
-        let pcm = Arc::new(Mutex::new(Jitter::new(SOUND_STRIDE)));
+        let pcm = Arc::new(Mutex::new(Jitter::new(SOUND_STRIDE, SOUND_TARGET_MS)));
         let shared = Arc::clone(&pcm);
         let node = self.add(format!("andromeda-link-sound-{id}"), |key| Command::Playback {
             key,
@@ -369,6 +375,7 @@ fn playback(
         *pw::keys::NODE_NAME => key,
         *pw::keys::NODE_DESCRIPTION => name,
         *pw::keys::MEDIA_NAME => name,
+        *pw::keys::NODE_LATENCY => PLAYBACK_LATENCY,
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "phone sound", props)?;
     let listener = stream.add_local_listener_with_user_data(pcm).process(fill).register()?;
@@ -426,7 +433,7 @@ fn format(channels: u32, position: [u32; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as
 
 #[cfg(test)]
 mod tests {
-    use super::{Jitter, Level, MAX_MS, RATE, SOUND_STRIDE, TARGET_MS};
+    use super::{Jitter, Level, MAX_MS, RATE, SOUND_STRIDE, SOUND_TARGET_MS};
 
     /// Random packet arrivals (bursts and gaps) against steady graph pulls; samples count up from 1, so silence is 0
     /// and the order of the sound shows.
@@ -439,7 +446,7 @@ mod tests {
             seed ^= seed << 17;
             seed % below
         };
-        let mut jitter = Jitter::new(SOUND_STRIDE);
+        let mut jitter = Jitter::new(SOUND_STRIDE, SOUND_TARGET_MS);
         let packet = RATE as usize / 50 * SOUND_STRIDE;
         let quantum = 1024 * SOUND_STRIDE;
         let (mut next, mut last_played) = (1u32, 0u32);
@@ -456,7 +463,7 @@ mod tests {
                     assert!(jitter.bytes.len() <= jitter.bytes_for(MAX_MS));
                 }
             } else {
-                let filling = jitter.level == Level::Filling && jitter.bytes.len() < jitter.bytes_for(TARGET_MS);
+                let filling = jitter.level == Level::Filling && jitter.bytes.len() < jitter.bytes_for(jitter.target_ms);
                 let mut out = vec![0xaa; quantum];
                 jitter.pull(&mut out);
                 let samples: Vec<u32> =

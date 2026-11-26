@@ -79,7 +79,7 @@ class MicService : Service() {
             if (stream != null) {
                 Log.i(TAG, "$desktop: microphone on")
                 try {
-                    record()?.let { encodeOpus(it, CHANNELS, BITRATE, { stopping }, stream::sendAudio) }
+                    record()?.let { encodeOpus(it, CHANNELS, BITRATE, { stopping }, stream) }
                 } finally {
                     withContext(NonCancellable) { stream.finish() }
                 }

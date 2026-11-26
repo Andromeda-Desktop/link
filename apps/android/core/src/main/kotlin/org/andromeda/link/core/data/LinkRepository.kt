@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.andromeda.link.core.domain.AudioUnits
 import org.andromeda.link.core.domain.CallAction
 import org.andromeda.link.core.domain.CallState
 import org.andromeda.link.core.domain.ClipPart
@@ -383,7 +384,7 @@ class LinkRepository(
     /** Desktops' microphone requests and ends; the core passes only those of desktops whose Mic switch is on. */
     val mic: SharedFlow<MicCommand> = _mic.asSharedFlow()
 
-    /** Opens the microphone's stream to [desktopId]: Opus packets of 48 kHz mono through [MirrorStream.sendAudio]. */
+    /** Opens the microphone's stream to [desktopId]: 48 kHz mono through [MirrorStream.audio]. */
     suspend fun startMic(desktopId: String): Result<MirrorStream> = call { FfiMirror(it.startMic(desktopId)) }
 
     /** Tells [desktopId] the microphone ended, or that the user did not start it. */
@@ -392,7 +393,7 @@ class LinkRepository(
     /** Desktops' requests for the phone's sound without its screen; only those whose Screen switch is on. */
     val sound: SharedFlow<SoundCommand> = _sound.asSharedFlow()
 
-    /** Opens the phone's media sound stream to [desktopId]: Opus 48 kHz stereo through [MirrorStream.sendAudio]. */
+    /** Opens the phone's media sound stream to [desktopId]: 48 kHz stereo through [MirrorStream.audio]. */
     suspend fun startSound(desktopId: String): Result<MirrorStream> = call { FfiMirror(it.startSound(desktopId)) }
 
     /** Tells [desktopId] the phone's sound ended, or that its capture was not allowed. */
@@ -1108,10 +1109,34 @@ private class FfiMirror(
         data: ByteArray,
     ): Result<Unit> = unit(ptsUs, (if (keyframe) MIRROR_KEYFRAME else 0) or (if (config) MIRROR_CONFIG else 0), data)
 
-    override suspend fun sendAudio(
-        ptsUs: Long,
-        data: ByteArray,
-    ): Result<Unit> = unit(ptsUs, MIRROR_AUDIO, data)
+    override fun audio(
+        channels: Int,
+        bitrate: Int,
+    ): Result<AudioUnits> =
+        try {
+            val units = session.audio(channels.toUByte(), bitrate.toUInt())
+            Result.success(
+                object : AudioUnits {
+                    override fun push(
+                        ptsUs: Long,
+                        pcm: ByteArray,
+                    ): Result<Unit> =
+                        try {
+                            units.push(ptsUs.toULong(), pcm)
+                            Result.success(Unit)
+                        } catch (error: LinkException) {
+                            Result.failure(LinkFailureException(error.toFailure()))
+                        }
+
+                    override suspend fun close() {
+                        units.finish()
+                        units.close()
+                    }
+                },
+            )
+        } catch (error: LinkException) {
+            Result.failure(LinkFailureException(error.toFailure()))
+        }
 
     private suspend fun unit(
         ptsUs: Long,
@@ -1130,7 +1155,6 @@ private class FfiMirror(
     private companion object {
         const val MIRROR_KEYFRAME = 1
         const val MIRROR_CONFIG = 2
-        const val MIRROR_AUDIO = 4
     }
 }
 

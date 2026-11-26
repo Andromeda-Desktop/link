@@ -82,13 +82,26 @@ interface MirrorStream {
         data: ByteArray,
     ): Result<Unit>
 
-    /** One Opus packet: 48 kHz stereo in a mirror, mono on a microphone stream. */
-    suspend fun sendAudio(
-        ptsUs: Long,
-        data: ByteArray,
-    ): Result<Unit>
+    /** Sends 20 ms frames of 16-bit PCM at 48 kHz with [channels] as Opus at [bitrate] bit/s: stereo in a mirror
+     * and for the phone's sound, mono on a microphone stream. */
+    fun audio(
+        channels: Int,
+        bitrate: Int,
+    ): Result<AudioUnits>
 
     suspend fun finish()
+}
+
+/** From [MirrorStream.audio]. */
+interface AudioUnits {
+    /** One 20 ms frame captured at [ptsUs]; returns at once, fails once the desktop is gone. */
+    fun push(
+        ptsUs: Long,
+        pcm: ByteArray,
+    ): Result<Unit>
+
+    /** Takes no more frames; returns once the queued ones are sent, at most 500 ms later. */
+    suspend fun close()
 }
 
 /** The screen's rounded-corner radii (top-left, top-right, bottom-right, bottom-left; empty when unknown) and camera

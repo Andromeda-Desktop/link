@@ -34,7 +34,7 @@ class MirrorAudio(
             return
         }
         val record = record() ?: return
-        encodeOpus(record, CHANNELS, BITRATE, { stopping }, stream::sendAudio)
+        encodeOpus(record, CHANNELS, BITRATE, { stopping }, stream)
     }
 
     fun stop() {

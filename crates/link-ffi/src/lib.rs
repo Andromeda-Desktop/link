@@ -20,6 +20,7 @@ use link_core::transfer::{ClipBytes, LocalClip, Source, TransferEvent};
 use link_core::uri::PairingUri;
 use tokio::sync::{Mutex, mpsc};
 
+mod audio;
 mod bridge;
 mod convert;
 
@@ -798,6 +799,11 @@ impl MirrorSession {
         let sender = self.sender.clone();
         let sent = self.runtime.spawn(async move { sender.send(&unit).await }).await.map_err(|_| stopped())?;
         Ok(sent?)
+    }
+
+    /// Takes 20 ms PCM frames of `channels` (1 or 2) at 48 kHz and sends them as Opus at `bitrate` bit/s.
+    pub fn audio(&self, channels: u8, bitrate: u32) -> Result<Arc<audio::AudioUnits>, LinkError> {
+        audio::AudioUnits::start(&self.runtime, self.sender.clone(), channels, bitrate)
     }
 
     pub async fn finish(&self) {
