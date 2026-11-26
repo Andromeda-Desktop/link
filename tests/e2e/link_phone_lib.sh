@@ -140,15 +140,17 @@ PY
   wait_for 30 "the app did not reconnect" eval '(( $(grep -c "connected over" "$OUT/linkd.log") > sessions ))'
 }
 
-# allow_mirror NAME: Allow on the request, as a heads-up or in the shade (ColorOS can keep a pinned heads-up out of
-# the shade), then Start on Android's capture prompt. Goes home first: a fullscreen app can hide both.
+# allow_mirror NAME [REQUEST STARTED]: Allow on the request, as a heads-up or in the shade (ColorOS can keep a pinned
+# heads-up out of the shade), then Start on Android's capture prompt. Goes home first: a fullscreen app can hide both.
+# REQUEST is the notification's text, STARTED the linkd log line of a started capture (default: the mirror's).
 allow_mirror() {
+  local request=${2:-wants to show your screen} started=${3:-allowed mirroring}
   # With a root or Shizuku helper the phone starts the capture itself, with no notification or prompt.
   local before
-  before=$(grep -c "allowed mirroring" "$OUT/linkd.log" || true)
-  wait_for 75 "no mirror request notification" eval '(( $(grep -c "allowed mirroring" "$OUT/linkd.log") > before )) ||
-    adb shell dumpsys notification --noredact | grep -q "wants to show your screen"'
-  (( $(grep -c "allowed mirroring" "$OUT/linkd.log") > before )) && return
+  before=$(grep -c "$started" "$OUT/linkd.log" || true)
+  wait_for 75 "no capture request notification" eval '(( $(grep -c "$started" "$OUT/linkd.log") > before )) ||
+    adb shell dumpsys notification --noredact | grep -qF "$request"'
+  (( $(grep -c "$started" "$OUT/linkd.log") > before )) && return
   adb shell input keyevent KEYCODE_HOME
   local at="" was="" try text
   # The shade moves while it opens, so a position counts only once two dumps a second apart agree on it. A tap on a
@@ -160,7 +162,7 @@ allow_mirror() {
       [[ -z $at ]] || { adb shell input tap $at; adb shell cmd statusbar collapse; return; }
     done
     at=$(bounds "prompt-$1" Allow)
-    [[ -n $at ]] || at=$(bounds "prompt-$1" "*wants to show your screen*")
+    [[ -n $at ]] || at=$(bounds "prompt-$1" "*$request*")
     if [[ -n $at && $at == "$was" ]]; then
       adb shell input tap $at
       was=""
@@ -174,5 +176,5 @@ allow_mirror() {
       sleep 0.7
     fi
   done
-  fail "the mirror request did not lead to the capture prompt"
+  fail "the capture request did not lead to the capture prompt"
 }
