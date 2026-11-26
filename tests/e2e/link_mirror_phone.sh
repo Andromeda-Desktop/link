@@ -29,7 +29,9 @@ TAPS=30
 rm -rf "$OUT"
 mkdir -p "$OUT"
 RUNTIME=$(mktemp -d /tmp/link-mirror-phone.XXXX)
-trap 'adb shell am force-stop org.andromeda.link.fixture; [[ -n ${KEEP_AWAKE:-} ]] || adb shell input keyevent KEYCODE_SLEEP; forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
+# The screen goes back off only when it was off at the start: the phone may be in someone's hand.
+WAS_ASLEEP=$(adb shell dumpsys power | grep -q 'mWakefulness=Awake' || echo 1)
+trap 'adb shell am force-stop org.andromeda.link.fixture; [[ -n ${KEEP_AWAKE:-} || -z $WAS_ASLEEP ]] || adb shell input keyevent KEYCODE_SLEEP; forget_phone; kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$RUNTIME"' EXIT
 [[ $(adb get-state 2>/dev/null) == device ]] || fail "no phone at $SERIAL"
 [[ -s $APK && -s $FIXTURE ]] || fail "no APKs at $APK and $FIXTURE"
 
