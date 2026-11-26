@@ -42,7 +42,8 @@ import java.lang.reflect.Method
  * Captures the screen into the hardware H.264 encoder and streams its output to one desktop: at most 1440 pixels on
  * the short side, 60 fps, realtime priority and low latency, constant bitrate stepped by [MirrorRate], a keyframe
  * every 2 s or on the desktop's request. Codec configuration goes in front of every keyframe, so the desktop can
- * start from any of them. What apps play goes along through [MirrorAudio].
+ * start from any of them. What apps play goes along through [MirrorAudio]. In [CaptureMode.Sound] only the sound goes,
+ * with no display or encoder.
  */
 class ScreenCapture : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -69,6 +70,7 @@ class ScreenCapture : Service() {
     private var rate: MirrorRate? = null
     private var audio: MirrorAudio? = null
     private var desktop: String? = null
+    private var mode = CaptureMode.Mirror
 
     @Volatile
     private var stopping = false
@@ -91,6 +93,7 @@ class ScreenCapture : Service() {
             return START_NOT_STICKY
         }
         this.desktop = desktop
+        mode = CaptureMode.of(intent.getStringExtra(EXTRA_MODE))
         val repository = (application as LinkApplication).container.repository
         val name =
             repository.desktops.value
@@ -115,8 +118,30 @@ class ScreenCapture : Service() {
         )
         this.projection = projection
         InputCommandProvider.send("wifi-latency", code = 1)
-        scope.launch { capture(desktop, projection) }
+        scope.launch {
+            when (mode) {
+                CaptureMode.Mirror -> capture(desktop, projection)
+                CaptureMode.Sound -> sound(desktop, projection)
+            }
+        }
         return START_NOT_STICKY
+    }
+
+    private suspend fun sound(
+        desktop: String,
+        projection: MediaProjection,
+    ) {
+        val repository = (application as LinkApplication).container.repository
+        val stream =
+            repository.startSound(desktop).getOrElse {
+                return finish(tellDesktop = false, reason = null)
+            }
+        this.stream = stream
+        val audio = MirrorAudio(this, projection)
+        this.audio = audio
+        audio.run(stream)
+        // run returns at a stop, a failed stream or a missing permission: nothing more plays.
+        main.post { finish(tellDesktop = true, reason = null) }
     }
 
     private suspend fun capture(
@@ -404,7 +429,7 @@ class ScreenCapture : Service() {
         if (stopping) return
         stopping = true
         // The desktop turns the panel back on at a clean stop only; this covers a lost desktop.
-        InputCommandProvider.send("screen-on")
+        if (mode == CaptureMode.Mirror) InputCommandProvider.send("screen-on")
         InputCommandProvider.send("wifi-latency", code = 0)
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(rotation)
         audio?.stop()
@@ -412,11 +437,16 @@ class ScreenCapture : Service() {
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         projection?.stop()
-        val (desktop, stream) = desktop to stream
+        val (desktop, stream, mode) = Triple(desktop, stream, mode)
         val repository = (application as LinkApplication).container.repository
         scope.launch {
             stream?.finish()
-            if (tellDesktop && desktop != null) repository.stopMirror(desktop, reason)
+            if (tellDesktop && desktop != null) {
+                when (mode) {
+                    CaptureMode.Mirror -> repository.stopMirror(desktop, reason)
+                    CaptureMode.Sound -> repository.stopSound(desktop)
+                }
+            }
             scope.cancel()
         }
         running = false
@@ -434,8 +464,15 @@ class ScreenCapture : Service() {
         NotificationCompat
             .Builder(this, Channels.SCREEN)
             .setSmallIcon(R.drawable.ic_stat_link)
-            .setContentTitle(getString(R.string.screen_mirroring, name))
-            .setOngoing(true)
+            .setContentTitle(
+                getString(
+                    when (mode) {
+                        CaptureMode.Mirror -> R.string.screen_mirroring
+                        CaptureMode.Sound -> R.string.sound_playing
+                    },
+                    name,
+                ),
+            ).setOngoing(true)
             .setSilent(true)
             .addAction(
                 0,
@@ -459,12 +496,14 @@ class ScreenCapture : Service() {
         fun start(
             context: Context,
             desktop: String,
+            mode: CaptureMode,
             code: Int,
             data: Intent,
         ) {
             val intent =
                 Intent(context, ScreenCapture::class.java)
                     .putExtra(ScreenMirror.EXTRA_DESKTOP, desktop)
+                    .putExtra(EXTRA_MODE, mode.name)
                     .putExtra(EXTRA_CODE, code)
                     .putExtra(EXTRA_DATA, data)
             context.startForegroundService(intent)
@@ -478,19 +517,30 @@ class ScreenCapture : Service() {
             instance?.rate?.reported(lagMs * 1000L, System.nanoTime() / 1000)
         }
 
-        /** The desktop stopped; nothing is sent back to it. */
+        /** The desktop stopped its [mode] capture; nothing is sent back to it. */
         fun stop(
             context: Context,
             desktop: String,
+            mode: CaptureMode,
         ) {
             val capture = instance ?: return
-            if (capture.desktop == desktop) Handler(context.mainLooper).post { capture.finish(tellDesktop = false, reason = null) }
+            if (capture.desktop == desktop && capture.mode == mode) {
+                Handler(context.mainLooper).post { capture.finish(tellDesktop = false, reason = null) }
+            }
+        }
+
+        /** Ends a sound-only capture and tells its desktop, so a mirror can take the one projection; false when none runs. */
+        fun endSound(context: Context): Boolean {
+            val capture = instance?.takeIf { it.mode == CaptureMode.Sound } ?: return false
+            Handler(context.mainLooper).post { capture.finish(tellDesktop = true, reason = null) }
+            return true
         }
 
         private const val TAG = "ScreenCapture"
         private const val ACTION_STOP = "org.andromeda.link.screen.STOP"
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
+        const val EXTRA_MODE = "mode"
         private const val NOTIFICATION_ID = 41
 
         // The OnePlus 12's own panel, 1440 by 3168, sent unscaled on a fast link.
@@ -508,5 +558,17 @@ class ScreenCapture : Service() {
         private const val REPEAT_AFTER_US = 100_000L
         private const val KEYFRAME_EVERY_S = 2
         private const val DEQUEUE_TIMEOUT_US = 20_000L
+    }
+}
+
+/** What one projection carries to its desktop: the screen with its sound, or the sound alone. */
+enum class CaptureMode {
+    Mirror,
+    Sound,
+    ;
+
+    companion object {
+        /** The mode named in an intent extra; a start without one is a mirror. */
+        fun of(name: String?) = entries.firstOrNull { it.name == name } ?: Mirror
     }
 }

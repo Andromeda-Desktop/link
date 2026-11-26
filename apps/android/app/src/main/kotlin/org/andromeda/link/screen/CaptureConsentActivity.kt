@@ -22,11 +22,12 @@ class CaptureConsentActivity : ComponentActivity() {
     private val consent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val desktop = intent.getStringExtra(ScreenMirror.EXTRA_DESKTOP)
+            val mode = CaptureMode.of(intent.getStringExtra(ScreenCapture.EXTRA_MODE))
             val data = result.data
             when {
                 desktop == null -> Unit
-                result.resultCode == Activity.RESULT_OK && data != null -> ScreenCapture.start(this, desktop, result.resultCode, data)
-                else -> (application as LinkApplication).container.screen.refuse(desktop, "declined on the phone")
+                result.resultCode == Activity.RESULT_OK && data != null -> ScreenCapture.start(this, desktop, mode, result.resultCode, data)
+                else -> (application as LinkApplication).container.screen.refuse(desktop, "declined on the phone", mode)
             }
             finish()
         }

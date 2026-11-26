@@ -116,7 +116,10 @@ object InputRelay {
             "wifi-latency" -> wifiLatency(int(5) == 1)
             "set-wifi" -> shell("cmd", "wifi", "set-wifi-enabled", if (int(5) == 1) "enabled" else "disabled")
             "set-bluetooth" -> shell("cmd", "bluetooth_manager", if (int(5) == 1) "enable" else "disable")
-            "capture" -> capture(String(Base64.decode(fields.getOrNull(7).orEmpty(), Base64.NO_WRAP)))
+            "capture" -> {
+                val desktop = String(Base64.decode(fields.getOrNull(7).orEmpty(), Base64.NO_WRAP))
+                capture(desktop, CaptureMode.entries.getOrElse(int(5)) { CaptureMode.Mirror })
+            }
         }
     }
 
@@ -124,10 +127,13 @@ object InputRelay {
      * Starts Link's screen capture for [desktop] with no prompt: PROJECT_MEDIA lets Link's own capture skip Android's
      * dialog. The desktop's Screen switch on the phone is the user's consent.
      */
-    private fun capture(desktop: String) {
+    private fun capture(
+        desktop: String,
+        mode: CaptureMode,
+    ) {
         for (command in listOf(
             listOf("cmd", "appops", "set", pkg, "PROJECT_MEDIA", "allow"),
-            listOf("am", "start", "-n", "$pkg/.screen.CaptureConsentActivity", "--es", "desktop", desktop),
+            listOf("am", "start", "-n", "$pkg/.screen.CaptureConsentActivity", "--es", "desktop", desktop, "--es", "mode", mode.name),
         )) {
             val result =
                 runCatching {

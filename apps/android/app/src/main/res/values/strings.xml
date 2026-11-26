@@ -104,6 +104,7 @@
     <string name="mirror_apps_title">Notification apps</string>
     <string name="mirror_apps_choose">Choose which apps</string>
     <string name="mirror_you">You</string>
+    <string name="media_title">Media</string>
     <string name="media_empty">Nothing is playing on your desktops.</string>
     <string name="media_play">Play</string>
     <string name="media_pause">Pause</string>
@@ -162,6 +163,8 @@
     <string name="screen_ask_refused">Not allowed on the phone</string>
     <string name="screen_ask_switch_off">Screen sharing is off for this computer on the phone. Turn it on in Link on the phone.</string>
     <string name="screen_mirroring">Showing your screen on %1$s</string>
+    <string name="sound_request_title">%1$s wants to play your phone\'s sound</string>
+    <string name="sound_playing">Playing your phone\'s sound on %1$s</string>
     <string name="screen_stop">Stop</string>
     <string name="screen_input_label">Link: control from the desktop</string>
     <string name="screen_input_description">Lets a paired desktop that shows this phone\'s screen tap, swipe, scroll, and type on it while you mirror. Nothing is read or sent anywhere.</string>
