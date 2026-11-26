@@ -282,7 +282,7 @@ fun HomeScreen(
             },
         ) {
             if (primary == null) {
-                Empty(onPair)
+                if (state.nonePaired) Empty(onPair)
                 return@Screen
             }
             val desk = state.desk

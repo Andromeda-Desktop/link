@@ -222,7 +222,7 @@ private fun ColumnScope.Main(
             )
             Separator()
         }
-        if (state.desktops.isEmpty()) {
+        if (state.nonePaired) {
             ValueRow(stringResource(R.string.settings_no_desktop), subtitle = stringResource(R.string.settings_no_desktop_hint))
             Separator()
         }

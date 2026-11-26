@@ -34,12 +34,17 @@ data class HomeState(
     val mirrorGranted: Boolean = false,
     val refreshing: Boolean = false,
     val selectedDesktopId: String? = null,
+    /** The desktop list has arrived; before it, an empty [desktops] says nothing. */
+    val loaded: Boolean = false,
     val desk: DeskState = DeskState(),
 ) {
     /** The desktop the hero shows: the chosen one, else a connected one, else the one seen last. */
     val primary: Desktop? get() =
         desktops.firstOrNull { it.id == selectedDesktopId }
             ?: desktops.firstOrNull { it.connected } ?: desktops.maxByOrNull { it.lastSeen }
+
+    /** No desktop is paired: known only once the list has arrived. */
+    val nonePaired: Boolean get() = loaded && desktops.isEmpty()
 }
 
 /** What every desktop reports, by desktop id, and the recent transfers and clips. */
@@ -165,6 +170,7 @@ class HomeViewModel(
             refreshing,
         ) { desktops, stay, ringing, granted, busy -> HomeState(desktops, stay, ringing, granted, busy) }
             .combine(selectedDesktopId) { state, id -> state.copy(selectedDesktopId = id) }
+            .combine(repository.desktopsLoaded) { state, loaded -> state.copy(loaded = loaded) }
             .combine(desk) { state, desk -> state.copy(desk = desk) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), HomeState())
 

@@ -23,4 +23,12 @@ class HomeStateTest {
         assertEquals("live", HomeState(listOf(stale, recent, live)).primary?.id)
         assertEquals("stale", HomeState(listOf(stale, recent, live), selectedDesktopId = "stale").primary?.id)
     }
+
+    @Test
+    fun nothingPairedIsSaidOnlyOnceTheListHasArrived() {
+        val one = listOf(desktop("a", DesktopLink.Offline, lastSeen = 1))
+        assertEquals(false, HomeState(emptyList(), loaded = false).nonePaired)
+        assertEquals(true, HomeState(emptyList(), loaded = true).nonePaired)
+        assertEquals(false, HomeState(one, loaded = true).nonePaired)
+    }
 }

@@ -163,6 +163,10 @@ class LinkRepository(
     private val _systemCommands = MutableSharedFlow<IncomingSystemCommand>(extraBufferCapacity = INCOMING_BUFFER)
 
     val desktops: StateFlow<List<Desktop>> = _desktops.asStateFlow()
+    private val _desktopsLoaded = MutableStateFlow(false)
+
+    /** False until the first desktop list arrives: only then does an empty [desktops] mean none is paired. */
+    val desktopsLoaded: StateFlow<Boolean> = _desktopsLoaded.asStateFlow()
 
     /** Shares desktops sent, as they arrive. */
     val incoming: SharedFlow<IncomingShare> = _incoming.asSharedFlow()
@@ -555,6 +559,7 @@ class LinkRepository(
     suspend fun refresh(): Result<Unit> =
         call { client ->
             _desktops.value = client.desktops().map { it.toDomain().copy(paused = it.id in pausedIds.value) }
+            _desktopsLoaded.value = true
         }
 
     suspend fun pairUri(uri: String): Result<Desktop> = callAndRefresh { it.pairUri(uri).toDomain() }
@@ -686,7 +691,9 @@ class LinkRepository(
 
     private suspend fun follow(client: LinkClient) {
         while (true) {
-            when (val event = client.nextEvent() ?: return) {
+            val event = client.nextEvent() ?: return
+            val started = SystemClock.elapsedRealtime()
+            when (event) {
                 is LinkEvent.Paused -> {
                     setPaused(event.desktopId, true)
                     _desktops.update { list -> list.map { if (it.id == event.desktopId) it.copy(paused = true) else it } }
@@ -821,6 +828,9 @@ class LinkRepository(
                     _desktopStatuses.update { it + (event.desktopId to status) }
                 }
             }
+            val held = SystemClock.elapsedRealtime() - started
+            // Events run one at a time: a slow one delays every later event, mirror input included.
+            if (held > SLOW_EVENT_MS) Log.w("link", "${event::class.simpleName} held the event loop $held ms")
         }
     }
 
@@ -921,6 +931,7 @@ class LinkRepository(
         const val MAX_CLIP_SIZE = 64L shl 20
         const val RECENT_CLIPS = 3
         const val ACTIVITY_LIMIT = 200
+        const val SLOW_EVENT_MS = 100L
 
         // Input comes in bursts while a finger drags.
         const val MIRROR_BUFFER = 64
