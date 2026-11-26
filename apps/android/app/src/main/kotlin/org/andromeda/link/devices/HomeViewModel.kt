@@ -34,7 +34,6 @@ data class HomeState(
     val mirrorGranted: Boolean = false,
     val refreshing: Boolean = false,
     val selectedDesktopId: String? = null,
-    val activeTransfers: Int = 0,
     val desk: DeskState = DeskState(),
 ) {
     /** The desktop the hero shows: a connected one first. */
@@ -71,10 +70,6 @@ data class NotificationPrefs(
 
 sealed interface HomeMessage {
     data class Paired(
-        val name: String,
-    ) : HomeMessage
-
-    data class Sent(
         val name: String,
     ) : HomeMessage
 
@@ -170,7 +165,6 @@ class HomeViewModel(
             refreshing,
         ) { desktops, stay, ringing, granted, busy -> HomeState(desktops, stay, ringing, granted, busy) }
             .combine(selectedDesktopId) { state, id -> state.copy(selectedDesktopId = id) }
-            .combine(repository.activeTransfers) { state, transfers -> state.copy(activeTransfers = transfers.size) }
             .combine(desk) { state, desk -> state.copy(desk = desk) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), HomeState())
 

@@ -178,7 +178,6 @@ fun HomeScreen(
     val toast =
         when (val shown = message) {
             is HomeMessage.Paired -> resources.getString(R.string.paired_with, shown.name)
-            is HomeMessage.Sent -> resources.getString(R.string.share_sent, shown.name)
             is HomeMessage.FilesSending -> resources.getString(R.string.share_files_sending, shown.name)
             HomeMessage.ClipboardEmpty -> resources.getString(R.string.clipboard_empty)
             is HomeMessage.ClipboardSent -> resources.getString(R.string.clipboard_sent, shown.name)
@@ -986,9 +985,10 @@ private fun Dock(
             horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp + Tok.Space.p2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RoundKey(Icons.Lock, stringResource(R.string.key_lock), { confirmLock = true })
-            RoundKey(Icons.Pad, stringResource(R.string.key_touchpad), onRemote)
-            RoundKey(Icons.Pres, stringResource(R.string.key_presenter), onPresenter)
+            // These act on the desktop at once, so they need it connected.
+            RoundKey(Icons.Lock, stringResource(R.string.key_lock), { confirmLock = true }, enabled = live)
+            RoundKey(Icons.Pad, stringResource(R.string.key_touchpad), onRemote, enabled = live)
+            RoundKey(Icons.Pres, stringResource(R.string.key_presenter), onPresenter, enabled = live)
             Capsule(
                 stringResource(if (fan) R.string.home_send_close else R.string.home_send),
                 { onFan(!fan) },
