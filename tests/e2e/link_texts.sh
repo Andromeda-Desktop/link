@@ -78,7 +78,7 @@ got = [tuple(t) for t in json.load(sys.stdin)]
 def cut(body):
     raw = body.encode()[:2048]
     return raw.decode("utf-8", "ignore")
-want = [(t["id"], t["thread"], t["address"], cut(t["body"]), t["date"], t["sent"]) for t in json.load(open(sys.argv[1]))]
+want = [(t["id"], t["thread"], t["address"], cut(t["body"]), t["date"], t["sent"], []) for t in json.load(open(sys.argv[1]))]
 sys.exit(0 if got == want else 1)' "$RUNTIME/texts.json"
 }
 send_text() {
