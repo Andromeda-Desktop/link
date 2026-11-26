@@ -1,5 +1,6 @@
 package org.andromeda.link.devices.galaxy
 
+import android.content.Context
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -20,6 +21,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.andromeda.link.ui.theme.LinkTheme
@@ -36,6 +38,13 @@ class GalaxyControl {
     internal var origin = Offset.Zero
     private var desks: Pair<List<String>, String>? = null
 
+    /** Every paired desktop, for building each one's galaxy. */
+    internal var deskIds by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** The desktop Home shows. */
+    internal val selectedId get() = desks?.second
+
     /** A tap on a desktop's galaxy in the overview. */
     var onPick: (String) -> Unit = {}
 
@@ -45,6 +54,7 @@ class GalaxyControl {
         selected: String,
     ) {
         desks = ids to selected
+        deskIds = ids
         view?.setDesks(ids, selected)
     }
 
@@ -99,6 +109,21 @@ fun GalaxyBackdrop(
         val points = withContext(Dispatchers.Default) { GalaxyCache.get(tier) }
         control.view?.setPoints(points)
     }
+    val ids = control.deskIds
+    LaunchedEffect(tier, ids) {
+        if (ids.isEmpty()) return@LaunchedEffect
+        val shown = control.selectedId ?: ids.first()
+        val (home, shapes) =
+            withContext(Dispatchers.Default) {
+                // The desktop Home showed first keeps the home galaxy while it stays paired, whatever the list order.
+                val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val home =
+                    prefs.getString(HOME_DESK, null)?.takeIf { it in ids }
+                        ?: shown.also { prefs.edit { putString(HOME_DESK, it) } }
+                home to ids.filter { it != home }.associateWith { GalaxyCache.get(tier, GalaxyShape.of(it.hashCode())) }
+            }
+        control.view?.setShapes(home, shapes)
+    }
 }
 
 /** One finger turns the galaxy, two fingers zoom about their centre, a double tap flies home. */
@@ -137,3 +162,6 @@ fun Modifier.galaxyGestures(control: GalaxyControl): Modifier =
                 if (active) control.view?.release()
             }
         }
+
+private const val PREFS = "galaxy"
+private const val HOME_DESK = "home_desktop"

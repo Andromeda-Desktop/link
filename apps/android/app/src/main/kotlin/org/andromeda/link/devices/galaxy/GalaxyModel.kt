@@ -43,6 +43,38 @@ class GalaxyPoints(
     val galaxyGlow: Int,
 )
 
+/** One galaxy's form: the orbit model's parameters and the random [seed] its stars come from. */
+data class GalaxyShape(
+    val seed: Int,
+    val core: Double,
+    val ex1: Double,
+    val ex2: Double,
+    val dA: Double,
+    val pertN: Int,
+    val pertAmp: Double,
+    val temp: Double,
+) {
+    companion object {
+        /** The home galaxy (the look of link fac318b); it alone carries the sky. */
+        val HOME = GalaxyShape(7, .31, .85, .95, 5.2, 2, 40.0, 3000.0)
+
+        /** Another desktop's galaxy: a stable form per [seed], in the range of gen-depth.py GAL. */
+        fun of(seed: Int): GalaxyShape {
+            val r = Rng(seed)
+            return GalaxyShape(
+                seed,
+                core = .28 + .08 * r.next(),
+                ex1 = .62 + .26 * r.next(),
+                ex2 = .9 + .08 * r.next(),
+                dA = 2.4 + 3.0 * r.next(),
+                pertN = if (r.next() < .5) 2 else 3,
+                pertAmp = 35 + 40 * r.next(),
+                temp = 3000 + 1500 * r.next(),
+            )
+        }
+    }
+}
+
 private class Rng(
     private var s: Int,
 ) {
@@ -113,14 +145,29 @@ private fun kelvin(k: Double): DoubleArray {
     return doubleArrayOf(r, g, b).also { for (i in 0..2) it[i] = it[i].coerceIn(0.0, 255.0) / 255 }
 }
 
-/** Builds the home scene: a far star sphere with nebula glow, the home galaxy, and one unit cube of field stars. */
-fun buildGalaxy(tier: GalaxyTier): GalaxyPoints {
+/**
+ * Builds [shape]'s galaxy; the home shape also gets the scene around it: a far star sphere with nebula glow and one unit
+ * cube of field stars.
+ */
+fun buildGalaxy(
+    tier: GalaxyTier,
+    shape: GalaxyShape = GalaxyShape.HOME,
+): GalaxyPoints {
+    val sky = shape == GalaxyShape.HOME
     val light = Buf(tier.stars * 2)
     val dust = Buf(8_000)
-    galaxy(light, dust, tier.stars)
+    galaxy(light, dust, tier.stars, shape)
     val galaxyEnd = light.n
     val rnd = Rng(99)
-    repeat(if (tier == GalaxyTier.Full) 7000 else 3000) {
+    repeat(
+        if (!sky) {
+            0
+        } else if (tier == GalaxyTier.Full) {
+            7000
+        } else {
+            3000
+        },
+    ) {
         val u = rnd.next() * TAU
         val v = acos(2 * rnd.next() - 1)
         val t = rnd.next()
@@ -134,7 +181,7 @@ fun buildGalaxy(tier: GalaxyTier): GalaxyPoints {
             }
         light.put(80 * sin(v) * cos(u), 80 * cos(v), 80 * sin(v) * sin(u), c, .35 + .6 * rnd.next(), .035 + rnd.next().pow(4) * .12)
     }
-    repeat(160) {
+    repeat(if (sky) 160 else 0) {
         var x = rnd.gauss()
         var y = rnd.gauss() * .22
         var z = rnd.gauss()
@@ -161,7 +208,15 @@ fun buildGalaxy(tier: GalaxyTier): GalaxyPoints {
     }
     val field = Buf(9000)
     val fr = Rng(5)
-    repeat(if (tier == GalaxyTier.Full) 9000 else 4000) {
+    repeat(
+        if (!sky) {
+            0
+        } else if (tier == GalaxyTier.Full) {
+            9000
+        } else {
+            4000
+        },
+    ) {
         val t = fr.next()
         val c =
             if (t < .3) {
@@ -185,6 +240,10 @@ fun buildGalaxy(tier: GalaxyTier): GalaxyPoints {
         }
         (if (all[i + 7] > 0) sharp else soft).copy(all, i)
     }
+    if (galaxyEnd == all.size) {
+        galaxyStars = sharp.n / POINT_FLOATS
+        galaxyGlow = soft.n / POINT_FLOATS
+    }
     return GalaxyPoints(sharp.done(), soft.done(), dust.done(), field.done(), galaxyStars, galaxyGlow)
 }
 
@@ -193,15 +252,16 @@ private fun galaxy(
     light: Buf,
     dust: Buf,
     n: Int,
+    shape: GalaxyShape,
 ) {
-    val rnd = Rng(7)
-    val core = .31
-    val ex1 = .85
-    val ex2 = .95
-    val dA = 5.2
-    val pertN = 2
-    val pertAmp = 40.0
-    val temp = 3000.0
+    val rnd = Rng(shape.seed)
+    val core = shape.core
+    val ex1 = shape.ex1
+    val ex2 = shape.ex2
+    val dA = shape.dA
+    val pertN = shape.pertN
+    val pertAmp = shape.pertAmp
+    val temp = shape.temp
     val glow = .5
     val h2 = 700 * n / 90_000
     val far = 2.0

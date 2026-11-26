@@ -44,14 +44,14 @@ fun galaxyTier(context: Context): GalaxyTier {
 private const val GLES3 = 0x30000
 private const val LOW_MEMORY_CLASS_MB = 192
 
-/** Built once per process: the arrays stay so a new GL context uploads them again without a rebuild. */
+/** Built once per process and shape: the arrays stay so a new GL context uploads them again without a rebuild. */
 object GalaxyCache {
-    @Volatile private var built: Pair<GalaxyTier, GalaxyPoints>? = null
+    private val built = HashMap<Pair<GalaxyTier, GalaxyShape>, GalaxyPoints>()
 
-    fun get(tier: GalaxyTier): GalaxyPoints =
-        built?.takeIf { it.first == tier }?.second ?: synchronized(this) {
-            built?.takeIf { it.first == tier }?.second ?: buildGalaxy(tier).also { built = tier to it }
-        }
+    fun get(
+        tier: GalaxyTier,
+        shape: GalaxyShape = GalaxyShape.HOME,
+    ): GalaxyPoints = synchronized(this) { built.getOrPut(tier to shape) { buildGalaxy(tier, shape) } }
 }
 
 /** A desktop's galaxy in the overview: [at] its centre and [radius] in view px. */
@@ -75,6 +75,10 @@ class GalaxyView(
     private val lock = Any()
     private var cam = Cam()
     private var points: GalaxyPoints? = null
+
+    /** The desktop whose galaxy is [points]; every other desktop draws its own galaxy from [shapes] once it is built. */
+    private var homeId: String? = null
+    private var shapes: Map<String, GalaxyPoints> = emptyMap()
     private var light = false
     private var vw = 1
     private var vh = 1
@@ -169,6 +173,21 @@ class GalaxyView(
         synchronized(lock) { points = p }
         requestRender()
     }
+
+    /** [home] draws the home galaxy; [shapes] holds the galaxy of each other desktop. */
+    fun setShapes(
+        home: String,
+        shapes: Map<String, GalaxyPoints>,
+    ) {
+        synchronized(lock) {
+            homeId = home
+            this.shapes = shapes
+        }
+        requestRender()
+    }
+
+    /** [id]'s galaxy: the home one for the home desktop (or before the shapes arrive), null while it is being built. */
+    private fun shapeOf(id: String?): GalaxyPoints? = if (id == null || homeId == null || id == homeId) points else shapes[id]
 
     fun setLight(on: Boolean) {
         if (light == on) return
@@ -651,6 +670,8 @@ class GalaxyView(
         val w: Int
         val h: Int
         val p: GalaxyPoints
+        val origin: GalaxyPoints
+        val live: List<GalaxyPoints>
         val mainA: Float
         var mc: FloatArray? = null
         val o: DoubleArray
@@ -658,7 +679,9 @@ class GalaxyView(
         synchronized(lock) {
             pending = false
             p = points ?: return
-            loopZoom(p)
+            origin = shapeOf(selected) ?: p
+            live = listOf(p) + shapes.values
+            loopZoom(origin)
             m = matrix()
             val hd = homeCam().dist
             val c = child
@@ -688,7 +711,7 @@ class GalaxyView(
         val scene = scene ?: return
         val t0 = SystemClock.elapsedRealtimeNanos()
         val dl = if (light) ((ln(dist / (homeDist * DUSK_FROM)) / ln(1 / DUSK_FROM)).coerceIn(0.0, 1.0)) else 0.0
-        scene.draw(p, Frame(m, mc, mainA, e, o, dist, os), w, h, density, light, dl.toFloat())
+        scene.draw(p, Frame(m, mc, mainA, e, o, dist, origin, os, live), w, h, density, light, dl.toFloat())
         val timed = motion && bench != null
         // The bench waits for the GPU before the swap; after it, the time would include the wait for a free buffer.
         if (timed) {
@@ -767,11 +790,19 @@ class GalaxyView(
         val eye: DoubleArray,
         val fo: DoubleArray,
         val dist: Double,
+        /** The selected desktop's galaxy, drawn at the origin. */
+        val origin: GalaxyPoints,
         val others: List<Other>,
+        /** Every point set the view holds; the scene frees the buffers of any other. */
+        val live: List<GalaxyPoints>,
     )
 
-    /** Another desktop's galaxy: model-view-projection [m], alpha [a], point scale [z], the share of points drawn [part]. */
+    /**
+     * Another desktop's galaxy [pts]: model-view-projection [m], alpha [a], point scale [z], the share of points drawn
+     * [part].
+     */
     private class Other(
+        val pts: GalaxyPoints,
         val m: FloatArray,
         val a: Float,
         val z: Float,
@@ -784,7 +815,8 @@ class GalaxyView(
         if (mode == Mode.Home && tw == null) return emptyList()
         val k = if (tw == null) 1.0 else min(1.0, (SystemClock.uptimeMillis() - tw.t0) / FLY_MS)
         val target = (mode as? Mode.Entering)?.id
-        return others.mapIndexed { r, id ->
+        return others.mapIndexedNotNull { r, id ->
+            val pts = shapeOf(id) ?: return@mapIndexedNotNull null
             val p = deskPos(r)
             // Tilted about the overview camera's right axis to open the disc; the target levels out as it lands.
             val t = if (id == target) DESK_TILT * (1 - k) else DESK_TILT
@@ -808,7 +840,7 @@ class GalaxyView(
                     else -> DESK_DIM
                 }
             val part = if (id == target) DESK_PART + (1 - DESK_PART) * k else DESK_PART
-            Other(times(m, model), a.toFloat(), DESK_SCALE.toFloat(), part.toFloat())
+            Other(pts, times(m, model), a.toFloat(), DESK_SCALE.toFloat(), part.toFloat())
         }
     }
 
@@ -839,9 +871,7 @@ class GalaxyView(
         private val field = program(FVS, FS)
         private val tone = program(TVS, TFS)
         private val blit = program(TVS, BFS)
-        private var uploaded: GalaxyPoints? = null
-        private val vbo = IntArray(BUFFERS)
-        private val counts = IntArray(BUFFERS)
+        private val gpu = HashMap<GalaxyPoints, Gpu>()
         private val tri = IntArray(1)
         private val toned = Target()
         private val soft = Target()
@@ -853,21 +883,36 @@ class GalaxyView(
 
         init {
             locs.clear()
-            GLES20.glGenBuffers(BUFFERS, vbo, 0)
             GLES20.glGenBuffers(1, tri, 0)
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, tri[0])
             val q = floats(floatArrayOf(-1f, -1f, 3f, -1f, -1f, 3f))
             GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 24, q, GLES20.GL_STATIC_DRAW)
         }
 
-        private fun upload(p: GalaxyPoints) {
-            for ((i, a) in listOf(p.stars, p.glow, p.dust, p.field).withIndex()) {
-                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo[i])
-                GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, a.size * 4, floats(a), GLES20.GL_STATIC_DRAW)
-                counts[i] = a.size / POINT_FLOATS
+        /** One point set's buffers: stars, glow, dust, field. */
+        private class Gpu(
+            p: GalaxyPoints,
+        ) {
+            val vbo = IntArray(BUFFERS)
+            val counts = IntArray(BUFFERS)
+
+            /** The galaxy's share of each buffer; dust is all galaxy. */
+            val split: IntArray
+
+            init {
+                GLES20.glGenBuffers(BUFFERS, vbo, 0)
+                for ((i, a) in listOf(p.stars, p.glow, p.dust, p.field).withIndex()) {
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo[i])
+                    GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, a.size * 4, floats(a), GLES20.GL_STATIC_DRAW)
+                    counts[i] = a.size / POINT_FLOATS
+                }
+                split = intArrayOf(p.galaxyStars, p.galaxyGlow, counts[2])
             }
-            uploaded = p
+
+            fun release() = GLES20.glDeleteBuffers(BUFFERS, vbo, 0)
         }
+
+        private fun gpu(p: GalaxyPoints) = gpu.getOrPut(p) { Gpu(p) }
 
         private inner class Target {
             val fbo = IntArray(1)
@@ -933,7 +978,10 @@ class GalaxyView(
             light: Boolean,
             dl: Float,
         ) {
-            if (uploaded !== p) upload(p)
+            gpu.keys.retainAll { k -> frame.live.any { it === k }.also { live -> if (!live) gpu[k]?.release() } }
+            // Upload every held set now, not on the first overview frame.
+            frame.live.forEach { gpu(it) }
+            val home = gpu(p)
             val m = frame.m
             val e = frame.eye
             GLES20.glEnable(GLES20.GL_BLEND)
@@ -943,7 +991,7 @@ class GalaxyView(
             val gw = max(1, (w / dpr * GLOW_PER_DP).toInt())
             val gh = max(1, (h / dpr * GLOW_PER_DP).toInt())
             soft.bind(gw, gh)
-            galaxy(vbo[1], p.galaxyGlow, counts[1], frame, (gh * F / 2).toFloat(), dpr * gh / h, hs = store)
+            galaxy(GLOW, home, frame, (gh * F / 2).toFloat(), dpr * gh / h, hs = store)
 
             // Tone-map the soft light at its own small size; the screen pass only scales it up.
             toned.bind(gw, gh)
@@ -969,13 +1017,13 @@ class GalaxyView(
             GLES20.glEnable(GLES20.GL_BLEND)
             GLES20.glColorMask(false, false, false, true)
             GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-            galaxy(vbo[2], counts[2], counts[2], frame, k, dpr, hs = 1f)
+            galaxy(DUST, home, frame, k, dpr, hs = 1f)
             GLES20.glColorMask(true, true, true, true)
             // Stars screen-blend onto it, b + a(1-b), with a dimmed by the dust: summed faint light follows the same 1-e^-x
             // curve as the tone map, so the screen needs no full-size HDR target.
             GLES20.glBlendFunc(GLES20.GL_DST_ALPHA, GLES20.GL_ONE_MINUS_SRC_COLOR)
             // Field stars: one unit cube wrapped around the eye at octaves 4x apart that cross-fade with zoom.
-            use(field, vbo[3], size = false)
+            use(field, home.vbo[FIELD], size = false)
             GLES20.glUniformMatrix4fv(loc(field, "M"), 1, false, m, 0)
             GLES20.glUniform3f(loc(field, "E"), e[0].toFloat(), e[1].toFloat(), e[2].toFloat())
             GLES20.glUniform3f(loc(field, "O"), frame.fo[0].toFloat(), frame.fo[1].toFloat(), frame.fo[2].toFloat())
@@ -999,18 +1047,20 @@ class GalaxyView(
                 if (a <= 0) continue
                 GLES20.glUniform1f(loc(field, "S"), (4.0.pow(lf + j) * 1.5).toFloat())
                 GLES20.glUniform1f(loc(field, "A"), a.toFloat())
-                GLES20.glDrawArrays(GLES20.GL_POINTS, 0, counts[3])
+                GLES20.glDrawArrays(GLES20.GL_POINTS, 0, home.counts[FIELD])
             }
-            galaxy(vbo[0], p.galaxyStars, counts[0], frame, k, dpr, hs = 1f, ex = EXPOSURE)
+            galaxy(STARS, home, frame, k, dpr, hs = 1f, ex = EXPOSURE)
             GLES20.glDisable(GLES20.GL_BLEND)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
 
-        /** The galaxy part [0, split) fades as the zoom copy takes over and is drawn again as the copy; the sky part stays. */
+        /**
+         * Buffer [kind]: the sky part of [home] stays; the origin galaxy fades as the zoom copy takes over and is drawn
+         * again as the copy; each other desktop draws a share of its own galaxy.
+         */
         private fun galaxy(
-            buffer: Int,
-            split: Int,
-            count: Int,
+            kind: Int,
+            home: Gpu,
             frame: Frame,
             k: Float,
             dpr: Float,
@@ -1019,7 +1069,7 @@ class GalaxyView(
             /** Exposure of the 1-e^-x curve for light drawn on the screen; 0 for light that adds up in an HDR target. */
             ex: Float = 0f,
         ) {
-            use(star, buffer, size = true)
+            use(star, home.vbo[kind], size = true)
             GLES20.glUniform1f(loc(star, "K"), k)
             GLES20.glUniform1f(loc(star, "dpr"), dpr)
             GLES20.glUniform1f(loc(star, "hs"), hs)
@@ -1039,10 +1089,16 @@ class GalaxyView(
                 GLES20.glUniform1f(loc(star, "Z"), z)
                 GLES20.glDrawArrays(GLES20.GL_POINTS, first, n)
             }
-            pass(frame.m, 1f, 1f, split, count - split)
-            pass(frame.m, frame.mainA, 1f, 0, split)
-            frame.mc?.let { pass(it, 1f, LS.toFloat(), 0, split) }
-            for (d in frame.others) pass(d.m, d.a, d.z, 0, (split * d.part).toInt())
+            pass(frame.m, 1f, 1f, home.split[kind], home.counts[kind] - home.split[kind])
+            val o = gpu(frame.origin)
+            if (o !== home) use(star, o.vbo[kind], size = true)
+            pass(frame.m, frame.mainA, 1f, 0, o.split[kind])
+            frame.mc?.let { pass(it, 1f, LS.toFloat(), 0, o.split[kind]) }
+            for (d in frame.others) {
+                val g = gpu(d.pts)
+                use(star, g.vbo[kind], size = true)
+                pass(d.m, d.a, d.z, 0, (g.split[kind] * d.part).toInt())
+            }
         }
 
         private fun fullScreen(prog: Int) {
@@ -1075,7 +1131,8 @@ class GalaxyView(
         }
 
         fun release() {
-            GLES20.glDeleteBuffers(BUFFERS, vbo, 0)
+            gpu.values.forEach { it.release() }
+            gpu.clear()
             GLES20.glDeleteBuffers(1, tri, 0)
             toned.release()
             soft.release()
@@ -1089,6 +1146,10 @@ class GalaxyView(
         const val GL_HALF_FLOAT = 0x140B
         const val EGL_OPENGL_ES3_BIT = 0x40
         const val BUFFERS = 4
+        const val STARS = 0
+        const val GLOW = 1
+        const val DUST = 2
+        const val FIELD = 3
         const val GLOW_PER_DP = .5f
 
         /** The tone map's light scale, for stars drawn straight on the screen. */
