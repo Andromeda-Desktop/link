@@ -36,10 +36,10 @@ data class HomeState(
     val selectedDesktopId: String? = null,
     val desk: DeskState = DeskState(),
 ) {
-    /** The desktop the hero shows: a connected one first. */
+    /** The desktop the hero shows: the chosen one, else a connected one, else the one seen last. */
     val primary: Desktop? get() =
         desktops.firstOrNull { it.id == selectedDesktopId }
-            ?: desktops.firstOrNull { it.connected } ?: desktops.firstOrNull()
+            ?: desktops.firstOrNull { it.connected } ?: desktops.maxByOrNull { it.lastSeen }
 }
 
 /** What every desktop reports, by desktop id, and the recent transfers and clips. */
