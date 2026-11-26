@@ -286,9 +286,7 @@ private fun TopBar(
     modifier: Modifier = Modifier,
 ) {
     PageHeader(stringResource(R.string.remote_touchpad), onBack, modifier.padding(end = Tok.Space.p8.dp)) {
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            DeskChip(desk, if (desk.input) null else stringResource(R.string.remote_input_off))
-        }
+        DeskChip(desk, if (desk.input) null else stringResource(R.string.remote_input_off), Modifier.weight(1f, fill = false))
     }
 }
 

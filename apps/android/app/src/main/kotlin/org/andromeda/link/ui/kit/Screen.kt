@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -73,7 +74,10 @@ fun Screen(
     }
 }
 
-/** A page's top row: back, [title] in title_1 on one line, and [actions] at the trailing edge; [ink] colours back and title. */
+/**
+ * A page's top row: back, [title] in title_1 on one line, and [actions] at the trailing edge; [ink] colours back and title.
+ * [actions] take their own width up to half the row; the title gets the rest.
+ */
 @Composable
 fun PageHeader(
     title: String,
@@ -94,7 +98,14 @@ fun PageHeader(
             modifier = Modifier.weight(1f).padding(start = Tok.Space.p4.dp),
             maxLines = 1,
         )
-        actions()
+        Row(
+            Modifier.layout { m, c ->
+                val p = m.measure(c.copy(maxWidth = c.maxWidth / 2))
+                layout(p.width, p.height) { p.place(0, 0) }
+            },
+            verticalAlignment = Alignment.CenterVertically,
+            content = actions,
+        )
     }
 }
 
