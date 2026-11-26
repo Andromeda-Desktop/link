@@ -3,6 +3,7 @@
 //! output volume, each through a backend the session offers. See "Stage 0" in `docs/link-v2.md`.
 
 #[cfg_attr(target_os = "macos", path = "macos/awake.rs")]
+mod audio_nodes;
 mod awake;
 mod clipboard;
 mod input;
@@ -231,9 +232,12 @@ async fn main() -> anyhow::Result<()> {
     // Remote control needs input too: the phone without it would only watch.
     let screen = input.is_some() && screen::available(&bus).await;
     let (screen_requests, screen_target) = screen::spawn(bus.clone(), link.clone());
-    let mut speakers = attempt("phone speakers", speaker::Speakers::new(link.clone()).map(Some));
+    let nodes = attempt("PipeWire nodes", audio_nodes::Nodes::start().map(Some));
+    let mut speakers = nodes
+        .clone()
+        .and_then(|nodes| attempt("phone speakers", speaker::Speakers::new(link.clone(), nodes).map(Some)));
     let mut device_info = link.proxy.receive_device_info_changed().await;
-    let mut mics = attempt("phone microphones", mic::Mics::available().map(|()| Some(mic::Mics::default())));
+    let mut mics = nodes.and_then(|nodes| attempt("phone microphones", mic::Mics::new(nodes).map(Some)));
     let mut mic_requests = link.proxy.receive_mic_requested().await?;
     if let Some(speakers) = speakers.as_mut() {
         speakers.refresh().await;

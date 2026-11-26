@@ -1,6 +1,6 @@
 //! A phone's microphone as a `PipeWire` source, "<phone> microphone": on `MicRequested`, `OpenMic` gives the socket of
-//! the phone's Opus units, decoded into a virtual source that ranks above built-in microphones, so it is the default
-//! while it runs. The socket's end removes the source, and the old default comes back.
+//! the phone's Opus units, decoded into a source (`audio_nodes`) that is the default while it runs. The socket's end
+//! removes the source, and the old default comes back.
 
 use std::collections::HashMap;
 
@@ -11,25 +11,25 @@ use gstreamer_app as gst_app;
 use tokio::io::AsyncReadExt as _;
 use tokio::task::JoinHandle;
 
+use crate::audio_nodes::{Node, Nodes, Pcm, RATE};
 use crate::link::Link;
 
 const AUDIO: u8 = 4;
 const END: u8 = 8;
 const MAX_UNIT: usize = 64 * 1024;
-/// Above the built-in sources' session priority (ALSA cards rank in the low thousands), so this one is the default.
-const PRIORITY: i32 = 3000;
+/// Decoded sound the source holds at most (S16LE mono): 100 ms; older sound is dropped.
+const MAX_QUEUED: usize = RATE as usize / 10 * 2;
 
-#[derive(Default)]
 pub struct Mics {
+    nodes: Nodes,
     running: HashMap<String, JoinHandle<()>>,
 }
 
 impl Mics {
-    pub fn available() -> anyhow::Result<()> {
+    pub fn new(nodes: Nodes) -> anyhow::Result<Self> {
         gst::init()?;
-        gst::ElementFactory::find("pipewiresink").context("no GStreamer PipeWire plugin")?;
         gst::ElementFactory::find("opusdec").context("no GStreamer Opus decoder")?;
-        Ok(())
+        Ok(Self { nodes, running: HashMap::new() })
     }
 
     /// Opens phone `id`'s microphone unless it runs already.
@@ -38,30 +38,45 @@ impl Mics {
         if self.running.contains_key(&id) {
             return;
         }
-        let task = tokio::spawn(run(link, id.clone()));
+        let task = tokio::spawn(run(link, self.nodes.clone(), id.clone()));
         self.running.insert(id, task);
     }
 }
 
-async fn run(link: Link, id: String) {
-    if let Err(error) = serve(&link, &id).await {
+async fn run(link: Link, nodes: Nodes, id: String) {
+    if let Err(error) = serve(&link, &nodes, &id).await {
         log::info!("{id}: the phone's microphone: {error:#}");
     }
 }
 
-async fn serve(link: &Link, id: &str) -> anyhow::Result<()> {
+async fn serve(link: &Link, nodes: &Nodes, id: &str) -> anyhow::Result<()> {
     let name = link.proxy.devices().await?.into_iter().find(|(device, ..)| device == id).map(|(_, name, _)| name);
     let name = name.unwrap_or_else(|| "Phone".to_owned());
     let fd: std::os::fd::OwnedFd = link.proxy.open_mic(id).await?.into();
     let socket = std::os::unix::net::UnixStream::from(fd);
     socket.set_nonblocking(true)?;
     let mut socket = tokio::net::UnixStream::from_std(socket)?;
-    let source = Source::start(id, &name)?;
+    let source = Source::start(nodes, id, &name)?;
+    let default = Default::take(&format!("andromeda-link-mic-{id}")).await;
     log::info!("{id}: \"{name} microphone\" is on");
+    let ended = pump(&mut socket, &source).await;
+    if let Some(default) = default {
+        default.give_back().await;
+    }
+    drop(source);
+    log::info!(
+        "{id}: \"{name} microphone\" is off{}",
+        ended.err().map(|error| format!(": {error:#}")).unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// Feeds the phone's units into the source until the stream ends.
+async fn pump(socket: &mut tokio::net::UnixStream, source: &Source) -> anyhow::Result<()> {
     let mut header = [0; 13];
-    let ended = loop {
+    loop {
         if let Err(error) = socket.read_exact(&mut header).await {
-            break if error.kind() == std::io::ErrorKind::UnexpectedEof { None } else { Some(error) };
+            return if error.kind() == std::io::ErrorKind::UnexpectedEof { Ok(()) } else { Err(error.into()) };
         }
         let [a, b, c, d, .., flags] = header;
         let len = u32::from_be_bytes([a, b, c, d]) as usize;
@@ -69,49 +84,117 @@ async fn serve(link: &Link, id: &str) -> anyhow::Result<()> {
         let mut data = vec![0; len];
         socket.read_exact(&mut data).await?;
         if flags & END != 0 {
-            break None;
+            return Ok(());
         }
         if flags & AUDIO != 0 {
             source.push(data)?;
         }
+    }
+}
+
+/// The user's configured default source (`default.configured.audio.source`, what `wpctl set-default` writes), set to
+/// the phone's microphone while it runs: `WirePlumber` ranks sources the user picked before above any
+/// `priority.session`, so only the configured key makes it the default.
+struct Default {
+    ours: String,
+    before: Option<String>,
+}
+
+impl Default {
+    async fn take(ours: &str) -> Option<Self> {
+        let before = match configured().await {
+            Ok(before) => before,
+            Err(error) => {
+                log::warn!("reading the default source: {error:#}");
+                return None;
+            }
+        };
+        if let Err(error) = set_configured(Some(&format!("{{\"name\":\"{ours}\"}}"))).await {
+            log::warn!("making the phone's microphone the default: {error:#}");
+            return None;
+        }
+        Some(Self { ours: ours.to_owned(), before })
+    }
+
+    /// Puts the old choice back unless the user picked another source meanwhile.
+    async fn give_back(self) {
+        let still_ours = configured().await.ok().flatten().is_some_and(|now| name_of(&now) == Some(self.ours.as_str()));
+        if still_ours && let Err(error) = set_configured(self.before.as_deref()).await {
+            log::warn!("restoring the default source: {error:#}");
+        }
+    }
+}
+
+const CONFIGURED: &str = "default.configured.audio.source";
+
+/// The key's JSON value; None when the user never picked a source.
+async fn configured() -> anyhow::Result<Option<String>> {
+    let output = tokio::process::Command::new("pw-metadata").args(["-n", "default", "0", CONFIGURED]).output().await?;
+    anyhow::ensure!(output.status.success(), "pw-metadata: {}", String::from_utf8_lossy(&output.stderr).trim());
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text.lines().find_map(|line| {
+        let value = line.split_once(&format!("key:'{CONFIGURED}' value:'"))?.1;
+        Some(value.rsplit_once("' type:")?.0.to_owned())
+    }))
+}
+
+async fn set_configured(value: Option<&str>) -> anyhow::Result<()> {
+    let mut command = tokio::process::Command::new("pw-metadata");
+    match value {
+        Some(value) => command.args(["-n", "default", "0", CONFIGURED, value, "Spa:String:JSON"]),
+        None => command.args(["-n", "default", "-d", "0", CONFIGURED]),
     };
-    log::info!("{id}: \"{name} microphone\" is off{}", ended.map(|error| format!(": {error}")).unwrap_or_default());
+    let output = command.output().await?;
+    anyhow::ensure!(output.status.success(), "pw-metadata: {}", String::from_utf8_lossy(&output.stderr).trim());
     Ok(())
 }
 
-/// The decoder and the virtual source; dropping it removes the source.
+fn name_of(json: &str) -> Option<&str> {
+    let rest = json.split_once("\"name\"")?.1.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    Some(rest.split_once('"')?.0)
+}
+
+/// The decoder and the source; dropping it removes the source.
 struct Source {
+    _node: Node,
     pipeline: gst::Pipeline,
     input: gst_app::AppSrc,
 }
 
 impl Source {
-    fn start(id: &str, name: &str) -> anyhow::Result<Self> {
-        let pipeline = gst::parse::launch(
+    fn start(nodes: &Nodes, id: &str, name: &str) -> anyhow::Result<Self> {
+        let pipeline = gst::parse::launch(&format!(
             "appsrc name=input is-live=true format=time do-timestamp=true \
-             caps=audio/x-opus,channel-mapping-family=0,channels=1,rate=48000 \
-             ! opusdec plc=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=1 \
-             ! pipewiresink name=output mode=provide",
-        )?
+             caps=audio/x-opus,channel-mapping-family=0,channels=1,rate={RATE} \
+             ! opusdec plc=true ! audioconvert ! audioresample \
+             ! audio/x-raw,format=S16LE,layout=interleaved,rate={RATE},channels=1 ! appsink name=output sync=false"
+        ))?
         .downcast::<gst::Pipeline>()
         .map_err(|_| anyhow::anyhow!("not a pipeline"))?;
-        let props = gst::Structure::builder("props")
-            .field("media.class", "Audio/Source/Virtual")
-            .field("node.name", format!("andromeda-link-mic-{id}"))
-            .field("node.description", format!("{name} microphone"))
-            .field("priority.session", PRIORITY)
-            .build();
-        pipeline.by_name("output").context("no output")?.set_property("stream-properties", props);
         let input = pipeline.by_name("input").and_then(|input| input.downcast::<gst_app::AppSrc>().ok());
         let input = input.context("no input")?;
+        let output = pipeline.by_name("output").and_then(|output| output.downcast::<gst_app::AppSink>().ok());
+        let output = output.context("no output")?;
+        let (node, pcm) = nodes.source(id, name)?;
+        output.set_callbacks(gst_app::AppSinkCallbacks::builder().new_sample(move |sink| queue(&pcm, sink)).build());
         pipeline.set_state(gst::State::Playing)?;
-        Ok(Self { pipeline, input })
+        Ok(Self { _node: node, pipeline, input })
     }
 
     fn push(&self, data: Vec<u8>) -> anyhow::Result<()> {
         self.input.push_buffer(gst::Buffer::from_mut_slice(data)).map_err(|flow| anyhow::anyhow!("{flow:?}"))?;
         Ok(())
     }
+}
+
+fn queue(pcm: &Pcm, sink: &gst_app::AppSink) -> Result<gst::FlowSuccess, gst::FlowError> {
+    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+    let map = sample.buffer().ok_or(gst::FlowError::Error)?.map_readable().map_err(|_| gst::FlowError::Error)?;
+    let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    queued.extend(map.iter());
+    let over = queued.len().saturating_sub(MAX_QUEUED);
+    queued.drain(..over);
+    Ok(gst::FlowSuccess::Ok)
 }
 
 impl Drop for Source {

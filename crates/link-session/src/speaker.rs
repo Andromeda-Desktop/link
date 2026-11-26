@@ -1,24 +1,19 @@
 //! Desktop sound on a phone's speaker: one `PipeWire` sink, "<phone> speaker", for each phone whose `DeviceInfo` has
 //! `speaker`. Sound routed to it goes to the phone as Opus units through `OpenSpeaker`; `SILENCE` of silence or of no
 //! buffers closes the stream. `PipeWire` suspends an unused sink, so an idle one costs no work.
-//!
-//! The sinks are `PipeWire` streams on one thread that runs a `PipeWire` loop: `pipewiresrc` with `autoconnect=false`
-//! blocks its state change until an app routes sound to it, and cannot be stopped while it waits.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use pipewire as pw;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use crate::audio_nodes::{Node, Nodes, RATE};
 use crate::link::Link;
 
 const AUDIO: u8 = 4;
@@ -27,7 +22,6 @@ const SILENCE: Duration = Duration::from_secs(1);
 const HOLD_OFF: Duration = Duration::from_secs(10);
 /// 10 ms packets: half a second waits while the stream opens; more is dropped.
 const QUEUED: usize = 50;
-const RATE: u32 = 48_000;
 const CHANNELS: u32 = 2;
 
 /// One Opus packet, and whether its PCM held any sound.
@@ -37,29 +31,17 @@ struct Packet {
     sound: bool,
 }
 
-/// Work for the `PipeWire` thread.
-enum Command {
-    Add { id: String, name: String, input: gst_app::AppSrc },
-    Remove(String),
-    Quit,
-}
-
 pub struct Speakers {
     link: Link,
     sinks: HashMap<String, Sink>,
-    commands: pw::channel::Sender<Command>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    nodes: Nodes,
 }
 
 impl Speakers {
-    pub fn new(link: Link) -> anyhow::Result<Self> {
+    pub fn new(link: Link, nodes: Nodes) -> anyhow::Result<Self> {
         gst::init()?;
         gst::ElementFactory::find("opusenc").context("no GStreamer Opus encoder")?;
-        let (commands, received) = pw::channel::channel();
-        let (ready, started) = std::sync::mpsc::channel();
-        let thread = std::thread::Builder::new().name("speakers".into()).spawn(move || serve(received, &ready))?;
-        started.recv().context("the PipeWire thread ended")??;
-        Ok(Self { link, sinks: HashMap::new(), commands, thread: Some(thread) })
+        Ok(Self { link, sinks: HashMap::new(), nodes })
     }
 
     /// Makes the sinks match the phones `DeviceInfo` marks `speaker`.
@@ -81,7 +63,7 @@ impl Speakers {
             if self.sinks.contains_key(&id) {
                 continue;
             }
-            match Sink::start(self.link.clone(), self.commands.clone(), &id, &name) {
+            match Sink::start(self.link.clone(), &self.nodes, &id, &name) {
                 Ok(sink) => drop(self.sinks.insert(id, sink)),
                 Err(error) => log::warn!("{id}: no speaker sink: {error:#}"),
             }
@@ -89,113 +71,15 @@ impl Speakers {
     }
 }
 
-impl Drop for Speakers {
-    fn drop(&mut self) {
-        self.sinks.clear();
-        if self.commands.send(Command::Quit).is_ok()
-            && let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            log::warn!("the speakers' PipeWire thread panicked");
-        }
-    }
-}
-
-/// Runs the `PipeWire` loop that owns every sink's stream until `Command::Quit`.
-fn serve(commands: pw::channel::Receiver<Command>, ready: &std::sync::mpsc::Sender<anyhow::Result<()>>) {
-    pw::init();
-    let connected = (|| {
-        let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-        let context = pw::context::ContextRc::new(&main_loop, None)?;
-        let core = context.connect_rc(None)?;
-        Ok::<_, pw::Error>((main_loop, core))
-    })();
-    let (main_loop, core) = match connected {
-        Ok(both) => both,
-        Err(error) => return drop(ready.send(Err(anyhow::anyhow!("PipeWire: {error}")))),
-    };
-    let streams = Rc::new(RefCell::new(HashMap::new()));
-    let quit = main_loop.downgrade();
-    let _attached = commands.attach(main_loop.loop_(), move |command| match command {
-        Command::Add { id, name, input } => match stream(&core, &id, &name, input) {
-            Ok(stream) => drop(streams.borrow_mut().insert(id, stream)),
-            Err(error) => log::warn!("{id}: no speaker sink: {error}"),
-        },
-        Command::Remove(id) => drop(streams.borrow_mut().remove(&id)),
-        Command::Quit => {
-            streams.borrow_mut().clear();
-            if let Some(main_loop) = quit.upgrade() {
-                main_loop.quit();
-            }
-        }
-    });
-    drop(ready.send(Ok(())));
-    main_loop.run();
-}
-
-/// A stream as an `Audio/Sink` node; never autoconnected, so it carries only what an app or the user routes to it.
-fn stream(
-    core: &pw::core::CoreRc,
-    id: &str,
-    name: &str,
-    input: gst_app::AppSrc,
-) -> Result<(pw::stream::StreamRc, pw::stream::StreamListener<gst_app::AppSrc>), pw::Error> {
-    let props = pw::properties::properties! {
-        *pw::keys::MEDIA_TYPE => "Audio",
-        *pw::keys::MEDIA_CLASS => "Audio/Sink",
-        *pw::keys::NODE_NAME => format!("andromeda-link-speaker-{id}"),
-        *pw::keys::NODE_DESCRIPTION => format!("{name} speaker"),
-    };
-    let stream = pw::stream::StreamRc::new(core.clone(), "phone speaker", props)?;
-    let listener = stream
-        .add_local_listener_with_user_data(input)
-        .process(|stream, input| {
-            let Some(mut buffer) = stream.dequeue_buffer() else { return };
-            let Some(data) = buffer.datas_mut().first_mut() else { return };
-            let (offset, size) = (data.chunk().offset() as usize, data.chunk().size() as usize);
-            if let Some(bytes) = data.data().and_then(|bytes| bytes.get(offset..offset + size))
-                && !bytes.is_empty()
-            {
-                // A full appsrc drops its oldest buffer: old sound is worth less than none.
-                let _ = input.push_buffer(gst::Buffer::from_slice(bytes.to_vec()));
-            }
-        })
-        .register()?;
-    let mut info = pw::spa::param::audio::AudioInfoRaw::new();
-    info.set_format(pw::spa::param::audio::AudioFormat::S16LE);
-    info.set_rate(RATE);
-    info.set_channels(CHANNELS);
-    let mut position = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
-    position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_FL;
-    position[1] = pw::spa::sys::SPA_AUDIO_CHANNEL_FR;
-    info.set_position(position);
-    let format = pw::spa::pod::Object {
-        type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
-        id: pw::spa::param::ParamType::EnumFormat.as_raw(),
-        properties: info.into(),
-    };
-    let bytes = pw::spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &pw::spa::pod::Value::Object(format),
-    )
-    .map_err(|_| pw::Error::CreationFailed)?
-    .0
-    .into_inner();
-    let pod = pw::spa::pod::Pod::from_bytes(&bytes).ok_or(pw::Error::CreationFailed)?;
-    stream.connect(pw::spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut [pod])?;
-    Ok((stream, listener))
-}
-
 /// A phone's sink; dropping it removes the node and ends the phone's stream.
 struct Sink {
-    id: String,
+    _node: Node,
     pipeline: gst::Pipeline,
-    commands: pw::channel::Sender<Command>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Sink {
-    fn start(link: Link, commands: pw::channel::Sender<Command>, id: &str, name: &str) -> anyhow::Result<Self> {
+    fn start(link: Link, nodes: &Nodes, id: &str, name: &str) -> anyhow::Result<Self> {
         let pipeline = gst::parse::launch(&format!(
             "appsrc name=src is-live=true do-timestamp=true format=time block=false max-bytes=96000 leaky-type=downstream \
              caps=audio/x-raw,format=S16LE,layout=interleaved,rate={RATE},channels={CHANNELS} \
@@ -237,18 +121,15 @@ impl Sink {
                 .build(),
         );
         pipeline.set_state(gst::State::Playing)?;
-        commands
-            .send(Command::Add { id: id.to_owned(), name: name.to_owned(), input })
-            .map_err(|_| anyhow::anyhow!("the PipeWire thread ended"))?;
+        let node = nodes.sink(id, name, input)?;
         log::info!("{id}: speaker sink \"{name} speaker\"");
         let task = tokio::spawn(forward(link, id.to_owned(), received));
-        Ok(Self { id: id.to_owned(), pipeline, commands, task })
+        Ok(Self { _node: node, pipeline, task })
     }
 }
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        drop(self.commands.send(Command::Remove(std::mem::take(&mut self.id))));
         if let Err(error) = self.pipeline.set_state(gst::State::Null) {
             log::debug!("stopping a speaker sink: {error}");
         }
