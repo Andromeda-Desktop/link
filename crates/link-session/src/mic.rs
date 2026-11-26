@@ -18,8 +18,6 @@ use crate::link::Link;
 const AUDIO: u8 = 4;
 const END: u8 = 8;
 const MAX_UNIT: usize = 64 * 1024;
-/// Decoded sound a node holds at most: 100 ms; older sound is dropped.
-const MAX_QUEUED_MS: usize = 100;
 
 /// What a phone streams to this desktop on its own.
 #[derive(Clone, Copy)]
@@ -211,9 +209,7 @@ impl Decoder {
         let input = input.context("no input")?;
         let output = pipeline.by_name("output").and_then(|output| output.downcast::<gst_app::AppSink>().ok());
         let output = output.context("no output")?;
-        let max = RATE as usize * MAX_QUEUED_MS / 1000 * 2 * channels;
-        output
-            .set_callbacks(gst_app::AppSinkCallbacks::builder().new_sample(move |sink| queue(&pcm, sink, max)).build());
+        output.set_callbacks(gst_app::AppSinkCallbacks::builder().new_sample(move |sink| queue(&pcm, sink)).build());
         pipeline.set_state(gst::State::Playing)?;
         Ok(Self { _node: node, pipeline, input })
     }
@@ -224,13 +220,10 @@ impl Decoder {
     }
 }
 
-fn queue(pcm: &Pcm, sink: &gst_app::AppSink, max: usize) -> Result<gst::FlowSuccess, gst::FlowError> {
+fn queue(pcm: &Pcm, sink: &gst_app::AppSink) -> Result<gst::FlowSuccess, gst::FlowError> {
     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
     let map = sample.buffer().ok_or(gst::FlowError::Error)?.map_readable().map_err(|_| gst::FlowError::Error)?;
-    let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    queued.extend(map.iter());
-    let over = queued.len().saturating_sub(max);
-    queued.drain(..over);
+    pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(&map);
     Ok(gst::FlowSuccess::Ok)
 }
 

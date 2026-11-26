@@ -21,7 +21,62 @@ const MIC_STRIDE: usize = 2;
 const SOUND_STRIDE: usize = 4;
 
 /// Decoded phone sound waiting for the graph to pull it, S16LE at `RATE`: mono for a microphone, stereo for sound.
-pub type Pcm = Arc<Mutex<VecDeque<u8>>>;
+pub type Pcm = Arc<Mutex<Jitter>>;
+/// Sound a `Jitter` holds before it plays, and keeps after it drops a backlog.
+const TARGET_MS: usize = 40;
+/// Sound a `Jitter` holds at most.
+const MAX_MS: usize = 100;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Level {
+    Filling,
+    Playing,
+}
+
+/// A jitter buffer of whole frames: silence until it holds `TARGET_MS`, then the sound; it fills again when it runs
+/// dry, and above `MAX_MS` it drops the oldest sound down to `TARGET_MS`.
+pub struct Jitter {
+    bytes: VecDeque<u8>,
+    level: Level,
+    stride: usize,
+}
+
+impl Jitter {
+    fn new(stride: usize) -> Self {
+        Self { bytes: VecDeque::new(), level: Level::Filling, stride }
+    }
+
+    fn bytes_for(&self, ms: usize) -> usize {
+        RATE as usize * ms / 1000 * self.stride
+    }
+
+    /// Queues whole frames.
+    pub fn push(&mut self, pcm: &[u8]) {
+        self.bytes.extend(pcm);
+        if self.bytes.len() > self.bytes_for(MAX_MS) {
+            let over = self.bytes.len() - self.bytes_for(TARGET_MS);
+            self.bytes.drain(..over);
+        }
+    }
+
+    /// Fills `out` (whole frames) with the next sound, silence where there is none.
+    fn pull(&mut self, out: &mut [u8]) {
+        if self.level == Level::Filling && self.bytes.len() >= self.bytes_for(TARGET_MS) {
+            self.level = Level::Playing;
+        }
+        let taken = match self.level {
+            Level::Filling => 0,
+            Level::Playing => out.len().min(self.bytes.len()),
+        };
+        for (byte, sample) in out.iter_mut().zip(self.bytes.drain(..taken)) {
+            *byte = sample;
+        }
+        out[taken..].fill(0);
+        if taken < out.len() {
+            self.level = Level::Filling;
+        }
+    }
+}
 
 enum Command {
     Sink { key: String, name: String, input: gst_app::AppSrc },
@@ -87,7 +142,7 @@ impl Nodes {
 
     /// Source "<name> microphone" that plays what is pushed into the returned `Pcm`, silence when it runs dry.
     pub fn source(&self, id: &str, name: &str) -> anyhow::Result<(Node, Pcm)> {
-        let pcm = Pcm::default();
+        let pcm = Arc::new(Mutex::new(Jitter::new(MIC_STRIDE)));
         let shared = Arc::clone(&pcm);
         let node = self.add(format!("andromeda-link-mic-{id}"), |key| Command::Source {
             key,
@@ -99,7 +154,7 @@ impl Nodes {
 
     /// Playback stream "<name> sound" to the default sink that plays what is pushed into the returned `Pcm` (stereo).
     pub fn playback(&self, id: &str, name: &str) -> anyhow::Result<(Node, Pcm)> {
-        let pcm = Pcm::default();
+        let pcm = Arc::new(Mutex::new(Jitter::new(SOUND_STRIDE)));
         let shared = Arc::clone(&pcm);
         let node = self.add(format!("andromeda-link-sound-{id}"), |key| Command::Playback {
             key,
@@ -291,10 +346,7 @@ fn source(core: &pw::core::CoreRc, key: &str, name: &str, pcm: Pcm) -> Result<So
             .register()
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "phone microphone", props)?;
-    let listener = stream
-        .add_local_listener_with_user_data(pcm)
-        .process(|stream, pcm| fill(stream, pcm, MIC_STRIDE))
-        .register()?;
+    let listener = stream.add_local_listener_with_user_data(pcm).process(fill).register()?;
     let mut position = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
     position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_MONO;
     let format = format(1, position)?;
@@ -319,10 +371,7 @@ fn playback(
         *pw::keys::MEDIA_NAME => name,
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "phone sound", props)?;
-    let listener = stream
-        .add_local_listener_with_user_data(pcm)
-        .process(|stream, pcm| fill(stream, pcm, SOUND_STRIDE))
-        .register()?;
+    let listener = stream.add_local_listener_with_user_data(pcm).process(fill).register()?;
     let mut position = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
     position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_FL;
     position[1] = pw::spa::sys::SPA_AUDIO_CHANNEL_FR;
@@ -337,21 +386,17 @@ fn playback(
     Ok((listener, stream))
 }
 
-/// Fills the stream's next buffer from the queue, `stride` bytes a frame, with silence when it runs dry.
-fn fill(stream: &pw::stream::Stream, pcm: &mut Pcm, stride: usize) {
+/// Fills the stream's next buffer from the jitter buffer.
+fn fill(stream: &pw::stream::Stream, pcm: &mut Pcm) {
+    let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stride = queued.stride;
     let Some(mut buffer) = stream.dequeue_buffer() else { return };
     let requested = usize::try_from(buffer.requested()).unwrap_or(usize::MAX);
     let Some(data) = buffer.datas_mut().first_mut() else { return };
     let Some(slice) = data.data() else { return };
     let frames = if requested == 0 { slice.len() / stride } else { requested.min(slice.len() / stride) };
-    let out = &mut slice[..frames * stride];
-    let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let taken = out.len().min(queued.len());
-    for (byte, sample) in out.iter_mut().zip(queued.drain(..taken)) {
-        *byte = sample;
-    }
+    queued.pull(&mut slice[..frames * stride]);
     drop(queued);
-    out[taken..].fill(0);
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = i32::try_from(stride).unwrap_or(0);
@@ -377,4 +422,58 @@ fn format(channels: u32, position: [u32; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as
     .map_err(|_| pw::Error::CreationFailed)?
     .0
     .into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Jitter, Level, MAX_MS, RATE, SOUND_STRIDE, TARGET_MS};
+
+    /// Random packet arrivals (bursts and gaps) against steady graph pulls; samples count up from 1, so silence is 0
+    /// and the order of the sound shows.
+    #[test]
+    fn jitter_buffer_keeps_order_bound_and_never_plays_while_filling() {
+        let mut seed = 0x2545_f491_u64;
+        let mut random = move |below: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % below
+        };
+        let mut jitter = Jitter::new(SOUND_STRIDE);
+        let packet = RATE as usize / 50 * SOUND_STRIDE;
+        let quantum = 1024 * SOUND_STRIDE;
+        let (mut next, mut last_played) = (1u32, 0u32);
+        for _ in 0..20_000 {
+            if random(2) == 0 {
+                for _ in 0..random(4) {
+                    let frames: Vec<u8> = (0..packet / 4)
+                        .flat_map(|_| {
+                            next += 1;
+                            next.to_le_bytes()
+                        })
+                        .collect();
+                    jitter.push(&frames);
+                    assert!(jitter.bytes.len() <= jitter.bytes_for(MAX_MS));
+                }
+            } else {
+                let filling = jitter.level == Level::Filling && jitter.bytes.len() < jitter.bytes_for(TARGET_MS);
+                let mut out = vec![0xaa; quantum];
+                jitter.pull(&mut out);
+                let samples: Vec<u32> =
+                    out.chunks(4).map(|frame| u32::from_le_bytes(frame.try_into().unwrap_or_default())).collect();
+                let sound = samples.iter().take_while(|sample| **sample != 0).count();
+                assert!(samples[sound..].iter().all(|sample| *sample == 0), "silence inside the sound");
+                if filling {
+                    assert_eq!(sound, 0, "sound before the buffer held its target");
+                }
+                if sound < samples.len() {
+                    assert_eq!(jitter.level, Level::Filling);
+                }
+                for sample in &samples[..sound] {
+                    assert!(*sample > last_played, "sound out of order");
+                    last_played = *sample;
+                }
+            }
+        }
+    }
 }
