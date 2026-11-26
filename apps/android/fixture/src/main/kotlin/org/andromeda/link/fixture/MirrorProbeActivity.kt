@@ -9,13 +9,17 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.random.Random
@@ -23,7 +27,8 @@ import kotlin.random.Random
 /**
  * For the mirror's latency and sound: the whole screen flips between black and white at each touch, logged under
  * `LinkFixture`, and a 440 Hz tone plays as media while it is open. Started again with `noise`, it draws random
- * blocks every frame instead, which no encoder compresses well.
+ * blocks every frame instead, which no encoder compresses well. Started with `silent` it pauses the tone; with `beep`
+ * it plays the tone from its start and logs the wall-clock time its first frame played, for the sound's latency.
  */
 class MirrorProbeActivity : Activity() {
     private var white = false
@@ -66,6 +71,8 @@ class MirrorProbeActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // A singleTop activity is paused around a new intent; onResume plays the tone as this intent says.
+        setIntent(intent)
         if (intent.getBooleanExtra("noise", false)) setContentView(Noise(this))
         if (intent.hasExtra("landscape")) {
             requestedOrientation =
@@ -106,13 +113,37 @@ class MirrorProbeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        tone = toneTrack().apply { play() }
+        val track = toneTrack()
+        tone = track
+        when {
+            intent.getBooleanExtra("silent", false) -> Unit
+            intent.getBooleanExtra("beep", false) -> beep(track)
+            else -> track.play()
+        }
     }
 
     override fun onPause() {
         tone?.release()
         tone = null
         super.onPause()
+    }
+
+    private fun beep(track: AudioTrack) {
+        track.play()
+        thread {
+            val stamp = AudioTimestamp()
+            val until = SystemClock.elapsedRealtime() + BEEP_WAIT_MS
+            while (SystemClock.elapsedRealtime() < until) {
+                if (track.getTimestamp(stamp) && stamp.framePosition > 0) {
+                    val onsetNs = stamp.nanoTime - stamp.framePosition * 1_000_000_000L / RATE
+                    val wallMs = System.currentTimeMillis() - (System.nanoTime() - onsetNs) / 1_000_000.0
+                    Log.i(TAG, "beep onset %.1f".format(Locale.ROOT, wallMs))
+                    return@thread
+                }
+                Thread.sleep(2)
+            }
+            Log.i(TAG, "beep: no timestamp")
+        }
     }
 
     private fun toneTrack(): AudioTrack {
@@ -138,6 +169,7 @@ class MirrorProbeActivity : Activity() {
 
     private companion object {
         const val TAG = "LinkFixture"
+        const val BEEP_WAIT_MS = 1_000L
         const val RATE = 48_000
         const val HZ = 440
         const val AMPLITUDE = 12_000
