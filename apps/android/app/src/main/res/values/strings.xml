@@ -503,9 +503,9 @@
     <string name="home_connect_now">Connect now</string>
     <string name="home_paused_title">%1$s paused this phone</string>
     <string name="home_paused_body">Nothing moves until you resume it on the desktop, in Link › Phones.</string>
-    <string name="home_controls">Controls</string>
+    <string name="home_on_desktop">On this desktop</string>
+    <string name="home_actions">Actions</string>
     <string name="home_clipboard_sync">Clipboard sync</string>
-    <string name="home_screen_hint">View and control</string>
     <string name="home_send">Send</string>
     <string name="home_send_close">Close</string>
     <string name="home_send_text">Text</string>

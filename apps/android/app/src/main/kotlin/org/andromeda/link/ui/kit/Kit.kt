@@ -247,6 +247,7 @@ fun ValueRow(
     value: String? = null,
     chevron: ImageVector? = null,
     accent: Boolean = false,
+    enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
     leading: (@Composable () -> Unit)? = null,
     trailing: @Composable RowScope.() -> Unit = {},
@@ -256,8 +257,8 @@ fun ValueRow(
         title,
         subtitle,
         icon,
-        true,
-        if (onClick != null) modifier.clickable(onClick = onClick) else modifier,
+        enabled,
+        if (onClick != null) modifier.clickable(enabled = enabled, onClick = onClick) else modifier,
         accent = accent,
         leading = leading,
     ) {

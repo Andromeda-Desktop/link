@@ -116,7 +116,7 @@ import org.andromeda.link.ui.kit.Sheet
 import org.andromeda.link.ui.kit.SwitchRow
 import org.andromeda.link.ui.kit.Symbol
 import org.andromeda.link.ui.kit.Text
-import org.andromeda.link.ui.kit.hairline
+import org.andromeda.link.ui.kit.ValueRow
 import org.andromeda.link.ui.text
 import org.andromeda.link.ui.theme.DarkSurface
 import org.andromeda.link.ui.theme.LinkTheme
@@ -759,7 +759,7 @@ private fun Offers(
     }
 }
 
-/** Do not disturb and Clipboard sync, Sleep | Screen off, the Screen mode tile, then the volume and brightness. */
+/** On this desktop (Screen, Clipboard sync, Do not disturb, Remote control), Actions (Sleep, Ring), then the levels. */
 @Composable
 private fun Controls(
     desktop: Desktop,
@@ -780,9 +780,27 @@ private fun Controls(
     val granted = CAN_CONTROL in capabilities.orEmpty()
     val control = live && granted
     Column(Modifier.alpha(if (live) 1f else Tok.Phone.offAlpha)) {
-        SectionTitle(stringResource(R.string.home_controls))
+        SectionTitle(stringResource(R.string.home_on_desktop))
         GroupCard {
+            if (capabilities?.contains("screen-on") == true) {
+                SwitchRow(
+                    stringResource(R.string.key_screen),
+                    status?.screenOff == false,
+                    { controls.setScreenOff(desktop, !it) },
+                    icon = Icons.Screen,
+                    enabled = control,
+                )
+                Separator()
+            }
+            val clipboard = desktop.sharing.clipboard && autoClipboard
+            SwitchRow(
+                stringResource(R.string.home_clipboard_sync),
+                clipboard,
+                { on -> if (on && !autoClipboard) onClipboardSetup() else controls.setSharing(desktop, Feature.Clipboard, on) },
+                icon = Icons.Clip,
+            )
             if (has("dnd")) {
+                Separator()
                 SwitchRow(
                     stringResource(R.string.key_dnd),
                     status?.dnd == true,
@@ -790,56 +808,47 @@ private fun Controls(
                     icon = Icons.Dnd,
                     enabled = control,
                 )
-                Separator()
             }
-            if (capabilities?.contains("screen-on") == true) {
-                SwitchRow(
-                    stringResource(R.string.key_screen_off),
-                    status?.screenOff == true,
-                    { controls.setScreenOff(desktop, it) },
-                    icon = Icons.Monoff,
+            if (has(CAN_SCREEN)) {
+                Separator()
+                ValueRow(
+                    stringResource(R.string.viewer_title),
+                    icon = Icons.Screen,
+                    chevron = Icons.Chev,
+                    enabled = live,
+                    onClick = onViewer,
+                )
+            }
+        }
+        SectionTitle(stringResource(R.string.home_actions))
+        GroupCard {
+            if (has("suspend")) {
+                ValueRow(
+                    stringResource(R.string.key_sleep),
+                    icon = Icons.Moon,
                     enabled = control,
+                    onClick = { controls.sleep(desktop) },
                 )
                 Separator()
             }
-            val clipboard = desktop.sharing.clipboard && autoClipboard
-            SwitchRow(stringResource(R.string.home_clipboard_sync), clipboard, { on ->
-                when {
-                    on && !autoClipboard -> onClipboardSetup()
-                    else -> controls.setSharing(desktop, Feature.Clipboard, on)
-                }
-            }, icon = Icons.Clip)
-            Separator()
-            // Not in the mockup (deviations.md): ringing is a state the desktop reports, so it is a switch row.
+            // A desktop without screen-on state gets the one-way action instead of the Screen switch.
+            if (has("screen-off") && capabilities?.contains("screen-on") != true) {
+                ValueRow(
+                    stringResource(R.string.key_screen_off),
+                    icon = Icons.Monoff,
+                    enabled = control,
+                    onClick = { controls.setScreenOff(desktop, true) },
+                )
+                Separator()
+            }
+            // Ringing is a state the desktop reports, so it is a switch row.
             SwitchRow(
                 stringResource(R.string.key_ring),
                 ringing,
                 { controls.ring(desktop, it) },
                 icon = Icons.Ring,
-                enabled =
-                    live && desktop.sharing.ring,
+                enabled = live && desktop.sharing.ring,
             )
-        }
-        // A desktop without screen-on state gets the one-way button.
-        val screenButton = has("screen-off") && capabilities?.contains("screen-on") != true
-        if (has("suspend") || screenButton) {
-            SplitCapsule(
-                listOfNotNull(
-                    if (has("suspend")) Triple(Icons.Moon, stringResource(R.string.key_sleep)) { controls.sleep(desktop) } else null,
-                    if (screenButton) {
-                        Triple(Icons.Monoff, stringResource(R.string.key_screen_off)) { controls.setScreenOff(desktop, true) }
-                    } else {
-                        null
-                    },
-                ),
-                enabled = control,
-            )
-        }
-        if (has(
-                CAN_SCREEN,
-            )
-        ) {
-            ModeTile(Icons.Screen, stringResource(R.string.key_screen), stringResource(R.string.home_screen_hint), live, onViewer)
         }
         if (levels) Levels(desktop, capabilities, status, volume, controls, volumeEnabled = control)
     }
@@ -881,68 +890,6 @@ private fun Levels(
                 Modifier.padding(top = Tok.Space.p8.dp),
             )
         }
-    }
-}
-
-/** One-shot actions that belong together in one fill_1 capsule, split by a separator. */
-@Composable
-private fun SplitCapsule(
-    actions: List<Triple<ImageVector, String, () -> Unit>>,
-    enabled: Boolean,
-) {
-    val s = LinkTheme.scheme
-    Row(
-        Modifier
-            .padding(top = Tok.Space.p8.dp)
-            .fillMaxWidth()
-            .height(Tok.Phone.hit.dp)
-            .clip(CircleShape)
-            .background(s.fill1),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        actions.forEachIndexed { index, (icon, label, onClick) ->
-            if (index > 0) Box(Modifier.width(hairline()).height(Tok.Size.controlS.dp).background(s.separator))
-            Row(
-                Modifier.weight(1f).fillMaxHeight().clickable(enabled = enabled, role = Role.Button, onClick = onClick),
-                horizontalArrangement = Arrangement.spacedBy(Tok.Space.p8.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Symbol(icon, s.label1, size = Tok.Size.symbolL.dp)
-                Text(label, LinkTheme.phoneType.body.copy(fontWeight = FontWeight.Medium), maxLines = 1)
-            }
-        }
-    }
-}
-
-/** A tile that opens a full screen: symbol without a circle, name, hint, chevron. */
-@Composable
-private fun ModeTile(
-    icon: ImageVector,
-    name: String,
-    hint: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val s = LinkTheme.scheme
-    val t = LinkTheme.phoneType
-    Row(
-        Modifier
-            .padding(top = Tok.Space.p8.dp)
-            .fillMaxWidth()
-            .heightIn(min = Tok.Phone.identity.dp)
-            .clip(RoundedCornerShape(Tok.Radius.r16.dp))
-            .background(s.fill1)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(Tok.Space.p12.dp),
-        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Symbol(icon, s.label1, modifier = Modifier.padding(horizontal = Tok.Space.p4.dp))
-        Column(Modifier.weight(1f)) {
-            Text(name, t.headline, maxLines = 1)
-            Text(hint, t.footnote, color = s.label2, maxLines = 1)
-        }
-        Symbol(Icons.Chev, s.label3, size = Tok.Size.symbolL.dp)
     }
 }
 
