@@ -113,13 +113,14 @@ class GalaxyView(
     }
 
     // Debug builds: `adb shell am broadcast -a org.andromeda.link.GALAXY_BENCH` runs one scripted motion (turn, zoom in
-    // through two infinite-zoom loops, zoom out, fly home; in the overview it only turns) and logs its frame times.
+    // through two infinite-zoom loops, zoom out, fly home; in the overview it only turns) and logs its frame times;
+    // `--ez frames true` logs only the frame count.
     private val benchReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(
                 c: Context,
                 i: Intent,
-            ) = runBench()
+            ) = if (i.getBooleanExtra("frames", false)) Log.i(TAG, "frames=$frames").let {} else runBench()
         }
 
     override fun onAttachedToWindow() {
