@@ -37,14 +37,18 @@ suspend fun encodeOpus(
         val probe = if (Log.isLoggable(TAG, Log.DEBUG)) OnsetProbe(record, channels) else null
         while (!stopping()) {
             val input = codec.dequeueInputBuffer(TIMEOUT_US)
+            var wait = 0L
             if (input >= 0) {
                 val buffer = codec.getInputBuffer(input) ?: continue
                 val read = record.read(buffer, minOf(buffer.capacity(), packetBytes), AudioRecord.READ_BLOCKING)
                 probe?.read(buffer, read)
                 codec.queueInputBuffer(input, 0, maxOf(read, 0), System.nanoTime() / 1000, 0)
+                // Its packet goes now, not after the next 20 ms read.
+                wait = OUTPUT_WAIT_US
             }
             while (true) {
-                val output = codec.dequeueOutputBuffer(info, 0)
+                val output = codec.dequeueOutputBuffer(info, wait)
+                wait = 0
                 if (output < 0) break
                 val bytes = ByteArray(info.size)
                 codec.getOutputBuffer(output)?.apply {
@@ -71,6 +75,7 @@ fun packetBytes(channels: Int) = RATE / 50 * channels * 2
 const val RATE = 48_000
 private const val TAG = "OpusEncoder"
 private const val TIMEOUT_US = 20_000L
+private const val OUTPUT_WAIT_US = 5_000L
 private const val LOUD = 2000
 
 /**
