@@ -130,8 +130,9 @@ pub async fn run() -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            Some(signal) = remote_requested.next(), if screen => {
-                let Ok(args) = signal.args() else { continue };
+            // Unguarded: a Link1 signal stream never polled stops all delivery after 8 owner changes.
+            Some(signal) = remote_requested.next() => {
+                let (true, Ok(args)) = (screen, signal.args()) else { continue };
                 let source = u32::try_from(args.source).ok();
                 drop(screen_requests.send(screen::Request::Show { device: args.device_id.to_owned(), source }));
             }

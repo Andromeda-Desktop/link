@@ -315,8 +315,10 @@ async fn main() -> anyhow::Result<()> {
                 // The unit restarts the service, which connects the backends again.
                 Err(error) => return Err(error.context("the clipboard backend stopped")),
             },
-            Some(signal) = ring_requests.next(), if ring_wanted => {
-                let Ok(args) = signal.args() else { continue };
+            // No stream arm has a guard: zbus queues a Link1 owner change in every signal stream, and one never polled
+            // stops all delivery after 8 of them (4 daemon restarts).
+            Some(signal) = ring_requests.next() => {
+                let (true, Ok(args)) = (ring_wanted, signal.args()) else { continue };
                 ring.set(&link, args.device_id, args.on).await;
             }
             () = ring.timed_out() => ring.stop(&link).await,
@@ -345,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
                     None => log::debug!("remote input {action} ignored"),
                 }
             }
-            Some(signal) = remote_touch.next(), if touchpad.is_some() => {
+            Some(signal) = remote_touch.next() => {
                 // The daemon sends it only from devices holding the input grant.
                 let Ok(args) = signal.args() else { continue };
                 if let Some(pad) = touchpad.as_mut() {
@@ -353,8 +355,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             result = pump_input(&mut input) => result.context("the input backend stopped")?,
-            Some(signal) = remote_requested.next(), if screen => {
-                let Ok(args) = signal.args() else { continue };
+            Some(signal) = remote_requested.next() => {
+                let (true, Ok(args)) = (screen, signal.args()) else { continue };
                 let source = u32::try_from(args.source).ok();
                 drop(screen_requests.send(screen::Request::Show { device: args.device_id.to_owned(), source }));
             }
