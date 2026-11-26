@@ -7,11 +7,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.text.format.DateUtils
 import android.text.format.Formatter
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -24,7 +27,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -56,6 +58,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -87,6 +91,7 @@ import org.andromeda.link.core.domain.MediaCommandKind
 import org.andromeda.link.core.domain.PlaybackState
 import org.andromeda.link.core.domain.TransferRecord
 import org.andromeda.link.devices.galaxy.GalaxyBackdrop
+import org.andromeda.link.devices.galaxy.GalaxyControl
 import org.andromeda.link.devices.galaxy.galaxyGestures
 import org.andromeda.link.devices.galaxy.rememberGalaxy
 import org.andromeda.link.files.PickerActions
@@ -122,6 +127,7 @@ import org.andromeda.link.ui.theme.DarkSurface
 import org.andromeda.link.ui.theme.LinkTheme
 import org.andromeda.link.ui.theme.Tok
 import org.andromeda.link.ui.theme.elevation
+import org.andromeda.link.ui.theme.spring
 
 /**
  * Home is the one root (handoff `screens.home`, concept-c.html): the desktop's identity row, its state card or media
@@ -198,6 +204,20 @@ fun HomeScreen(
     var fan by rememberSaveable { mutableStateOf(false) }
     var sheet by rememberSaveable { mutableStateOf(HomeSheet.None) }
     val galaxy = rememberGalaxy()
+    val ids = state.desktops.map { it.id }
+    LaunchedEffect(ids, primary?.id) { primary?.let { galaxy.setDesks(ids, it.id) } }
+    var overview by remember { mutableStateOf(false) }
+    val pickDesk: (Desktop) -> Unit = { desktop ->
+        galaxy.enter(desktop.id)
+        overview = false
+        viewModel.selectDesktop(desktop)
+    }
+    val leaveOverview = {
+        galaxy.leave()
+        overview = false
+    }
+    BackHandler(overview, leaveOverview)
+    galaxy.onPick = { id -> state.desktops.firstOrNull { it.id == id }?.let(pickDesk) }
     val list = rememberLazyListState()
     var heroPx by remember { mutableFloatStateOf(0f) }
     val scroll = { if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset.toFloat() else heroPx }
@@ -210,9 +230,11 @@ fun HomeScreen(
         if (primary != null) insets?.isAppearanceLightStatusBars = false
         onDispose { insets?.isAppearanceLightStatusBars = !dark }
     }
+    val shown by animateFloatAsState(if (overview) 1f else 0f, spring(Tok.Spring.fade), label = "overview")
     Box(modifier) {
         if (primary != null) GalaxyBackdrop(galaxy, scroll, Tok.Phone.heroScene, Modifier.fillMaxSize())
         Screen(
+            modifier = Modifier.graphicsLayer { alpha = 1 - shown }.then(if (overview) Modifier.clearAndSetSemantics {} else Modifier),
             background = if (primary != null) Color.Transparent else LinkTheme.scheme.solidRegular,
             toast = toast,
             onToastEnd = viewModel::messageShown,
@@ -266,18 +288,6 @@ fun HomeScreen(
                             }
                         }
                     }
-                    Sheet(sheet == HomeSheet.Desks, { sheet = HomeSheet.None }, stringResource(R.string.desktops_title)) {
-                        state.desktops.forEach { desktop ->
-                            DeskRow(desktop, desktop.id == primary.id) {
-                                sheet = HomeSheet.None
-                                viewModel.selectDesktop(desktop)
-                            }
-                        }
-                        DeskRow(null, false) {
-                            sheet = HomeSheet.None
-                            onPair()
-                        }
-                    }
                 }
             },
         ) {
@@ -299,7 +309,14 @@ fun HomeScreen(
                             missing.size,
                             scrim = dark,
                             scroll = scroll,
-                            onOpen = { if (state.desktops.size > 1) sheet = HomeSheet.Desks else onDesktop(primary) },
+                            onOpen = {
+                                if (state.desktops.size > 1) {
+                                    galaxy.overview()
+                                    overview = true
+                                } else {
+                                    onDesktop(primary)
+                                }
+                            },
                             onFixes = { sheet = HomeSheet.Fixes },
                             onActivity = onActivity,
                             onSettings = onSettings,
@@ -362,52 +379,60 @@ fun HomeScreen(
                 }
             }
         }
+        if (overview) {
+            DeskOverview(galaxy, state.desktops, pickDesk, leaveOverview, Modifier.graphicsLayer { alpha = shown })
+        }
     }
 }
+
+/** Every desktop's galaxy, named under it; tap one to open it, tap twice to go back. */
+@Composable
+private fun DeskOverview(
+    galaxy: GalaxyControl,
+    desktops: List<Desktop>,
+    onPick: (Desktop) -> Unit,
+    onLeave: () -> Unit,
+    modifier: Modifier = Modifier,
+) = DarkSurface {
+    val t = LinkTheme.phoneType
+    Box(
+        modifier
+            .fillMaxSize()
+            .pointerInput(galaxy) { detectTapGestures(onTap = { galaxy.tap(it) }, onDoubleTap = { onLeave() }) },
+    ) {
+        galaxy.spots?.forEach { spot ->
+            val desktop = desktops.firstOrNull { it.id == spot.id } ?: return@forEach
+            Column(
+                Modifier
+                    .layout { m, c ->
+                        val p = m.measure(c.copy(minWidth = 0, minHeight = 0))
+                        layout(p.width, p.height) {
+                            val x = (spot.at.x - p.width / 2).toInt().coerceIn(0, maxOf(0, c.maxWidth - p.width))
+                            p.place(x, (spot.at.y + spot.radius * LABEL_DROP).toInt())
+                        }
+                    }.clip(RoundedCornerShape(Tok.Radius.r12.dp))
+                    .clickable(role = Role.Button) { onPick(desktop) }
+                    .padding(Tok.Space.p8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(desktop.name, t.body.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+                Presence(desktop, false)
+            }
+        }
+        Text(
+            stringResource(R.string.overview_hint),
+            t.footnote,
+            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = Tok.Space.p32.dp),
+            color = LinkTheme.scheme.label2,
+        )
+    }
+}
+
+/** The label's top sits this share of the galaxy's radius below its centre. */
+private const val LABEL_DROP = .45f
 
 /** Which sheet covers Home; one at a time. */
-private enum class HomeSheet { None, Fixes, Desks }
-
-/** One desktop in the Desktops sheet (current = accent tint + check), or the Pair row when [desktop] is null. */
-@Composable
-private fun DeskRow(
-    desktop: Desktop?,
-    current: Boolean,
-    onClick: () -> Unit,
-) {
-    val s = LinkTheme.scheme
-    val t = LinkTheme.phoneType
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(min = Tok.Phone.identity.dp)
-            .clip(RoundedCornerShape(Tok.Radius.r16.dp))
-            .then(if (current) Modifier.background(s.accent.copy(alpha = Tok.Phone.chipTint)) else Modifier)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = if (current) Tok.Space.p12.dp else Tok.Space.p4.dp, vertical = Tok.Space.p8.dp),
-        horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(Tok.Phone.deskGlyph.dp)
-                .clip(RoundedCornerShape(Tok.Radius.r12.dp))
-                .background(if (current) s.accent.copy(alpha = Tok.Phone.glyphTint) else s.fill1),
-            contentAlignment = Alignment.Center,
-        ) {
-            Symbol(if (desktop == null) Icons.Plus else Icons.Laptop, if (current || desktop == null) s.accentText else s.label2)
-        }
-        if (desktop == null) {
-            Text(stringResource(R.string.home_pair_desktop), t.headline, color = s.accentText, modifier = Modifier.weight(1f), maxLines = 1)
-            return@Row
-        }
-        Column(Modifier.weight(1f)) {
-            Text(desktop.name, t.headline, maxLines = 2)
-            Presence(desktop, refreshing = false, Modifier)
-        }
-        if (current) Symbol(Icons.Check, s.accentText)
-    }
-}
+private enum class HomeSheet { None, Fixes }
 
 /**
  * The desktop over the galaxy: Activity and Settings keys at the top, the name, presence and fix chip at the foot. The

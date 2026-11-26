@@ -8,7 +8,10 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
@@ -24,7 +27,42 @@ import org.andromeda.link.ui.theme.LinkTheme
 /** Joins the backdrop's view to the gesture area over it, which sits in the scrolling list. */
 class GalaxyControl {
     internal var view: GalaxyView? = null
+        set(v) {
+            field = v
+            v?.onPick = { onPick(it) }
+            v?.onOverview = { spots = it }
+            desks?.let { (ids, sel) -> v?.setDesks(ids, sel) }
+        }
     internal var origin = Offset.Zero
+    private var desks: Pair<List<String>, String>? = null
+
+    /** A tap on a desktop's galaxy in the overview. */
+    var onPick: (String) -> Unit = {}
+
+    /** Every paired desktop in a stable order, and the one Home shows. */
+    fun setDesks(
+        ids: List<String>,
+        selected: String,
+    ) {
+        desks = ids to selected
+        view?.setDesks(ids, selected)
+    }
+
+    /** Flies out to show every desktop's galaxy. */
+    fun overview() = view?.overview()
+
+    /** Flies into [id]'s galaxy from the overview. */
+    fun enter(id: String) = view?.enter(id)
+
+    /** Flies back from the overview to the desktop Home shows. */
+    fun leave() = view?.leave()
+
+    /** Each desktop's galaxy on screen while the overview rests; null otherwise. */
+    var spots by mutableStateOf<List<DeskSpot>?>(null)
+        private set
+
+    /** [p] is in the view's own coordinates. */
+    fun tap(p: Offset) = view?.tap(p)
 
     /** [p] is in the gesture area's own coordinates. */
     internal fun toView(p: Offset): Offset {
@@ -66,7 +104,9 @@ fun GalaxyBackdrop(
 /** One finger turns the galaxy, two fingers zoom about their centre, a double tap flies home. */
 fun Modifier.galaxyGestures(control: GalaxyControl): Modifier =
     onGloballyPositioned { control.origin = it.positionInWindow() }
-        .pointerInput(control) { detectTapGestures(onDoubleTap = { control.view?.home() }) }
+        .pointerInput(
+            control,
+        ) { detectTapGestures(onTap = { control.view?.tap(control.toView(it)) }, onDoubleTap = { control.view?.home() }) }
         .pointerInput(control) {
             awaitEachGesture {
                 awaitFirstDown(requireUnconsumed = false)

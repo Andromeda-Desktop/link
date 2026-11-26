@@ -19,6 +19,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import android.view.TextureView
+import androidx.compose.ui.geometry.Offset
 import androidx.core.content.ContextCompat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -53,6 +54,13 @@ object GalaxyCache {
         }
 }
 
+/** A desktop's galaxy in the overview: [at] its centre and [radius] in view px. */
+class DeskSpot(
+    val id: String,
+    val at: Offset,
+    val radius: Float,
+)
+
 /**
  * The Home galaxy on its own GL thread. It draws only on demand (a gesture, a fly, a size or theme change), so an
  * idle Home costs no frames. Soft light adds up in a small HDR target and is tone-mapped there; stars draw on the screen at full resolution, screen-blended.
@@ -71,6 +79,29 @@ class GalaxyView(
     private var vw = 1
     private var vh = 1
     private var pending = false
+
+    /** Where the camera is: on the selected desktop's galaxy, over every desktop, or flying into [Mode.Entering.id]. */
+    private sealed interface Mode {
+        data object Home : Mode
+
+        data object Overview : Mode
+
+        data class Entering(
+            val id: String,
+        ) : Mode
+    }
+
+    private var mode: Mode = Mode.Home
+    private var selected: String? = null
+
+    /** The other desktops in layout order; the selected one is always the galaxy at the origin. */
+    private var others: List<String> = emptyList()
+
+    /** A tap on a desktop's galaxy in the overview. */
+    var onPick: (String) -> Unit = {}
+
+    /** Each desktop's galaxy on screen once the overview has landed; null when it is left. */
+    var onOverview: (List<DeskSpot>?) -> Unit = {}
 
     /** Number of frames drawn; stays still while Home is idle. */
     @Volatile var frames = 0L
@@ -149,6 +180,7 @@ class GalaxyView(
         dx: Float,
         dy: Float,
     ) {
+        if (mode != Mode.Home) return
         stopMotion()
         val ky = -dx / density * TURN_YAW
         val kp = dy / density * TURN_PITCH
@@ -166,6 +198,7 @@ class GalaxyView(
         cy: Float,
         factor: Float,
     ) {
+        if (mode != Mode.Home) return
         stopMotion()
         synchronized(lock) { zoomAt(cx, cy, 1.0 / factor) }
         requestRender(motion = true)
@@ -176,7 +209,134 @@ class GalaxyView(
         if (abs(velYaw) + abs(velPitch) > SPIN_MIN) startMotion()
     }
 
+    /** [ids] in a stable order; a new [selected] outside a fly-in moves the origin to it at once. */
+    fun setDesks(
+        ids: List<String>,
+        selected: String,
+    ) {
+        synchronized(lock) {
+            if (this.selected != selected && mode == Mode.Home) this.selected = selected
+            if (this.selected == null) this.selected = selected
+            others = ids.filter { it != this.selected }
+        }
+        requestRender()
+    }
+
+    fun overview() {
+        synchronized(lock) {
+            if (mode == Mode.Overview || others.isEmpty()) return
+            mode = Mode.Overview
+            fly(overCam())
+        }
+    }
+
+    /** Flies into [id]'s galaxy; on arrival it becomes the origin. */
+    fun enter(id: String) {
+        synchronized(lock) {
+            if (mode != Mode.Overview) return
+            onOverview(null)
+            val r = others.indexOf(id)
+            if (r < 0) {
+                mode = Mode.Home
+                fly(homeCam())
+            } else {
+                mode = Mode.Entering(id)
+                fly(deskCam(r))
+            }
+        }
+    }
+
+    fun leave() {
+        synchronized(lock) {
+            if (mode != Mode.Overview) return
+            onOverview(null)
+            mode = Mode.Home
+            fly(homeCam())
+        }
+    }
+
+    fun tap(at: Offset) {
+        val id =
+            synchronized(lock) {
+                if (mode != Mode.Overview) return
+                val m = matrix()
+                val ids = listOfNotNull(selected) + others
+                ids.indices
+                    .minByOrNull { i -> project(m, if (i == 0) ORIGIN else deskPos(i - 1)).let { (it - at).getDistance() } }
+                    ?.takeIf { (project(m, if (it == 0) ORIGIN else deskPos(it - 1)) - at).getDistance() < PICK_DP * density }
+                    ?.let { ids[it] }
+            } ?: return
+        onPick(id)
+    }
+
+    private var spots: List<DeskSpot>? = null
+
+    private fun spots(): List<DeskSpot> {
+        val m = matrix()
+        val ids = listOfNotNull(selected) + others
+        return ids.mapIndexed { i, id ->
+            val c = if (i == 0) ORIGIN else deskPos(i - 1)
+            val sc = if (i == 0) 1.0 else DESK_SCALE
+            val w = m[3] * c[0] + m[7] * c[1] + m[11] * c[2] + m[15]
+            DeskSpot(id, project(m, c), (sc * F / w * vh / 2).toFloat())
+        }
+    }
+
+    private fun project(
+        m: FloatArray,
+        p: DoubleArray,
+    ): Offset {
+        val x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]
+        val y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]
+        val w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]
+        if (w <= 0) return Offset(Float.MAX_VALUE, Float.MAX_VALUE)
+        return Offset(((x / w + 1) / 2 * vw).toFloat(), ((1 - y / w) / 2 * vh).toFloat())
+    }
+
+    /** Desktop [r] of [others]: on a widening spiral, each turned its own way so the shapes differ. */
+    private fun deskPos(r: Int): DoubleArray {
+        val a = r * DESK_TURN
+        val k = 1 + r * DESK_SPREAD
+        val b = DESK_AT
+        return doubleArrayOf((b[0] * cos(a) + b[2] * sin(a)) * k, b[1] * k, (-b[0] * sin(a) + b[2] * cos(a)) * k)
+    }
+
+    private fun deskSpin(r: Int) = (r + 1) * DESK_SPIN
+
+    /** The camera that sees desktop [r] as [homeCam] sees the origin galaxy. */
+    private fun deskCam(r: Int): Cam {
+        val h = homeCam()
+        return Cam(deskPos(r), h.yaw + deskSpin(r), h.pitch, h.dist * DESK_SCALE, h.sh)
+    }
+
+    private fun overCam(): Cam {
+        val ps = listOf(ORIGIN) + others.indices.map(::deskPos)
+        val c = DoubleArray(3) { k -> ps.sumOf { it[k] } / ps.size }
+        val radius = ps.maxOf { sqrt(dot(sub(it, c), sub(it, c))) } + 1
+        return Cam(c, OVER_YAW, OVER_PITCH, radius * OVER_DIST, OVER_SH)
+    }
+
+    private fun fly(to: Cam) {
+        var dy = to.yaw - cam.yaw
+        dy = ((dy + PI) % TAU + TAU) % TAU - PI
+        tween = Tween(SystemClock.uptimeMillis(), cam.copy(), to.copy(yaw = cam.yaw + dy))
+        velYaw = 0.0
+        velPitch = 0.0
+        startMotion()
+    }
+
+    /** A fly-in landed on [id]: it becomes the origin, and the camera sees the same picture from [homeCam]. */
+    private fun arrive(id: String) {
+        val r = others.indexOf(id)
+        mode = Mode.Home
+        if (r < 0) return
+        cam = Cam(ORIGIN.copyOf(), cam.yaw - deskSpin(r), cam.pitch, cam.dist / DESK_SCALE, cam.sh)
+        others = (listOfNotNull(selected) + others).filter { it != id }
+        selected = id
+    }
+
     fun home() {
+        if (mode != Mode.Home) return
         synchronized(lock) {
             val to = homeCam()
             var dy = to.yaw - cam.yaw
@@ -217,7 +377,13 @@ class GalaxyView(
                             exp(l(ln(a.dist), ln(b.dist))),
                             l(a.sh, b.sh),
                         )
-                    if (k >= 1) tween = null else busy = true
+                    if (k >= 1) {
+                        tween = null
+                        (mode as? Mode.Entering)?.let { arrive(it.id) }
+                        if (mode == Mode.Overview) spots = spots()
+                    } else {
+                        busy = true
+                    }
                 } else if (abs(velYaw) + abs(velPitch) > SPIN_MIN) {
                     cam.yaw += velYaw
                     cam.pitch = (cam.pitch + velPitch).coerceIn(-PITCH_MAX, PITCH_MAX)
@@ -226,6 +392,8 @@ class GalaxyView(
                     busy = true
                 }
             }
+            spots?.let { onOverview(it) }
+            spots = null
             requestRender(motion = busy)
             moving = busy
             if (busy) Choreographer.getInstance().postFrameCallback(this.tick)
@@ -483,6 +651,7 @@ class GalaxyView(
         val mainA: Float
         var mc: FloatArray? = null
         val o: DoubleArray
+        val os: List<Other>
         synchronized(lock) {
             pending = false
             p = points ?: return
@@ -500,6 +669,7 @@ class GalaxyView(
                     )
             }
             o = fo.copyOf()
+            os = otherFrames(m)
             e = eye()
             dist = cam.dist
             homeDist = homeCam().dist
@@ -515,7 +685,7 @@ class GalaxyView(
         val scene = scene ?: return
         val t0 = SystemClock.elapsedRealtimeNanos()
         val dl = if (light) ((ln(dist / (homeDist * DUSK_FROM)) / ln(1 / DUSK_FROM)).coerceIn(0.0, 1.0)) else 0.0
-        scene.draw(p, Frame(m, mc, mainA, e, o, dist), w, h, density, light, dl.toFloat())
+        scene.draw(p, Frame(m, mc, mainA, e, o, dist, os), w, h, density, light, dl.toFloat())
         val timed = motion && bench != null
         // The bench waits for the GPU before the swap; after it, the time would include the wait for a free buffer.
         if (timed) {
@@ -594,7 +764,56 @@ class GalaxyView(
         val eye: DoubleArray,
         val fo: DoubleArray,
         val dist: Double,
+        val others: List<Other>,
     )
+
+    /** Another desktop's galaxy: model-view-projection [m], alpha [a], point scale [z], the share of points drawn [part]. */
+    private class Other(
+        val m: FloatArray,
+        val a: Float,
+        val z: Float,
+        val part: Float,
+    )
+
+    /** Shown over the overview and while flying to or from it; Home draws only the origin galaxy. */
+    private fun otherFrames(m: FloatArray): List<Other> {
+        val tw = tween
+        if (mode == Mode.Home && tw == null) return emptyList()
+        val k = if (tw == null) 1.0 else min(1.0, (SystemClock.uptimeMillis() - tw.t0) / FLY_MS)
+        val target = (mode as? Mode.Entering)?.id
+        return others.mapIndexed { r, id ->
+            val p = deskPos(r)
+            val c = cos(deskSpin(r)) * DESK_SCALE
+            val sn = sin(deskSpin(r)) * DESK_SCALE
+            val model =
+                floatArrayOf(
+                    c.toFloat(),
+                    0f,
+                    (-sn).toFloat(),
+                    0f,
+                    0f,
+                    DESK_SCALE.toFloat(),
+                    0f,
+                    0f,
+                    sn.toFloat(),
+                    0f,
+                    c.toFloat(),
+                    0f,
+                    p[0].toFloat(),
+                    p[1].toFloat(),
+                    p[2].toFloat(),
+                    1f,
+                )
+            val a =
+                when {
+                    id == target -> DESK_DIM + (1 - DESK_DIM) * k
+                    mode == Mode.Home -> DESK_DIM * (1 - k)
+                    else -> DESK_DIM
+                }
+            val part = if (id == target) DESK_PART + (1 - DESK_PART) * k else DESK_PART
+            Other(times(m, model), a.toFloat(), DESK_SCALE.toFloat(), part.toFloat())
+        }
+    }
 
     private class Scene(
         private val tier: GalaxyTier,
@@ -807,6 +1026,7 @@ class GalaxyView(
             pass(frame.m, 1f, 1f, split, count - split)
             pass(frame.m, frame.mainA, 1f, 0, split)
             frame.mc?.let { pass(it, 1f, LS.toFloat(), 0, split) }
+            for (d in frame.others) pass(d.m, d.a, d.z, 0, (split * d.part).toInt())
         }
 
         private fun fullScreen(prog: Int) {
@@ -884,6 +1104,21 @@ class GalaxyView(
         const val SEED_AT = 40.0
         const val FADE_RANGE = 6.0
         const val ZOOM_MAX = 80.0
+
+        // The overview (gen-depth.py GAL, OVER): the second desktop sits at DESK_AT, more spiral out from it.
+        val ORIGIN = doubleArrayOf(0.0, 0.0, 0.0)
+        val DESK_AT = doubleArrayOf(2.0, 5.5, -9.0)
+        const val DESK_TURN = 2.4
+        const val DESK_SPREAD = .35
+        const val DESK_SPIN = 1.9
+        const val DESK_SCALE = .75
+        const val DESK_DIM = .5
+        const val DESK_PART = 1.0 / 3
+        const val OVER_YAW = .15
+        const val OVER_PITCH = .5
+        const val OVER_DIST = 3.4
+        const val OVER_SH = .05
+        const val PICK_DP = 90f
 
         fun sub(
             a: DoubleArray,
