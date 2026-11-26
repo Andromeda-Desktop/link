@@ -1079,8 +1079,8 @@ impl Link {
     ) -> zbus::Result<()>;
 
     /// Called by `link-session`: the desktop's whole state, sent to phones when it changes. Keys, each absent when the
-    /// desktop cannot tell: volume (u, percent), muted (b), battery (u), charging (b), brightness (u), locked (b), idle (b), dnd (b), and
-    /// profile (s: power-saver, balanced, performance).
+    /// desktop cannot tell: volume (u, percent), muted (b), battery (u), charging (b), brightness (u), locked (b), idle (b), dnd (b),
+    /// screen-off (b), and profile (s: power-saver, balanced, performance).
     async fn set_desktop_status(&self, state: HashMap<String, zbus::OwnedVariant>) -> fdo::Result<()> {
         let invalid = |key: &str| fdo::Error::InvalidArgs(format!("{key} is missing or out of range"));
         let percent = |key: &str| {
@@ -1104,6 +1104,7 @@ impl Link {
             idle: flag("idle"),
             dnd: flag("dnd"),
             profile,
+            screen_off: flag("screen-off"),
         };
         Message::DesktopStatus(status.clone()).validate().map_err(|_| invalid("a percent"))?;
         self.hub.set_desktop_status(status).await;

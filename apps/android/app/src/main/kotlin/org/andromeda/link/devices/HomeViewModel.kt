@@ -128,7 +128,10 @@ interface DeskControls {
 
     fun sleep(desktop: Desktop)
 
-    fun screenOff(desktop: Desktop)
+    fun setScreenOff(
+        desktop: Desktop,
+        off: Boolean,
+    )
 
     fun ring(
         desktop: Desktop,
@@ -277,7 +280,10 @@ class HomeViewModel(
 
     override fun sleep(desktop: Desktop) = act { repository.suspendDesktop(desktop.id) }
 
-    override fun screenOff(desktop: Desktop) = act { repository.turnDesktopScreenOff(desktop.id) }
+    override fun setScreenOff(
+        desktop: Desktop,
+        off: Boolean,
+    ) = act { if (off) repository.turnDesktopScreenOff(desktop.id) else repository.turnDesktopScreenOn(desktop.id) }
 
     fun media(
         shown: DesktopPlayer,

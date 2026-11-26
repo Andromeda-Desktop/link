@@ -32,6 +32,7 @@ pub struct State {
     pub idle: Option<bool>,
     pub dnd: Option<bool>,
     pub profile: Option<String>,
+    pub screen_off: Option<bool>,
 }
 
 pub struct System {

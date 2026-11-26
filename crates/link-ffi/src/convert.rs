@@ -166,6 +166,7 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                     idle: status.idle,
                     dnd: status.dnd,
                     profile: status.profile.map(|profile| profile.as_str().to_owned()),
+                    screen_off: status.screen_off,
                 },
                 Message::MirrorStop(stop) => LinkEvent::MirrorStopped { desktop_id, reason: stop.reason },
                 Message::MicRequest => LinkEvent::MicRequested { desktop_id },

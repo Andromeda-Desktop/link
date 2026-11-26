@@ -62,7 +62,8 @@ impl Link {
             values.push(("battery", zbus::Variant::from(u32::from(percent))));
             values.push(("charging", zbus::Variant::from(charging)));
         }
-        let flags = [("locked", state.locked), ("idle", state.idle), ("dnd", state.dnd)];
+        let flags =
+            [("locked", state.locked), ("idle", state.idle), ("dnd", state.dnd), ("screen-off", state.screen_off)];
         values.extend(flags.into_iter().filter_map(|(key, flag)| Some((key, zbus::Variant::from(flag?)))));
         if let Some(brightness) = state.brightness {
             values.push(("brightness", zbus::Variant::from(u32::from(brightness))));

@@ -505,6 +505,8 @@ class LinkRepository(
 
     suspend fun turnDesktopScreenOff(desktopId: String): Result<Unit> = call { it.turnDesktopScreenOff(desktopId) }
 
+    suspend fun turnDesktopScreenOn(desktopId: String): Result<Unit> = call { it.turnDesktopScreenOn(desktopId) }
+
     /** Succeeds with how many connected desktops took it; none are dialled. */
     suspend fun postNotification(notification: PhoneNotification): Result<Int> =
         call {
@@ -802,6 +804,7 @@ class LinkRepository(
                             event.brightness?.toInt(),
                             event.locked,
                             event.dnd,
+                            event.screenOff,
                         )
                     _desktopStatuses.update { it + (event.desktopId to status) }
                 }

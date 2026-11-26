@@ -33,6 +33,9 @@ pub struct DesktopStatus {
     pub dnd: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<PowerProfile>,
+    /// Every output off; absent when the desktop cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_off: Option<bool>,
 }
 
 impl DesktopStatus {
@@ -77,6 +80,8 @@ pub enum SystemCommandKind {
     Lock,
     Suspend,
     ScreenOff,
+    /// To a desktop that lists `screen-on`.
+    ScreenOn,
     /// Either way; `value` is 1 for on.
     SetDnd,
     /// To the desktop; `value` is 0 power-saver, 1 balanced, 2 performance.
@@ -109,6 +114,7 @@ impl SystemCommandKind {
             Self::Lock => "lock",
             Self::Suspend => "suspend",
             Self::ScreenOff => "screen-off",
+            Self::ScreenOn => "screen-on",
             Self::SetDnd => "set-dnd",
             Self::SetProfile => "set-profile",
             Self::SetMediaVolume => "set-media-volume",
@@ -135,7 +141,7 @@ impl SystemCommandKind {
             Self::SetVolume | Self::SetBrightness | Self::SetMediaVolume => Some(100),
             Self::SetMute | Self::SetDnd | Self::SetWifi | Self::SetBluetooth | Self::SetTorch => Some(1),
             Self::SetProfile | Self::SetRinger => Some(2),
-            Self::Lock | Self::Suspend | Self::ScreenOff => None,
+            Self::Lock | Self::Suspend | Self::ScreenOff | Self::ScreenOn => None,
         }
     }
 }

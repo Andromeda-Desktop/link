@@ -406,6 +406,7 @@ pub enum LinkEvent {
         idle: Option<bool>,
         dnd: Option<bool>,
         profile: Option<String>,
+        screen_off: Option<bool>,
     },
     /// A desktop that granted this phone "Control system" asks for set-media-volume (percent), set-ringer (0 silent,
     /// 1 vibrate, 2 normal), or set-dnd (1 or 0); answer `id` with [`LinkClient::system_result`].
@@ -1257,6 +1258,10 @@ impl LinkClient {
 
     pub async fn turn_desktop_screen_off(&self, desktop_id: String) -> Result<(), LinkError> {
         self.system_command(desktop_id, message::SystemCommandKind::ScreenOff, None).await
+    }
+
+    pub async fn turn_desktop_screen_on(&self, desktop_id: String) -> Result<(), LinkError> {
+        self.system_command(desktop_id, message::SystemCommandKind::ScreenOn, None).await
     }
 
     /// Answers a desktop's [`LinkEvent::SystemCommand`] `id`; `error`, for the desktop's user, is None when it was done.

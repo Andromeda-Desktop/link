@@ -72,4 +72,5 @@ data class DesktopStatus(
     val brightness: Int? = null,
     val locked: Boolean? = null,
     val dnd: Boolean? = null,
+    val screenOff: Boolean? = null,
 )

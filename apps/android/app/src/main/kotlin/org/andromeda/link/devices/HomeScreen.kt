@@ -617,6 +617,16 @@ private fun Controls(
                 )
                 Separator()
             }
+            if (capabilities?.contains("screen-on") == true) {
+                SwitchRow(
+                    stringResource(R.string.key_screen_off),
+                    status?.screenOff == true,
+                    { controls.setScreenOff(desktop, it) },
+                    icon = Icons.Monoff,
+                    enabled = control,
+                )
+                Separator()
+            }
             val clipboard = desktop.sharing.clipboard && autoClipboard
             SwitchRow(stringResource(R.string.home_clipboard_sync), clipboard, { on ->
                 when {
@@ -635,15 +645,14 @@ private fun Controls(
                     live && desktop.sharing.ring,
             )
         }
-        if (has("suspend") || has("screen-off")) {
+        // A desktop without screen-on state gets the one-way button.
+        val screenButton = has("screen-off") && capabilities?.contains("screen-on") != true
+        if (has("suspend") || screenButton) {
             SplitCapsule(
                 listOfNotNull(
                     if (has("suspend")) Triple(Icons.Moon, stringResource(R.string.key_sleep)) { controls.sleep(desktop) } else null,
-                    if (has(
-                            "screen-off",
-                        )
-                    ) {
-                        Triple(Icons.Monoff, stringResource(R.string.key_screen_off)) { controls.screenOff(desktop) }
+                    if (screenButton) {
+                        Triple(Icons.Monoff, stringResource(R.string.key_screen_off)) { controls.setScreenOff(desktop, true) }
                     } else {
                         null
                     },

@@ -75,6 +75,9 @@ trait Shell {
     #[zbus(property)]
     fn set_do_not_disturb(&self, on: bool) -> zbus::Result<()>;
     fn screen_off(&self) -> zbus::Result<()>;
+    fn screen_on(&self) -> zbus::Result<()>;
+    #[zbus(property, name = "ScreenOff")]
+    fn screen_is_off(&self) -> zbus::Result<bool>;
     fn lock_from_phone(&self) -> zbus::Result<()>;
 }
 
@@ -96,6 +99,7 @@ pub struct State {
     pub idle: Option<bool>,
     pub dnd: Option<bool>,
     pub profile: Option<String>,
+    pub screen_off: Option<bool>,
 }
 
 struct Backlight {
@@ -108,6 +112,8 @@ type Changes = SelectAll<Pin<Box<dyn Stream<Item = ()> + Send>>>;
 
 pub struct System {
     session: Option<SessionProxy<'static>>,
+    /// The shell reports its screen power and can turn it on.
+    screen_power: bool,
     manager: Option<ManagerProxy<'static>>,
     battery: Option<BatteryProxy<'static>>,
     profiles: Option<ProfilesProxy<'static>>,
@@ -160,6 +166,10 @@ impl System {
             _ => None,
         };
         let lock = LockProxy::new(bus).await.ok();
+        let screen_power = match &shell {
+            Some(proxy) => proxy.screen_is_off().await.is_ok(),
+            None => false,
+        };
         if let Some(proxy) = &session {
             changes.push(proxy.receive_locked_hint_changed().await.map(drop).boxed());
             changes.push(proxy.receive_idle_hint_changed().await.map(drop).boxed());
@@ -173,6 +183,7 @@ impl System {
         }
         if let Some(proxy) = &shell {
             changes.push(proxy.receive_do_not_disturb_changed().await.map(drop).boxed());
+            changes.push(proxy.receive_screen_is_off_changed().await.map(drop).boxed());
         }
         let backlight = backlight();
         let brightness = backlight.as_ref().and_then(read_brightness);
@@ -180,7 +191,19 @@ impl System {
         if let Some(b) = &backlight {
             watch_backlight(&b.dir.join("actual_brightness"), brightness_changed.clone());
         }
-        Self { session, manager, battery, profiles, shell, lock, backlight, changes, brightness, brightness_changed }
+        Self {
+            session,
+            screen_power,
+            manager,
+            battery,
+            profiles,
+            shell,
+            lock,
+            backlight,
+            changes,
+            brightness,
+            brightness_changed,
+        }
     }
 
     /// What phones can ask of this desktop, as `SetSessionCapabilities` lists it.
@@ -193,6 +216,7 @@ impl System {
             (self.profiles.is_some(), "profile"),
             (self.shell.is_some(), "dnd"),
             (self.shell.is_some(), "screen-off"),
+            (self.screen_power, "screen-on"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))
@@ -215,11 +239,11 @@ impl System {
             Some(proxy) => proxy.active_profile().await.ok().filter(|profile| PROFILES.contains(&profile.as_str())),
             None => None,
         };
-        let dnd = match &self.shell {
-            Some(proxy) => proxy.do_not_disturb().await.ok(),
-            None => None,
+        let (dnd, screen_off) = match &self.shell {
+            Some(proxy) => (proxy.do_not_disturb().await.ok(), proxy.screen_is_off().await.ok()),
+            None => (None, None),
         };
-        State { battery, brightness: self.brightness, locked, idle, dnd, profile }
+        State { battery, brightness: self.brightness, locked, idle, dnd, profile, screen_off }
     }
 
     /// Waits for a change to any part; pending forever with none to watch.
@@ -273,6 +297,7 @@ impl System {
             "screen-off" => {
                 self.shell("Turning the screen off")?.screen_off().await.map_err(|e| failed("Screen off", e))
             }
+            "screen-on" => self.shell("Turning the screen on")?.screen_on().await.map_err(|e| failed("Screen on", e)),
             "set-dnd" => self
                 .shell("Do Not Disturb")?
                 .set_do_not_disturb(value != 0)
