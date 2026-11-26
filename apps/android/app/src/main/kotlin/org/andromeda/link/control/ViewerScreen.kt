@@ -407,7 +407,7 @@ fun ViewerScreen(
             Box(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
                     PageHeader(desk.name, leave, Modifier.padding(end = Tok.Space.p8.dp)) {
-                        if (!desk.input) chip(Modifier.weight(1f, fill = false))
+                        if (!desk.input) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { chip(Modifier) }
                         zoom()
                     }
                     picture(Modifier.fillMaxWidth().fillMaxHeight(Tok.Phone.picture))
