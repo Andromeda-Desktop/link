@@ -1,7 +1,8 @@
 use super::{
-    CALLS, ClientActor, DeviceId, Error, Feature, FsRefusal, Instant, MAX_SNAPSHOT, MESSAGES, Message, MessagesRefusal,
-    NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, Peer, PhotoRefusal, SHARING,
-    SessionHandle, Sharing, TEXTS_MMS, Takes, browse, camera, for_desktop, messages, shown_digest, slot,
+    CALLS, ClientActor, ClientEvent, DeviceId, Error, Feature, FsRefusal, Instant, MAX_SNAPSHOT, MESSAGES, Message,
+    MessagesRefusal, NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, Peer,
+    PhotoRefusal, SHARING, SessionHandle, Sharing, TEXTS_MMS, Takes, browse, camera, for_desktop, messages,
+    shown_digest, slot, stops_of,
 };
 
 impl ClientActor {
@@ -150,6 +151,14 @@ impl ClientActor {
     /// Turns one feature on or off for desktop `id` and tells that desktop what changed.
     pub(super) async fn set_sharing(&mut self, id: &DeviceId, feature: Feature, on: bool) -> Result<(), Error> {
         self.phone.set_sharing(id, feature, on)?;
+        if !on {
+            for stop in stops_of(feature) {
+                if matches!(stop, Message::MirrorStop(_)) {
+                    self.set_mirroring(id, false);
+                }
+                self.emit(ClientEvent::Message { from: id.clone(), message: stop });
+            }
+        }
         if let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == *id)
             && let Some(handle) = self.sessions.get(id).filter(|handle| handle.is_live())
         {

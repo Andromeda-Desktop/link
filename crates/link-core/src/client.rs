@@ -783,9 +783,11 @@ impl ClientActor {
             }
             SessionEvent::SystemCommand { from, id, command } => self.on_system_command(from, id, command).await,
             SessionEvent::Message { from, message } => {
-                let allowed = feature_of(&message).is_some_and(|feature| {
-                    self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.allows(feature))
-                });
+                // A stop only ends what runs, so no switch holds it back.
+                let allowed = is_stop(&message)
+                    || feature_of(&message).is_some_and(|feature| {
+                        self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.allows(feature))
+                    });
                 if allowed {
                     if let Message::MirrorRequest(request) = &message {
                         self.mirror_codecs.insert(from.clone(), request.codecs.clone());
@@ -934,6 +936,19 @@ fn status_every(last: Option<Status>, now: Option<Status>) -> Duration {
     }
 }
 
+fn is_stop(message: &Message) -> bool {
+    matches!(message, Message::MirrorStop(_) | Message::SoundStop | Message::MicStop)
+}
+
+/// What a desktop's stop of `feature` looks like: the phone acts out these when that switch turns off.
+fn stops_of(feature: Feature) -> Vec<Message> {
+    match feature {
+        Feature::Screen => vec![Message::MirrorStop(MirrorStop { reason: None }), Message::SoundStop],
+        Feature::Mic => vec![Message::MicStop],
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use link_proto::message::NotificationButton;
@@ -982,6 +997,53 @@ mod tests {
         let id = crate::identity::Identity::generate().expect("key").device_id();
         actor.set_mirroring(&id, true);
         assert!(!actor.is_busy(&id));
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// With its switch off, a desktop's mic, sound or mirror stop still reaches the app, its requests do not, and
+    /// turning a switch off stops what that switch covers.
+    #[tokio::test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    async fn a_switch_turned_off_stops_its_capture_and_lets_stops_through() {
+        let dir = std::env::temp_dir().join(format!("link-client-stops-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let desktop = crate::identity::Identity::generate().expect("key");
+        let mut store = crate::store::Store::default();
+        store.upsert(Peer::new(desktop.spki(), "desk".to_owned()));
+        store.save(&dir.join("store.json")).expect("store");
+        let phone = Phone::new(
+            crate::identity::Identity::generate().expect("key"),
+            dir.join("store.json"),
+            "phone".to_owned(),
+            None,
+        )
+        .expect("phone");
+        let (_client, mut actor, mut events) = client(phone, Inbox::new(dir.clone(), &dir).expect("inbox"));
+        let id = desktop.device_id();
+        let mut emitted = || {
+            let mut out = Vec::new();
+            while let Ok(ClientEvent::Message { message, .. }) = events.try_recv() {
+                out.push(message);
+            }
+            out
+        };
+        for (feature, stops) in [
+            (Feature::Mic, vec![Message::MicStop]),
+            (Feature::Screen, vec![Message::MirrorStop(MirrorStop { reason: None }), Message::SoundStop]),
+        ] {
+            actor.set_sharing(&id, feature, true).await.expect("on");
+            assert!(emitted().is_empty(), "{feature:?} on stopped something");
+            actor.set_sharing(&id, feature, false).await.expect("off");
+            assert_eq!(emitted(), stops, "{feature:?} off");
+            for stop in stops {
+                actor.relay(SessionEvent::Message { from: id.clone(), message: stop.clone() }).await;
+                assert_eq!(emitted(), vec![stop], "{feature:?} off");
+            }
+        }
+        for request in [Message::MicRequest, Message::SoundRequest] {
+            actor.relay(SessionEvent::Message { from: id.clone(), message: request.clone() }).await;
+            assert!(emitted().is_empty(), "{request:?} passed a switch that is off");
+        }
         drop(std::fs::remove_dir_all(&dir));
     }
 
