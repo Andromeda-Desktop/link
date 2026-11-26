@@ -237,8 +237,11 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .and_then(|nodes| attempt("phone speakers", speaker::Speakers::new(link.clone(), nodes).map(Some)));
     let mut device_info = link.proxy.receive_device_info_changed().await;
-    let mut mics = nodes.and_then(|nodes| attempt("phone microphones", mic::Mics::new(nodes).map(Some)));
+    let mut mics =
+        nodes.clone().and_then(|nodes| attempt("phone microphones", mic::Mics::new(nodes, mic::Kind::Mic).map(Some)));
     let mut mic_requests = link.proxy.receive_mic_requested().await?;
+    let mut sounds = nodes.and_then(|nodes| attempt("phone sound", mic::Mics::new(nodes, mic::Kind::Sound).map(Some)));
+    let mut sound_requests = link.proxy.receive_phone_sound_requested().await?;
     if let Some(speakers) = speakers.as_mut() {
         speakers.refresh().await;
     }
@@ -378,10 +381,14 @@ async fn main() -> anyhow::Result<()> {
             Some(change) = show_locked_changed.next() => notifications.set_locked(None, change.get().await.ok()).await,
             Some(change) = access_off.next() => notifications.set_access_off(change.get().await.unwrap_or_default()).await,
             Some(change) = keep_awake.next() => awake.set(change.get().await.unwrap_or(false)).await,
-            // A restarted daemon starts with no capabilities and no status; a stopped one keeps nothing awake.
             Some(signal) = mic_requests.next() => {
                 if let (Some(mics), Ok(args)) = (mics.as_mut(), signal.args()) {
                     mics.start(link.clone(), args.device_id.to_owned());
+                }
+            }
+            Some(signal) = sound_requests.next() => {
+                if let (Some(sounds), Ok(args)) = (sounds.as_mut(), signal.args()) {
+                    sounds.start(link.clone(), args.device_id.to_owned());
                 }
             }
             Some(_) = device_info.next() => {
@@ -389,6 +396,7 @@ async fn main() -> anyhow::Result<()> {
                     speakers.refresh().await;
                 }
             }
+            // A restarted daemon starts with no capabilities and no status; a stopped one keeps nothing awake.
             Some(owner) = daemon_owner.next() => match owner {
                 Some(_) => report(&link, &capabilities, volume.as_ref(), &system).await,
                 None => awake.set(false).await,

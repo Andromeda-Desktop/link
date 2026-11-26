@@ -29,7 +29,8 @@ pub(super) fn transfer_event(event: TransferEvent) -> Option<LinkEvent> {
         TransferEvent::Busy { .. }
         | TransferEvent::Mirror { .. }
         | TransferEvent::Speaker { .. }
-        | TransferEvent::Mic { .. } => return None,
+        | TransferEvent::Mic { .. }
+        | TransferEvent::Sound { .. } => return None,
     })
 }
 
@@ -171,6 +172,8 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                 Message::MirrorStop(stop) => LinkEvent::MirrorStopped { desktop_id, reason: stop.reason },
                 Message::MicRequest => LinkEvent::MicRequested { desktop_id },
                 Message::MicStop => LinkEvent::MicStopped { desktop_id },
+                Message::SoundRequest => LinkEvent::SoundRequested { desktop_id },
+                Message::SoundStop => LinkEvent::SoundStopped { desktop_id },
                 Message::RemoteStarted(started) => LinkEvent::RemoteStarted {
                     desktop_id,
                     sources: started

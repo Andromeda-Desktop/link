@@ -94,6 +94,13 @@ impl Client {
         MirrorSender::open_sound(&session, Message::MicData).await
     }
 
+    /// Opens the stream of this phone's media sound to the desktop that sent `sound-request`; the caller sends Opus
+    /// units (48 kHz stereo) and finishes it when the sound stops.
+    pub async fn start_sound(&self, id: DeviceId) -> Result<MirrorSender, Error> {
+        let session = self.session(id).await?;
+        MirrorSender::open_sound(&session, Message::SoundData).await
+    }
+
     /// Tells a mirroring desktop the screen's corners and cutouts; a desktop without [`SCREEN_SHAPE`] gets nothing.
     pub async fn send_screen_shape(&self, id: DeviceId, shape: ScreenShape) -> Result<(), Error> {
         let desktops = self.desktops().await?;

@@ -2,7 +2,7 @@ use std::os::fd::OwnedFd;
 
 use crate::mirror::Failure;
 
-use link_core::proto::message::{MIC, MIRROR_CODECS, MirrorRequest, SPEAKER};
+use link_core::proto::message::{MIRROR_CODECS, MirrorRequest, SPEAKER};
 
 use super::{DeviceId, Event, Feature, Hub, Message, Parked, RemoteStream, net};
 
@@ -72,32 +72,33 @@ impl Hub {
     }
 
     /// Tells the phone what it shows, then opens the video stream and pumps `link-session`'s socket into it.
-    /// Asks the phone for its microphone; `ask` gets the socket of its Opus units once the phone streams them.
-    pub(super) async fn open_mic(&mut self, id: DeviceId, ask: crate::mirror::Ask) {
+    /// Asks the phone for its microphone or its sound; `ask` gets the socket of its Opus units once the phone
+    /// streams them.
+    pub(super) async fn open_audio(&mut self, id: DeviceId, audio: crate::mirror::Audio, ask: crate::mirror::Ask) {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(ask.reply.send(Err(Failure::NotConnected)));
         };
-        if !self.phone_has(&id, MIC) {
+        if !self.phone_has(&id, audio.feature()) {
             return drop(ask.reply.send(Err(Failure::Refused("unsupported".to_owned()))));
         }
-        if !self.shares(&id, Feature::Mic) {
+        if !self.shares(&id, audio.grant()) {
             return drop(ask.reply.send(Err(Failure::Refused("not-allowed".to_owned()))));
         }
-        if self.mics.busy(&id) {
+        if self.audio(audio).busy(&id) {
             return drop(ask.reply.send(Err(Failure::Busy)));
         }
-        log::info!("{id}: asking the phone for its microphone");
-        match session.send(Message::MicRequest).await {
-            Ok(()) => self.mics.wait(id, ask),
+        log::info!("{id}: asking the phone for its {}", audio.name());
+        match session.send(audio.request()).await {
+            Ok(()) => self.audio(audio).wait(id, ask),
             Err(error) => drop(ask.reply.send(Err(Failure::Failed(error.to_string())))),
         }
     }
 
-    pub(super) async fn tell_mic_stop(&self, id: &DeviceId) {
+    pub(super) async fn tell_audio_stop(&self, id: &DeviceId, audio: crate::mirror::Audio) {
         if let Some(session) = self.sessions.get(id)
-            && let Err(error) = session.send(Message::MicStop).await
+            && let Err(error) = session.send(audio.stop()).await
         {
-            log::info!("{id}: telling the phone to stop its microphone: {error}");
+            log::info!("{id}: telling the phone to stop its {}: {error}", audio.name());
         }
     }
 

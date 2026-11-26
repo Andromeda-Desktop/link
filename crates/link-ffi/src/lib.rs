@@ -265,6 +265,15 @@ pub enum LinkEvent {
     MicStopped {
         desktop_id: String,
     },
+    /// The desktop asks for this phone's media sound without its screen: answer with [`LinkClient::start_sound`]
+    /// once the capture is allowed, or [`LinkClient::stop_sound`].
+    SoundRequested {
+        desktop_id: String,
+    },
+    /// The desktop ended the phone's sound.
+    SoundStopped {
+        desktop_id: String,
+    },
     /// The desktop ended mirroring.
     MirrorStopped {
         desktop_id: String,
@@ -1317,7 +1326,6 @@ impl LinkClient {
         self.run(async move { client.send_screen_shape(id, shape).await }).await
     }
 
-    /// Ends mirroring, or refuses the desktop's request, with a reason when it failed.
     /// Opens the microphone's stream to the desktop that asked for it; send Opus units (48 kHz mono) with flag 4.
     pub async fn start_mic(&self, desktop_id: String) -> Result<Arc<MirrorSession>, LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
@@ -1331,6 +1339,21 @@ impl LinkClient {
         self.run(async move { client.send(id, Message::MicStop).await }).await
     }
 
+    /// Opens the stream of the phone's media sound to the desktop that asked for it; send Opus units (48 kHz stereo)
+    /// with flag 4.
+    pub async fn start_sound(&self, desktop_id: String) -> Result<Arc<MirrorSession>, LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        let sender = self.run(async move { client.start_sound(id).await }).await?;
+        Ok(Arc::new(MirrorSession { runtime: self.runtime.handle().clone(), sender: Arc::new(sender), codec: None }))
+    }
+
+    /// Tells the desktop the phone's sound ended, or that its capture was not allowed.
+    pub async fn stop_sound(&self, desktop_id: String) -> Result<(), LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        self.run(async move { client.send(id, Message::SoundStop).await }).await
+    }
+
+    /// Ends mirroring, or refuses the desktop's request, with a reason when it failed.
     pub async fn stop_mirror(&self, desktop_id: String, reason: Option<String>) -> Result<(), LinkError> {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
         self.run(async move { client.stop_mirror(id, reason).await }).await

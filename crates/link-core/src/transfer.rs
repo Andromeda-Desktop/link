@@ -86,6 +86,8 @@ pub enum TransferEvent {
     Speaker { from: DeviceId, stream: crate::mirror::MirrorStream },
     /// A phone opened its microphone's stream; the handler takes it or drops it.
     Mic { from: DeviceId, stream: crate::mirror::MirrorStream },
+    /// A phone opened the stream of its media sound; the handler takes it or drops it.
+    Sound { from: DeviceId, stream: crate::mirror::MirrorStream },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -875,6 +877,10 @@ impl TransferActor {
             Ok(Envelope { message: Message::MicData, .. }) => {
                 let stream = crate::mirror::MirrorStream::new(crate::mirror::MirrorReceiver::sound(recv));
                 return self.emit(TransferEvent::Mic { from: peer.clone(), stream });
+            }
+            Ok(Envelope { message: Message::SoundData, .. }) => {
+                let stream = crate::mirror::MirrorStream::new(crate::mirror::MirrorReceiver::sound(recv));
+                return self.emit(TransferEvent::Sound { from: peer.clone(), stream });
             }
             // A mirror's video stream may be reset before its header arrives.
             Err(Error::Timeout | Error::StreamEnded) => {

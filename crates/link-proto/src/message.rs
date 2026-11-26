@@ -141,6 +141,9 @@ pub const SPEAKER: &str = "feature:speaker";
 /// A phone's hello carries this when it answers `mic-request` with a `mic-data` stream; desktops ask no older phone.
 pub const MIC: &str = "feature:mic";
 
+/// A phone's hello carries this when it answers `sound-request` with a `sound-data` stream; desktops ask no older phone.
+pub const SOUND: &str = "feature:sound";
+
 /// The largest lag a `mirror-lag` reports, in milliseconds.
 pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
 
@@ -607,6 +610,12 @@ pub enum Message {
     MicStop,
     /// The header of a phone-to-desktop stream of Opus units (48 kHz mono) in mirroring's framing.
     MicData,
+    /// The desktop asks for the phone's media sound without its screen; the phone answers with a `sound-data` stream.
+    SoundRequest,
+    /// Either side ends the phone's sound.
+    SoundStop,
+    /// The header of a phone-to-desktop stream of the phone's media sound: Opus units (48 kHz stereo) in mirroring's framing.
+    SoundData,
     UsbReady,
     RemoteRequest(RemoteRequest),
     RemoteStarted(RemoteStarted),
@@ -709,6 +718,9 @@ impl Message {
             Self::MicRequest => "mic-request",
             Self::MicStop => "mic-stop",
             Self::MicData => "mic-data",
+            Self::SoundRequest => "sound-request",
+            Self::SoundStop => "sound-stop",
+            Self::SoundData => "sound-data",
             Self::UsbReady => "usb-ready",
             Self::RemoteRequest(_) => "remote-request",
             Self::RemoteStarted(_) => "remote-started",
@@ -767,6 +779,9 @@ impl Message {
             | Self::MicRequest
             | Self::MicStop
             | Self::MicData
+            | Self::SoundRequest
+            | Self::SoundStop
+            | Self::SoundData
             | Self::UsbReady
             | Self::ContactsChanged
             | Self::TextsChanged
@@ -912,6 +927,18 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::MicData
             }
+            "sound-request" => {
+                body.deserialized::<Empty>()?;
+                Self::SoundRequest
+            }
+            "sound-stop" => {
+                body.deserialized::<Empty>()?;
+                Self::SoundStop
+            }
+            "sound-data" => {
+                body.deserialized::<Empty>()?;
+                Self::SoundData
+            }
             "usb-ready" => {
                 body.deserialized::<Empty>()?;
                 Self::UsbReady
@@ -1001,6 +1028,9 @@ impl Message {
             | Self::MicRequest
             | Self::MicStop
             | Self::MicData
+            | Self::SoundRequest
+            | Self::SoundStop
+            | Self::SoundData
             | Self::UsbReady
             | Self::ShareAck(_)
             | Self::Heartbeat(_)

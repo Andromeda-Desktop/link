@@ -10,6 +10,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   wifi-direct-ready-msg / wifi-direct-msg / bt-pairing-msg /
   mirror-request-msg / mirror-started-msg / screen-shape-msg / mirror-stop-msg / mirror-input-msg /
   mirror-keyframe-msg / mirror-lag-msg / mirror-data-msg / speaker-data-msg / mic-request-msg / mic-stop-msg / mic-data-msg /
+  sound-request-msg / sound-stop-msg / sound-data-msg /
   usb-ready-msg /
   fs-list-msg / fs-entries-msg / fs-read-msg / fs-data-msg / fs-error-msg / fs-stat-msg / fs-thumb-msg /
   fs-write-msg / fs-delete-msg / photo-request-msg / photo-taken-msg / photos-recent-msg / photos-list-msg /
@@ -290,6 +291,13 @@ mic-request-msg = { type: "mic-request", id: uint, body: {} }
 mic-stop-msg = { type: "mic-stop", id: uint, body: {} }
 ; Phone to desktop, the header of a uni stream of Opus units (48 kHz mono) in mirroring's framing.
 mic-data-msg = { type: "mic-data", id: uint, body: {} }
+; Desktop to phone, only to a phone whose hello has feature:sound: asks for the phone's media sound without its
+; screen. The phone answers with a sound-data uni stream once the user allowed the capture, or with sound-stop.
+sound-request-msg = { type: "sound-request", id: uint, body: {} }
+; Either way: ends the phone's sound.
+sound-stop-msg = { type: "sound-stop", id: uint, body: {} }
+; Phone to desktop, the header of a uni stream of Opus units (48 kHz stereo) in mirroring's framing.
+sound-data-msg = { type: "sound-data", id: uint, body: {} }
 
 ; The desktop browses the phone's storage, read-only, while the phone's browse switch for it is on. A path is "/" for
 ; the roots, else "/<root>/<name>/..." with no empty, ".", or ".." component. req pairs each answer with its request.

@@ -50,6 +50,63 @@ pub struct Ask {
     pub reply: Reply,
 }
 
+/// What one [`Mirrors`] instance carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// Screen mirrors: video, and sound inside them.
+    #[default]
+    Screen,
+    Audio(Audio),
+}
+
+/// A phone-to-desktop stream of sound alone, asked for with its own request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audio {
+    /// The phone's microphone (`mic-request`).
+    Mic,
+    /// The phone's media sound without its screen (`sound-request`).
+    Sound,
+}
+
+impl Audio {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mic => "microphone",
+            Self::Sound => "sound",
+        }
+    }
+
+    /// The hello feature of a phone that answers the request.
+    pub fn feature(self) -> &'static str {
+        match self {
+            Self::Mic => link_core::proto::message::MIC,
+            Self::Sound => link_core::proto::message::SOUND,
+        }
+    }
+
+    /// The phone's switch that allows it.
+    pub fn grant(self) -> link_core::store::Feature {
+        match self {
+            Self::Mic => link_core::store::Feature::Mic,
+            Self::Sound => link_core::store::Feature::Screen,
+        }
+    }
+
+    pub fn request(self) -> Message {
+        match self {
+            Self::Mic => Message::MicRequest,
+            Self::Sound => Message::SoundRequest,
+        }
+    }
+
+    pub fn stop(self) -> Message {
+        match self {
+            Self::Mic => Message::MicStop,
+            Self::Sound => Message::SoundStop,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Mirrors {
     waiting: HashMap<DeviceId, (Ask, Instant)>,
@@ -57,19 +114,19 @@ pub struct Mirrors {
     running: HashMap<DeviceId, oneshot::Sender<()>>,
     pumps: JoinSet<DeviceId>,
     wifi: WifiPower,
-    /// A microphone's streams: Wi-Fi power save stays with the screen mirrors' instance, which runs its helper.
-    sound_only: bool,
+    /// Wi-Fi power save stays with the screen mirrors' instance, which runs its helper.
+    kind: Kind,
     /// A phone started or stopped waiting or running since [`Mirrors::take_changed`].
     changed: bool,
 }
 
 impl Mirrors {
-    pub fn sound_only() -> Self {
-        Self { sound_only: true, ..Self::default() }
+    pub fn audio(audio: Audio) -> Self {
+        Self { kind: Kind::Audio(audio), ..Self::default() }
     }
 
     fn wifi_awake(&mut self, awake: bool) {
-        if !self.sound_only {
+        if self.kind == Kind::Screen {
             self.wifi.awake(awake);
         }
     }
@@ -164,10 +221,11 @@ impl Mirrors {
         if reply.send(Ok(Opened { stream: theirs.into(), width, height, codec })).is_err() {
             return receiver.stop();
         }
-        if self.sound_only {
-            log::info!("{from}: the phone's microphone is on");
-        } else {
-            log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
+        match self.kind {
+            Kind::Audio(audio) => log::info!("{from}: the phone's {} is on", audio.name()),
+            Kind::Screen => {
+                log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
+            }
         }
         let id = from.clone();
         let (stop, stopped) = oneshot::channel();

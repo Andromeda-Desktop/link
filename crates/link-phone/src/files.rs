@@ -165,6 +165,7 @@ pub fn describe(event: &TransferEvent) -> Value {
         TransferEvent::Mirror { from, .. } => json!({ "event": "mirror-stream", "desktop": from }),
         TransferEvent::Speaker { from, .. } => json!({ "event": "speaker-stream", "desktop": from }),
         TransferEvent::Mic { from, .. } => json!({ "event": "mic-stream", "desktop": from }),
+        TransferEvent::Sound { from, .. } => json!({ "event": "sound-stream", "desktop": from }),
     }
 }
 

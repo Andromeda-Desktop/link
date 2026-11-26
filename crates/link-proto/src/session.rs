@@ -137,10 +137,12 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::Commands(_)
         | Message::RemoteStarted(_)
         | Message::MicRequest
+        | Message::SoundRequest
         | Message::Capabilities(_)
         | Message::DesktopStatus(_) => role == Role::Phone,
         Message::HotspotEnd(_)
         | Message::MicStop
+        | Message::SoundStop
         | Message::MirrorStop(_)
         | Message::RemoteStop(_)
         | Message::MediaPlayer(_)

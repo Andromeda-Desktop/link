@@ -9,7 +9,7 @@ use std::sync::Arc;
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
     Hello, Hotspot, LATE_HASH, MESSAGES, MIC, MIRROR_CODECS, MIRROR_LAG, Message, PHONE_TOGGLES, PHOTOS_PAGE,
-    PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SPEAKER, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, USB, bluetooth_address,
+    PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SOUND, SPEAKER, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, USB, bluetooth_address,
     public_address, relay_entry,
 };
 use link_proto::pairing::Secret;
@@ -488,6 +488,7 @@ impl Phone {
             USB,
             SPEAKER,
             MIC,
+            SOUND,
         ]
         .map(str::to_owned);
         Hello { version: VERSION, name: self.name.clone(), addresses: features.to_vec() }

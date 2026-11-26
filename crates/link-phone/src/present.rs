@@ -55,7 +55,10 @@ pub async fn hold(phone: Phone, inbox: Inbox, id: DeviceId, options: Options) ->
                         tokio::spawn(count_speaker(from.clone(), receiver));
                     }
                     if let ClientEvent::Message { from, message: Message::MicRequest } = &event {
-                        tokio::spawn(send_mic(client.clone(), from.clone()));
+                        tokio::spawn(send_tone(client.clone(), from.clone(), Tone::Mic));
+                    }
+                    if let ClientEvent::Message { from, message: Message::SoundRequest } = &event {
+                        tokio::spawn(send_tone(client.clone(), from.clone(), Tone::Sound));
                     }
                     answer(&client, &event, on_offer).await;
                     held.on_event(&event).await;
@@ -292,23 +295,38 @@ async fn share_line(client: &Client, id: &DeviceId, line: &str) -> Value {
     }
 }
 
-/// Answers `mic-request` with 3 s of a 1 kHz Opus tone (48 kHz mono, 20 ms frames) at real time, then finishes.
-async fn send_mic(client: Client, from: DeviceId) {
+#[derive(Clone, Copy)]
+enum Tone {
+    /// `mic-request`: 3 s, then the stream finishes.
+    Mic,
+    /// `sound-request`: up to 30 s, until the desktop stops reading.
+    Sound,
+}
+
+/// Answers `mic-request` or `sound-request` with a 1 kHz Opus tone (48 kHz mono, 20 ms frames) at real time.
+async fn send_tone(client: Client, from: DeviceId, tone: Tone) {
     /// One 20 ms mono frame of a 1 kHz tone at half scale (opusenc 16 kbit/s CBR); repeated, it decodes to a tone.
     const TONE: [u8; 40] = [
         0x78, 0xa8, 0x90, 0x50, 0x76, 0xa4, 0xe4, 0xde, 0x66, 0x43, 0x0f, 0x81, 0xaf, 0xe8, 0xfd, 0x38, 0xfa, 0x8a,
         0xac, 0xa4, 0x58, 0xea, 0xfd, 0x36, 0xdc, 0xae, 0x9c, 0xed, 0xb0, 0xda, 0x49, 0x19, 0xcf, 0x97, 0x9d, 0x5b,
         0xc4, 0xac, 0xa3, 0x86,
     ];
-    let sender = match client.start_mic(from.clone()).await {
+    let (name, frames, opened) = match tone {
+        Tone::Mic => ("mic", 150_u64, client.start_mic(from.clone()).await),
+        Tone::Sound => ("sound", 1500, client.start_sound(from.clone()).await),
+    };
+    let sender = match opened {
         Ok(sender) => sender,
         Err(error) => {
-            return println!("{}", json!({ "event": "mic-failed", "desktop": from, "error": error.to_string() }));
+            return println!(
+                "{}",
+                json!({ "event": format!("{name}-failed"), "desktop": from, "error": error.to_string() })
+            );
         }
     };
     let mut tick = tokio::time::interval(Duration::from_millis(20));
     let mut sent = 0_u64;
-    for frame in 0..150_u64 {
+    for frame in 0..frames {
         tick.tick().await;
         let unit = link_core::mirror::Unit { pts_us: frame * 20_000, flags: 4, data: TONE.to_vec() };
         if sender.send(&unit).await.is_err() {
@@ -317,7 +335,7 @@ async fn send_mic(client: Client, from: DeviceId) {
         sent += 1;
     }
     sender.finish().await;
-    println!("{}", json!({ "event": "mic-sent", "desktop": from, "units": sent }));
+    println!("{}", json!({ "event": format!("{name}-sent"), "desktop": from, "units": sent }));
 }
 
 /// Plays nothing: counts the speaker stream's Opus units and reports them when it ends.

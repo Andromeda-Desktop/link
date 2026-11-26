@@ -92,18 +92,22 @@ impl HubHandle {
         answer.await.unwrap_or_else(|_| Err("the daemon is stopping".to_owned()))
     }
 
-    /// Asks the phone for its microphone; answered once the user allowed it there and its stream arrived.
-    pub async fn open_mic(&self, id: DeviceId) -> Result<crate::mirror::Opened, crate::mirror::Failure> {
+    /// Asks the phone for its microphone or sound; answered once the user allowed it there and its stream arrived.
+    pub async fn open_audio(
+        &self,
+        id: DeviceId,
+        audio: crate::mirror::Audio,
+    ) -> Result<crate::mirror::Opened, crate::mirror::Failure> {
         let (reply, answer) = oneshot::channel();
         let ask = crate::mirror::Ask { codecs: Vec::new(), reply };
-        if self.commands.send(Command::OpenMic { id, ask }).await.is_err() {
+        if self.commands.send(Command::OpenAudio { id, audio, ask }).await.is_err() {
             return Err(crate::mirror::Failure::NotConnected);
         }
         answer.await.unwrap_or(Err(crate::mirror::Failure::NotConnected))
     }
 
-    pub async fn stop_mic(&self, id: DeviceId) {
-        self.tell(Command::StopMic { id }).await;
+    pub async fn stop_audio(&self, id: DeviceId, audio: crate::mirror::Audio) {
+        self.tell(Command::StopAudio { id, audio }).await;
     }
 
     /// Opens a stream of sound to the phone's speaker; returns the socket that takes its Opus units.

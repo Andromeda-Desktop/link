@@ -64,6 +64,7 @@ import org.andromeda.link.core.domain.ScreenShape
 import org.andromeda.link.core.domain.ShareDelivery
 import org.andromeda.link.core.domain.ShareKind
 import org.andromeda.link.core.domain.Sharing
+import org.andromeda.link.core.domain.SoundCommand
 import org.andromeda.link.core.domain.SpeakerStream
 import org.andromeda.link.core.domain.TransferEvent
 import org.andromeda.link.core.domain.TransferRecord
@@ -154,6 +155,7 @@ class LinkRepository(
     private val _remote = MutableSharedFlow<RemoteEvent>(extraBufferCapacity = MIRROR_BUFFER)
     private val _speaker = MutableSharedFlow<SpeakerStream>(extraBufferCapacity = MIRROR_BUFFER)
     private val _mic = MutableSharedFlow<MicCommand>(extraBufferCapacity = MIRROR_BUFFER)
+    private val _sound = MutableSharedFlow<SoundCommand>(extraBufferCapacity = MIRROR_BUFFER)
     private val _commands = MutableStateFlow<Map<String, List<DesktopCommand>>>(emptyMap())
     private val _capabilities = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
     private val _desktopVolumes = MutableStateFlow<Map<String, DesktopVolume>>(emptyMap())
@@ -386,6 +388,15 @@ class LinkRepository(
 
     /** Tells [desktopId] the microphone ended, or that the user did not start it. */
     suspend fun stopMic(desktopId: String): Result<Unit> = call { it.stopMic(desktopId) }
+
+    /** Desktops' requests for the phone's sound without its screen; only those whose Screen switch is on. */
+    val sound: SharedFlow<SoundCommand> = _sound.asSharedFlow()
+
+    /** Opens the phone's media sound stream to [desktopId]: Opus 48 kHz stereo through [MirrorStream.sendAudio]. */
+    suspend fun startSound(desktopId: String): Result<MirrorStream> = call { FfiMirror(it.startSound(desktopId)) }
+
+    /** Tells [desktopId] the phone's sound ended, or that its capture was not allowed. */
+    suspend fun stopSound(desktopId: String): Result<Unit> = call { it.stopSound(desktopId) }
 
     override suspend fun startRemote(
         desktopId: String,
@@ -794,9 +805,10 @@ class LinkRepository(
                     )
                 is LinkEvent.RemoteStopped -> _remote.emit(RemoteEvent.Stopped(event.desktopId, event.reason))
                 is LinkEvent.SpeakerStream -> _speaker.emit(SpeakerStream(event.desktopId, FfiRemote(event.stream)))
-                // The microphone (B5b) has no Android side yet: its switch stays off, so linkd never sends these.
                 is LinkEvent.MicRequested -> _mic.emit(MicCommand.Requested(event.desktopId))
                 is LinkEvent.MicStopped -> _mic.emit(MicCommand.Stopped(event.desktopId))
+                is LinkEvent.SoundRequested -> _sound.emit(SoundCommand.Requested(event.desktopId))
+                is LinkEvent.SoundStopped -> _sound.emit(SoundCommand.Stopped(event.desktopId))
                 is LinkEvent.CommandsChanged ->
                     _commands.update {
                         it + (event.desktopId to event.commands.map { command -> DesktopCommand(command.id, command.name) })

@@ -542,8 +542,8 @@ impl ClientActor {
             }
             return;
         }
-        if let TransferEvent::Mic { from, stream } = &event {
-            log::info!("{from}: refusing a microphone stream; only desktops take one");
+        if let TransferEvent::Mic { from, stream } | TransferEvent::Sound { from, stream } = &event {
+            log::info!("{from}: refusing a phone's sound stream; only desktops take one");
             if let Some(mut receiver) = stream.take() {
                 receiver.stop();
             }

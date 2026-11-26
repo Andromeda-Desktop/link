@@ -52,6 +52,10 @@ impl Hub {
                 self.mics.stream(from, &stream, None);
                 return;
             }
+            TransferEvent::Sound { from, stream } => {
+                self.sounds.stream(from, &stream, None);
+                return;
+            }
             TransferEvent::Speaker { from, stream } => {
                 log::info!("{from}: refusing a speaker stream; only phones play one");
                 if let Some(mut receiver) = stream.take() {

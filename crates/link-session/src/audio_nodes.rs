@@ -1,5 +1,5 @@
-//! Link's `PipeWire` nodes, a sink "<phone> speaker" and a source "<phone> microphone" per phone, on one thread that
-//! runs a `PipeWire` loop. `GStreamer`'s `PipeWire` elements cannot make them: `pipewiresrc autoconnect=false` blocks
+//! Link's `PipeWire` nodes, a sink "<phone> speaker", a source "<phone> microphone" and a playback stream "<phone>
+//! sound" per phone, on one thread that runs a `PipeWire` loop. `GStreamer`'s `PipeWire` elements cannot make them: `pipewiresrc autoconnect=false` blocks
 //! its state change until an app routes sound to it and cannot be stopped while it waits. A source is a null-audio-sink
 //! node fed by a playback stream: a stream with a source class (`pipewiresink mode=provide`, `pw-loopback`) gets no
 //! output ports on `PipeWire` 1.6.11 / `WirePlumber` 0.5.19, so `WirePlumber` never offers it as a default.
@@ -17,13 +17,16 @@ use pipewire as pw;
 pub const RATE: u32 = 48_000;
 /// Bytes of one S16LE sample frame in a microphone source (mono).
 const MIC_STRIDE: usize = 2;
+/// Bytes of one S16LE sample frame of a phone's sound (stereo).
+const SOUND_STRIDE: usize = 4;
 
-/// Decoded microphone sound waiting for the graph to pull it, S16LE mono at `RATE`.
+/// Decoded phone sound waiting for the graph to pull it, S16LE at `RATE`: mono for a microphone, stereo for sound.
 pub type Pcm = Arc<Mutex<VecDeque<u8>>>;
 
 enum Command {
     Sink { key: String, name: String, input: gst_app::AppSrc },
     Source { key: String, name: String, pcm: Pcm },
+    Playback { key: String, name: String, pcm: Pcm },
     Remove(String),
     Quit,
 }
@@ -94,6 +97,18 @@ impl Nodes {
         Ok((node, pcm))
     }
 
+    /// Playback stream "<name> sound" to the default sink that plays what is pushed into the returned `Pcm` (stereo).
+    pub fn playback(&self, id: &str, name: &str) -> anyhow::Result<(Node, Pcm)> {
+        let pcm = Pcm::default();
+        let shared = Arc::clone(&pcm);
+        let node = self.add(format!("andromeda-link-sound-{id}"), |key| Command::Playback {
+            key,
+            name: format!("{name} sound"),
+            pcm: shared,
+        })?;
+        Ok((node, pcm))
+    }
+
     fn add(&self, key: String, command: impl FnOnce(String) -> Command) -> anyhow::Result<Node> {
         self.thread.commands.send(command(key.clone())).map_err(|_| anyhow::anyhow!("the PipeWire thread ended"))?;
         Ok(Node { key, thread: Arc::clone(&self.thread) })
@@ -127,6 +142,10 @@ fn serve(commands: pw::channel::Receiver<Command>, ready: &std::sync::mpsc::Send
             }
             Command::Source { key, name, pcm } => {
                 let made = source(&core, &key, &name, pcm).map(|made| Box::new(made) as Box<dyn std::any::Any>);
+                (key, made)
+            }
+            Command::Playback { key, name, pcm } => {
+                let made = playback(&core, &key, &name, pcm).map(|made| Box::new(made) as Box<dyn std::any::Any>);
                 (key, made)
             }
             Command::Remove(key) => return drop(streams.borrow_mut().remove(&key)),
@@ -274,26 +293,7 @@ fn source(core: &pw::core::CoreRc, key: &str, name: &str, pcm: Pcm) -> Result<So
     let stream = pw::stream::StreamRc::new(core.clone(), "phone microphone", props)?;
     let listener = stream
         .add_local_listener_with_user_data(pcm)
-        .process(|stream, pcm| {
-            let Some(mut buffer) = stream.dequeue_buffer() else { return };
-            let requested = usize::try_from(buffer.requested()).unwrap_or(usize::MAX);
-            let Some(data) = buffer.datas_mut().first_mut() else { return };
-            let Some(slice) = data.data() else { return };
-            let frames =
-                if requested == 0 { slice.len() / MIC_STRIDE } else { requested.min(slice.len() / MIC_STRIDE) };
-            let out = &mut slice[..frames * MIC_STRIDE];
-            let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let taken = out.len().min(queued.len());
-            for (byte, sample) in out.iter_mut().zip(queued.drain(..taken)) {
-                *byte = sample;
-            }
-            drop(queued);
-            out[taken..].fill(0);
-            let chunk = data.chunk_mut();
-            *chunk.offset_mut() = 0;
-            *chunk.stride_mut() = i32::try_from(MIC_STRIDE).unwrap_or(2);
-            *chunk.size_mut() = u32::try_from(frames * MIC_STRIDE).unwrap_or(0);
-        })
+        .process(|stream, pcm| fill(stream, pcm, MIC_STRIDE))
         .register()?;
     let mut position = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
     position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_MONO;
@@ -301,6 +301,61 @@ fn source(core: &pw::core::CoreRc, key: &str, name: &str, pcm: Pcm) -> Result<So
     let pod = pw::spa::pod::Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?;
     stream.connect(pw::spa::utils::Direction::Output, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut [pod])?;
     Ok((watch, registry, listener, stream, node))
+}
+
+/// A playback stream that `WirePlumber` links to the default sink, playing the queued stereo PCM.
+fn playback(
+    core: &pw::core::CoreRc,
+    key: &str,
+    name: &str,
+    pcm: Pcm,
+) -> Result<(pw::stream::StreamListener<Pcm>, pw::stream::StreamRc), pw::Error> {
+    let props = pw::properties::properties! {
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_CATEGORY => "Playback",
+        *pw::keys::MEDIA_ROLE => "Music",
+        *pw::keys::NODE_NAME => key,
+        *pw::keys::NODE_DESCRIPTION => name,
+        *pw::keys::MEDIA_NAME => name,
+    };
+    let stream = pw::stream::StreamRc::new(core.clone(), "phone sound", props)?;
+    let listener = stream
+        .add_local_listener_with_user_data(pcm)
+        .process(|stream, pcm| fill(stream, pcm, SOUND_STRIDE))
+        .register()?;
+    let mut position = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
+    position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_FL;
+    position[1] = pw::spa::sys::SPA_AUDIO_CHANNEL_FR;
+    let format = format(2, position)?;
+    let pod = pw::spa::pod::Pod::from_bytes(&format).ok_or(pw::Error::CreationFailed)?;
+    stream.connect(
+        pw::spa::utils::Direction::Output,
+        None,
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        &mut [pod],
+    )?;
+    Ok((listener, stream))
+}
+
+/// Fills the stream's next buffer from the queue, `stride` bytes a frame, with silence when it runs dry.
+fn fill(stream: &pw::stream::Stream, pcm: &mut Pcm, stride: usize) {
+    let Some(mut buffer) = stream.dequeue_buffer() else { return };
+    let requested = usize::try_from(buffer.requested()).unwrap_or(usize::MAX);
+    let Some(data) = buffer.datas_mut().first_mut() else { return };
+    let Some(slice) = data.data() else { return };
+    let frames = if requested == 0 { slice.len() / stride } else { requested.min(slice.len() / stride) };
+    let out = &mut slice[..frames * stride];
+    let mut queued = pcm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let taken = out.len().min(queued.len());
+    for (byte, sample) in out.iter_mut().zip(queued.drain(..taken)) {
+        *byte = sample;
+    }
+    drop(queued);
+    out[taken..].fill(0);
+    let chunk = data.chunk_mut();
+    *chunk.offset_mut() = 0;
+    *chunk.stride_mut() = i32::try_from(stride).unwrap_or(0);
+    *chunk.size_mut() = u32::try_from(frames * stride).unwrap_or(0);
 }
 
 /// An S16LE `EnumFormat` pod at `RATE`.
