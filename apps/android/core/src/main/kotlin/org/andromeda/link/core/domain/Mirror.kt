@@ -82,7 +82,7 @@ interface MirrorStream {
         data: ByteArray,
     ): Result<Unit>
 
-    /** One Opus packet of 48 kHz stereo. */
+    /** One Opus packet: 48 kHz stereo in a mirror, mono on a microphone stream. */
     suspend fun sendAudio(
         ptsUs: Long,
         data: ByteArray,

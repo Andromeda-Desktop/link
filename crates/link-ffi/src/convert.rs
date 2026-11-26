@@ -230,7 +230,18 @@ impl From<client::DesktopLink> for DesktopLink {
 
 pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Desktop {
     let store::Grants {
-        clipboard, files, notifications, media, ring, calls, browse, screen, messages, speaker, ..
+        clipboard,
+        files,
+        notifications,
+        media,
+        ring,
+        calls,
+        browse,
+        screen,
+        messages,
+        speaker,
+        mic,
+        ..
     } = peer.grants;
     Desktop {
         id: peer.id.to_string(),
@@ -239,7 +250,19 @@ pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Deskt
         last_seen: peer.last_seen,
         link,
         bluetooth,
-        sharing: Sharing { clipboard, files, notifications, media, ring, calls, browse, screen, messages, speaker },
+        sharing: Sharing {
+            clipboard,
+            files,
+            notifications,
+            media,
+            ring,
+            calls,
+            browse,
+            screen,
+            messages,
+            speaker,
+            mic,
+        },
         bluetooth_address: peer.bluetooth.clone(),
         bt_pairing: peer.bt_pairing,
         control: peer.has(message::CONTROL),

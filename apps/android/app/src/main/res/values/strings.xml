@@ -138,6 +138,14 @@
     <string name="feature_media">Media</string>
     <string name="feature_ring">Find my phone</string>
     <string name="feature_speaker">Play desktop sound</string>
+    <string name="feature_mic">Microphone for the desktop</string>
+    <string name="channel_mic">Microphone</string>
+    <string name="mic_ask_title">%1$s asks for the microphone</string>
+    <string name="mic_ask_text">Start sends this phone\'s microphone to the desktop until you stop it.</string>
+    <string name="mic_start">Start</string>
+    <string name="mic_not_now">Not now</string>
+    <string name="mic_running">Microphone for %1$s</string>
+    <string name="mic_stop">Stop</string>
     <string name="feature_calls">Calls</string>
     <string name="feature_messages">Contacts and texts</string>
     <string name="screen_control_off">Turn on control from the desktop</string>

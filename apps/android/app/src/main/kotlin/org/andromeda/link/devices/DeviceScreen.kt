@@ -284,6 +284,7 @@ private fun Grants(
                 { Toggle(Feature.Calls, R.string.feature_calls, Icons.Call) },
                 { Toggle(Feature.Messages, R.string.feature_messages, Icons.Msg) },
                 { Toggle(Feature.Speaker, R.string.feature_speaker, Icons.Vol) },
+                { Toggle(Feature.Mic, R.string.feature_mic, Icons.Mic) },
             ),
         )
     }

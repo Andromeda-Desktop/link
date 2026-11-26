@@ -33,6 +33,7 @@ import org.andromeda.link.files.MediaAccess
 import org.andromeda.link.files.PhoneFiles
 import org.andromeda.link.media.DesktopMedia
 import org.andromeda.link.media.PhoneMedia
+import org.andromeda.link.mic.PhoneMic
 import org.andromeda.link.notifications.Channels
 import org.andromeda.link.notifications.NotificationMirror
 import org.andromeda.link.notifications.ShareNotifier
@@ -83,6 +84,7 @@ class AppContainer(
     val ringer = Ringer(application, repository, scope)
     val screen = ScreenMirror(application, repository, scope)
     private val speaker = PhoneSpeaker(repository, scope)
+    private val mic = PhoneMic(application, repository, scope)
     private val mirrorAsk = MirrorAsk(application, repository, scope)
     val calls = Calls(application, repository, scope, mirror::appCall).also { mirror.onCallShown = it::appCallShown }
     private val bonding = BluetoothBonding(application, repository, scope)
@@ -110,6 +112,7 @@ class AppContainer(
         ringer.start()
         screen.start()
         speaker.start()
+        mic.start()
         mirrorAsk.start()
         calls.start()
         bonding.start()

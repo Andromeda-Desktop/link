@@ -13,6 +13,7 @@ object Channels {
     const val TRANSFERS = "transfers"
     const val RING = "ring"
     const val SCREEN = "screen"
+    const val MIC = "mic"
     const val DESKTOP_MEDIA = "desktop-media"
     const val UPDATES = "updates"
 
@@ -30,6 +31,9 @@ object Channels {
         )
         manager.createNotificationChannel(
             NotificationChannel(SCREEN, context.getString(R.string.channel_screen), NotificationManager.IMPORTANCE_HIGH),
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(MIC, context.getString(R.string.channel_mic), NotificationManager.IMPORTANCE_HIGH),
         )
         manager.createNotificationChannel(
             NotificationChannel(DESKTOP_MEDIA, context.getString(R.string.channel_desktop_media), NotificationManager.IMPORTANCE_LOW),

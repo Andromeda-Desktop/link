@@ -18,6 +18,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Android requires it for any playback capture: the mirrored screen's sound (MirrorAudio). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Development permission, granted only over adb: automatic phone-to-desktop clipboard (ClipboardWatcher). -->
@@ -240,6 +241,18 @@
             android:name=".screen.ScreenCapture"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".mic.MicService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <activity
+            android:name=".mic.MicStartActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".screen.ScreenInput"
