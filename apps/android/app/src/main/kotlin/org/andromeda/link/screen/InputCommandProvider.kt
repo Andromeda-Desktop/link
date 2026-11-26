@@ -94,6 +94,7 @@ class InputCommandProvider : ContentProvider() {
                     try {
                         stream.write(line.toByteArray())
                         stream.flush()
+                        if (Log.isLoggable("ScreenInput", Log.DEBUG)) Log.d("ScreenInput", "written ${line.substringBefore(' ')}")
                     } catch (_: IOException) {
                         relay.compareAndSet(stream, null)
                     }

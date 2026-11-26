@@ -157,6 +157,8 @@ class ScreenInput : AccessibilityService() {
         val enabled: Boolean get() = instance != null
 
         fun perform(input: MirrorCommand.Input) {
+            // Off unless `setprop log.tag.ScreenInput DEBUG`: times each step of a tap for the mirror latency test.
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "received ${input.action}")
             if (relayed(input)) return
             val service = instance
             if (service == null) {
