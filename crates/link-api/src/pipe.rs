@@ -189,11 +189,13 @@ pub struct Writer<S>(tokio::io::WriteHalf<S>);
 
 #[async_trait::async_trait]
 impl<S: AsyncWrite + Debug + Send + Sync + 'static> WriteHalf for Writer<S> {
-    // zbus's default send_message calls sendmsg, whose Unix-only descriptor argument this impl cannot match.
-    async fn send_message(&mut self, message: &zbus::Message) -> zbus::Result<()> {
-        self.0.write_all(&message.data()[..]).await?;
-        self.0.flush().await?;
-        Ok(())
+    // The cfg'd parameter keeps async_trait's lifetimes equal to the trait's, which declares it the same way.
+    async fn sendmsg(&mut self, buffer: &[u8], #[cfg(unix)] _fds: &[std::os::fd::BorrowedFd<'_>]) -> io::Result<usize> {
+        self.0.write(buffer).await
+    }
+
+    async fn flush(&mut self) -> io::Result<()> {
+        self.0.flush().await
     }
 
     async fn close(&mut self) -> io::Result<()> {

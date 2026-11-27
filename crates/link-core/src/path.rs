@@ -1202,6 +1202,7 @@ mod tests {
 
     /// A local address other than 127.0.0.1. Linux loopback answers on all of 127/8; Windows loopback only on
     /// 127.0.0.1, so there it is the host's own LAN address.
+    #[cfg_attr(not(windows), expect(clippy::unnecessary_wraps, reason = "only Windows looks the address up"))]
     fn second_local_address() -> std::io::Result<std::net::IpAddr> {
         #[cfg(not(windows))]
         return Ok(std::net::IpAddr::from([127, 0, 0, 2]));

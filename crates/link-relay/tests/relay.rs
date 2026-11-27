@@ -1,4 +1,6 @@
 //! A phone reaches a desktop through the relay over Link's own transport, and an unknown device is refused.
+//! The phone role is Unix-only (Android and the Linux test phone).
+#![cfg(unix)]
 
 use std::net::SocketAddr;
 use std::time::Duration;
