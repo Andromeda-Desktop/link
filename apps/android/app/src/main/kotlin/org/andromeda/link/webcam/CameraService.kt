@@ -244,7 +244,7 @@ class CameraService :
         Log.i(TAG, "$desktop: webcam on at ${width}x$height $fps fps in $mime")
         val end =
             try {
-                encoder.drain(stream, MirrorRate(BITRATE, MIN_BITRATE), { state == State.Stopped }, {})
+                encoder.drain(stream, MirrorRate(BITRATE, MIN_BITRATE), { state == State.Stopped }, {}, clockPts = true)
             } finally {
                 withContext(NonCancellable) { stream.finish() }
             }

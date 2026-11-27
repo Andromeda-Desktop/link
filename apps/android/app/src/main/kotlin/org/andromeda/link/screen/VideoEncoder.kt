@@ -23,12 +23,17 @@ class VideoEncoder private constructor(
     /** Why [drain] returned: the input ended ([endInput]), the capture stops, the stream failed, or the codec did. */
     enum class End { Input, Stopped, Failed, Codec }
 
-    /** Sends the encoder's output on [stream] until it ends; [onBitrate] hears each bitrate step after it applies. */
+    /**
+     * Sends the encoder's output on [stream] until it ends; [onBitrate] hears each bitrate step after it applies. With
+     * [clockPts] each unit is stamped when the encoder gives it out, not with its input's time: camera timestamps
+     * follow no fixed clock (the A7 Pro's run 1000 times fast), and the lag checks compare them with this clock.
+     */
     suspend fun drain(
         stream: MirrorStream,
         rate: MirrorRate,
         stopping: () -> Boolean,
         onBitrate: (Int) -> Unit,
+        clockPts: Boolean = false,
     ): End {
         val info = MediaCodec.BufferInfo()
         var config: ByteArray? = null
@@ -58,9 +63,10 @@ class VideoEncoder private constructor(
             if (rate.shouldSkip(keyframe)) continue
             val prefix = config.takeIf { keyframe }
             val unit = if (prefix != null) prefix + bytes else bytes
-            if (stream.send(info.presentationTimeUs, keyframe, prefix != null, unit).isFailure) return End.Failed
+            val ptsUs = if (clockPts) System.nanoTime() / 1000 else info.presentationTimeUs
+            if (stream.send(ptsUs, keyframe, prefix != null, unit).isFailure) return End.Failed
             val wasSkipping = rate.skipping
-            rate.sent(info.presentationTimeUs, System.nanoTime() / 1000, keyframe)?.let { bitrate ->
+            rate.sent(ptsUs, System.nanoTime() / 1000, keyframe)?.let { bitrate ->
                 Log.i(TAG, "bitrate ${bitrate / 1000} kbit/s")
                 setBitrate(bitrate)
                 onBitrate(bitrate)
