@@ -136,4 +136,10 @@ impl RecvStream {
     pub fn stop(&mut self, code: u32) {
         drop(self.0.stop(quinn::VarInt::from_u32(code)));
     }
+
+    /// Whether the peer reset the stream; reads report a reset and a finish alike.
+    #[cfg(test)]
+    pub(crate) async fn was_reset(&mut self) -> bool {
+        matches!(self.0.received_reset().await, Ok(Some(_)))
+    }
 }

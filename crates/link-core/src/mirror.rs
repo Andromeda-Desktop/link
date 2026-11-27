@@ -557,13 +557,8 @@ mod tests {
         backlog?;
         keyframe?;
 
-        let ended = loop {
-            match read_unit(&mut old).await {
-                Ok(Some(_)) => {}
-                other => break other,
-            }
-        };
-        assert!(ended.is_err(), "the old stream was reset, not drained: {ended:?}");
+        while let Ok(Some(_)) = read_unit(&mut old).await {}
+        assert!(old.was_reset().await, "the old stream was drained, not reset");
         let (mut new, header) = accept(&desktop).await?;
         assert_eq!(header.gop, Some(2));
         assert_eq!(read_unit(&mut new).await?, Some(unit(3, MIRROR_KEYFRAME)));
