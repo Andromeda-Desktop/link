@@ -34,6 +34,9 @@ install -Dm644 "$ROOT/dist/andromeda-link-localsend.firewalld.xml" \
 install -Dm644 "$ROOT/dist/60-andromeda-link-bluetooth.conf" \
   "$P/usr/share/wireplumber/wireplumber.conf.d/60-andromeda-link-bluetooth.conf"
 install -Dm644 "$ROOT/dist/60-andromeda-link-uinput.rules" "$P/usr/lib/udev/rules.d/60-andromeda-link-uinput.rules"
+install -Dm644 "$ROOT/dist/andromeda-link-camera.service" "$P/usr/lib/systemd/system/andromeda-link-camera.service"
+install -d "$P/usr/lib/systemd/system/multi-user.target.wants"
+ln -s ../andromeda-link-camera.service "$P/usr/lib/systemd/system/multi-user.target.wants/"
 install -Dm644 "$ROOT/LICENSE" "$P/usr/share/doc/andromeda-link/copyright"
 cp -r "$ROOT/dist/icons" "$P/usr/share/"
 
@@ -47,7 +50,7 @@ Maintainer: Andromeda <sitish@akintechnologies.com>
 Depends: libc6, libgcc-s1, libxkbcommon0, libpipewire-0.3-0t64 | libpipewire-0.3-0, dbus, fuse3, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire
 Replaces: andromeda-link-app (<< 1)
 Breaks: andromeda-link-app (<< 1)
-Recommends: andromeda-link-app
+Recommends: andromeda-link-app, v4l2loopback-dkms
 Suggests: bluez, network-manager
 Description: Andromeda Link: phone and desktop continuity
  Clipboard, notifications, media, files, texts, and screen mirroring between an Android phone and the desktop.
@@ -57,6 +60,7 @@ echo /etc/ufw/applications.d/andromeda-link > "$P/DEBIAN/conffiles"
 cat > "$P/DEBIAN/postinst" << 'EOF'
 #!/bin/sh
 set -e
+systemctl start andromeda-link-camera.service 2> /dev/null || true
 if command -v ufw > /dev/null && ufw status 2> /dev/null | grep -q '^Status: active'; then
   ufw allow 'Andromeda Link' > /dev/null 2>&1 || echo "ufw: phones cannot pair until you run: sudo ufw allow 'Andromeda Link'"
 fi

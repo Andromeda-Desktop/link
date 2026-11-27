@@ -61,6 +61,12 @@ namespace linkapp {
         MaterialChoice{AppWindow::Material::GlassContent, "glass_content", "link.appearance.glass-content"},
     };
 
+    // A v4l2loopback device exists (link-session's loopbacks() reads the same directory).
+    bool hasLoopbackCamera() {
+      std::error_code ec;
+      return !std::filesystem::is_empty("/sys/devices/virtual/video4linux", ec) && !ec;
+    }
+
     std::filesystem::path settingsPath() {
       return std::filesystem::path(g_get_user_config_dir()) / "andromeda" / "link.toml";
     }
@@ -1498,6 +1504,17 @@ namespace linkapp {
           row->addChild(std::move(cell));
         }
         card->addChild(std::move(row));
+      }
+      if (phone.camera == "on" && !hasLoopbackCamera()) {
+        // link-session writes the webcam into v4l2loopback devices too; without one, apps that read V4L2 only
+        // (Chromium without its PipeWire camera flag) do not list the phone.
+        auto note = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+        note->addChild(ui::glyph({.glyph = "info-circle", .glyphSize = Tokens::sizeSymbol * s,
+                                  .color = colorSpecFromRole(ColorRole::Label2)}));
+        auto why = text(i18n::tr("link.phone-card.camera-no-loopback"), Tokens::typeFootnote, ColorRole::Label2, s, 3);
+        why->setFlexGrow(1.0F);
+        note->addChild(std::move(why));
+        card->addChild(std::move(note));
       }
       if (mine && command->phase == LinkClient::SystemCommand::Phase::Failed) {
         // Rulebook 9.13: an error shows where it happened, with the action that fixes it.

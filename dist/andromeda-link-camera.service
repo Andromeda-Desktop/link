@@ -1,0 +1,13 @@
+# The phone camera for apps that read V4L2 only (Chromium without its PipeWire camera flag, Zoom): link-session
+# writes the webcam into this v4l2loopback device. exclusive_caps=1 makes Chromium list it as a camera. Without the
+# module (v4l2loopback-dkms) the start does nothing; a v4l2loopback the user loaded with other options stays.
+[Unit]
+Description=Andromeda Link phone camera device (v4l2loopback)
+ConditionPathExists=!/sys/module/v4l2loopback
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/modprobe v4l2loopback exclusive_caps=1 "card_label=Phone camera"
+
+[Install]
+WantedBy=multi-user.target

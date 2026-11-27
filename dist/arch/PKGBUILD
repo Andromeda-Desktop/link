@@ -11,6 +11,7 @@ license=(GPL-3.0-or-later)
 depends=(glibc gcc-libs libxkbcommon libpipewire dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-good gst-plugins-bad gst-plugin-pipewire)
 makedepends=(cargo protobuf clang lld)
 optdepends=('iw: Wi-Fi power save off while mirroring, for a faster picture'
+  'v4l2loopback-dkms: the phone camera in apps that read V4L2 only, such as Chromium browsers'
   'bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
   "networkmanager: joining the phone's hotspot or Wi-Fi Direct group for large transfers away from Wi-Fi"
   'andromeda-link-app: the Link window (from the Andromeda desktop repository)')
@@ -50,6 +51,9 @@ package() {
   install -Dm644 "$dist/60-andromeda-link-bluetooth.conf" \
     "$pkgdir/usr/share/wireplumber/wireplumber.conf.d/60-andromeda-link-bluetooth.conf"
   install -Dm644 "$dist/60-andromeda-link-uinput.rules" "$pkgdir/usr/lib/udev/rules.d/60-andromeda-link-uinput.rules"
+  install -Dm644 "$dist/andromeda-link-camera.service" "$pkgdir/usr/lib/systemd/system/andromeda-link-camera.service"
+  install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
+  ln -s ../andromeda-link-camera.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/"
   install -Dm755 "$dist/andromeda-link-wifi-power-save" "$pkgdir/usr/lib/andromeda-link/wifi-power-save"
   install -Dm644 "$dist/org.andromeda.link.wifi-power-save.policy" \
     "$pkgdir/usr/share/polkit-1/actions/org.andromeda.link.wifi-power-save.policy"

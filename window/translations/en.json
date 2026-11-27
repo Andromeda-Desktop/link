@@ -272,6 +272,7 @@
     "camera-start": "Use as webcam",
     "camera-stop": "Stop webcam",
     "camera-switch": "Switch camera",
+    "camera-no-loopback": "Some browsers do not see this camera. Install v4l2loopback, then restart.",
     "no-phone": "No phone yet",
     "not-running": "Link is not running",
     "pair-another": "Pair Another Phone…",

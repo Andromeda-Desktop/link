@@ -1,5 +1,6 @@
 # Phones reach the daemon only through the firewall; open whichever of ufw and firewalld runs.
 post_install() {
+  systemctl start andromeda-link-camera.service 2> /dev/null || true
   if command -v ufw > /dev/null && ufw status 2> /dev/null | grep -q '^Status: active'; then
     if ufw allow 'Andromeda Link' > /dev/null 2>&1; then
       echo ':: ufw: allowed Andromeda Link (4717/udp, 4718/tcp, 5353/udp)'

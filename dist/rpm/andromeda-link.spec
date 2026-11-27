@@ -10,7 +10,7 @@ Requires:       dbus fuse3 gstreamer1-plugins-base gstreamer1-plugins-good gstre
 # Below 1 is the old Qt app package; the Andromeda Link window (2026.x) keeps the name.
 Obsoletes:      andromeda-link-app < 1
 Recommends:     andromeda-link-app
-Suggests:       bluez NetworkManager iw
+Suggests:       bluez NetworkManager iw v4l2loopback
 %global debug_package %{nil}
 
 %description
@@ -34,6 +34,9 @@ install -Dm644 %{linkroot}/dist/andromeda-link-localsend.firewalld.xml \
 install -Dm644 %{linkroot}/dist/60-andromeda-link-bluetooth.conf \
   %{buildroot}%{_datadir}/wireplumber/wireplumber.conf.d/60-andromeda-link-bluetooth.conf
 install -Dm644 %{linkroot}/dist/60-andromeda-link-uinput.rules %{buildroot}%{_udevrulesdir}/60-andromeda-link-uinput.rules
+install -Dm644 %{linkroot}/dist/andromeda-link-camera.service %{buildroot}%{_prefix}/lib/systemd/system/andromeda-link-camera.service
+install -d %{buildroot}%{_prefix}/lib/systemd/system/multi-user.target.wants
+ln -s ../andromeda-link-camera.service %{buildroot}%{_prefix}/lib/systemd/system/multi-user.target.wants/
 install -Dm755 %{linkroot}/dist/andromeda-link-wifi-power-save %{buildroot}%{_prefix}/lib/andromeda-link/wifi-power-save
 install -Dm644 %{linkroot}/dist/org.andromeda.link.wifi-power-save.policy \
   %{buildroot}%{_datadir}/polkit-1/actions/org.andromeda.link.wifi-power-save.policy
@@ -42,6 +45,7 @@ install -Dm644 %{linkroot}/LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
 
 # Phones reach the daemon only through the firewall; open whichever of firewalld and ufw runs.
 %post
+systemctl start andromeda-link-camera.service 2> /dev/null || true
 if command -v firewall-cmd > /dev/null && firewall-cmd --state > /dev/null 2>&1; then
   firewall-cmd --reload > /dev/null 2>&1 || :
   firewall-cmd --permanent --add-service=andromeda-link > /dev/null 2>&1 && firewall-cmd --reload > /dev/null 2>&1 ||
@@ -65,6 +69,8 @@ fi
 %{_prefix}/lib/firewalld/services/andromeda-link*.xml
 %{_datadir}/wireplumber/wireplumber.conf.d/60-andromeda-link-bluetooth.conf
 %{_udevrulesdir}/60-andromeda-link-uinput.rules
+%{_prefix}/lib/systemd/system/andromeda-link-camera.service
+%{_prefix}/lib/systemd/system/multi-user.target.wants/andromeda-link-camera.service
 %{_prefix}/lib/andromeda-link/wifi-power-save
 %{_datadir}/polkit-1/actions/org.andromeda.link.wifi-power-save.policy
 %{_datadir}/icons/hicolor/*/apps/org.andromeda.Link*
