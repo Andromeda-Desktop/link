@@ -47,7 +47,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with: { toolchain: stable }
       - run: >
-          sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libdbus-1-dev libfuse3-dev libxkbcommon-dev
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libdbus-1-dev libfuse3-dev libxkbcommon-dev libpipewire-0.3-dev
           libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
       - run: cargo build --release --locked -p link-daemon -p link-session -p link-mount
       # A tag builds its own version; a manual run builds 0~r<count>, which sorts below every tag.
@@ -62,7 +62,7 @@ jobs:
     container: registry.fedoraproject.org/fedora:43
     steps:
       - run: >
-          dnf install -y git rust cargo rpm-build protobuf-compiler protobuf-devel pkgconf dbus-devel fuse3-devel libxkbcommon-devel
+          dnf install -y git rust cargo rpm-build protobuf-compiler protobuf-devel pkgconf dbus-devel fuse3-devel libxkbcommon-devel pipewire-devel
           gstreamer1-devel gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel clang lld
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: git config --global --add safe.directory "$PWD"
@@ -78,7 +78,7 @@ jobs:
     container: archlinux:latest
     steps:
       - run: >
-          pacman -Syu --noconfirm --needed base-devel git cargo protobuf clang lld dbus fuse3
+          pacman -Syu --noconfirm --needed base-devel git cargo protobuf clang lld dbus fuse3 libpipewire
           gstreamer gst-plugins-base-libs gst-plugins-bad
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # makepkg refuses to run as root.
