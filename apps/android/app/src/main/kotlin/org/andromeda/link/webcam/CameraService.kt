@@ -416,6 +416,14 @@ class CameraService :
             return true
         }
 
+        /** Moves [desktop]'s running stream to the other camera. */
+        fun switchOther(desktop: String) {
+            main.post {
+                val service = instance?.takeIf { it.state is State.Streaming && it.state.desktop == desktop }
+                service?.switchTo(!service.front)
+            }
+        }
+
         fun keyframe(desktop: String) {
             main.post {
                 val streaming = instance?.state as? State.Streaming

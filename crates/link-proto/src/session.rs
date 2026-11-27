@@ -121,6 +121,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::MirrorKeyframe
         | Message::CameraRequest(_)
         | Message::CameraKeyframe
+        | Message::CameraSwitch
         | Message::MirrorLag(_)
         | Message::UsbReady
         | Message::FsList(_)

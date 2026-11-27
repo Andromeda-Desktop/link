@@ -286,6 +286,10 @@ pub enum LinkEvent {
     CameraKeyframeRequested {
         desktop_id: String,
     },
+    /// The desktop asks the running webcam to use the phone's other camera.
+    CameraSwitchRequested {
+        desktop_id: String,
+    },
     /// The desktop asks for this phone's media sound without its screen: answer with [`LinkClient::start_sound`]
     /// once the capture is allowed, or [`LinkClient::stop_sound`].
     SoundRequested {

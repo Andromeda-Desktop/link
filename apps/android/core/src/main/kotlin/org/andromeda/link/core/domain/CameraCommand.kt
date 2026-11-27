@@ -1,6 +1,6 @@
 package org.andromeda.link.core.domain
 
-/** A desktop asks for a camera of this phone as its webcam, ended it, or lost video and needs a keyframe. */
+/** A desktop asks for a camera of this phone as its webcam, ended it, lost video and needs a keyframe, or wants the other camera. */
 sealed interface CameraCommand {
     val desktopId: String
 
@@ -17,6 +17,10 @@ sealed interface CameraCommand {
     ) : CameraCommand
 
     data class Keyframe(
+        override val desktopId: String,
+    ) : CameraCommand
+
+    data class Switch(
         override val desktopId: String,
     ) : CameraCommand
 }

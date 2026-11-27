@@ -226,6 +226,10 @@
     <method name="CameraKeyframe">
       <arg name="device_id" type="s" direction="in"/>
     </method>
+    <!-- Moves the running webcam to the phone's other camera; the PipeWire node stays. -->
+    <method name="SwitchCamera">
+      <arg name="device_id" type="s" direction="in"/>
+    </method>
     <!-- Asks link-session to play the phone's media sound without its screen: it answers PhoneSoundRequested with
          OpenPhoneSound. Errors: .Refused("unavailable") while DeviceInfo sound is empty; .Failed while it is asking
          or on. -->

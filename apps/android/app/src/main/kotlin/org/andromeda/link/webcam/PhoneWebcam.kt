@@ -54,6 +54,7 @@ class PhoneWebcam(
                 CameraService.stop(command.desktopId)
             }
             is CameraCommand.Keyframe -> CameraService.keyframe(command.desktopId)
+            is CameraCommand.Switch -> CameraService.switchOther(command.desktopId)
         }
     }
 

@@ -626,6 +626,8 @@ pub enum Message {
     CameraStop(MirrorStop),
     /// Desktop to phone: send a keyframe now, after a loss.
     CameraKeyframe,
+    /// Desktop to phone: move the running webcam to the phone's other camera.
+    CameraSwitch,
     /// The header of a phone-to-desktop camera video stream, framed and numbered like `mirror-data`.
     CameraData(MirrorData),
     UsbReady,
@@ -737,6 +739,7 @@ impl Message {
             Self::CameraStarted(_) => "camera-started",
             Self::CameraStop(_) => "camera-stop",
             Self::CameraKeyframe => "camera-keyframe",
+            Self::CameraSwitch => "camera-switch",
             Self::CameraData(_) => "camera-data",
             Self::SoundData => "sound-data",
             Self::UsbReady => "usb-ready",
@@ -794,6 +797,7 @@ impl Message {
             | Self::HotspotRequest
             | Self::MirrorKeyframe
             | Self::CameraKeyframe
+            | Self::CameraSwitch
             | Self::SpeakerData
             | Self::MicRequest
             | Self::MicStop
@@ -966,6 +970,10 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::CameraKeyframe
             }
+            "camera-switch" => {
+                body.deserialized::<Empty>()?;
+                Self::CameraSwitch
+            }
             "camera-data" => Self::CameraData(body.deserialized()?),
             "usb-ready" => {
                 body.deserialized::<Empty>()?;
@@ -1053,6 +1061,7 @@ impl Message {
             | Self::HotspotRequest
             | Self::MirrorKeyframe
             | Self::CameraKeyframe
+            | Self::CameraSwitch
             | Self::SpeakerData
             | Self::MicRequest
             | Self::MicStop

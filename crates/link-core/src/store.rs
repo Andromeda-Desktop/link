@@ -259,6 +259,7 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
         | Message::CameraStarted(_)
         | Message::CameraStop(_)
         | Message::CameraKeyframe
+        | Message::CameraSwitch
         | Message::CameraData(_) => Some(Feature::Webcam),
         _ => None,
     }

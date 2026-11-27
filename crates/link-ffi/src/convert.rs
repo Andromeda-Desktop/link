@@ -182,6 +182,7 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                 },
                 Message::CameraStop(_) => LinkEvent::CameraStopped { desktop_id },
                 Message::CameraKeyframe => LinkEvent::CameraKeyframeRequested { desktop_id },
+                Message::CameraSwitch => LinkEvent::CameraSwitchRequested { desktop_id },
                 Message::SoundRequest => LinkEvent::SoundRequested { desktop_id },
                 Message::SoundStop => LinkEvent::SoundStopped { desktop_id },
                 Message::RemoteStarted(started) => LinkEvent::RemoteStarted {

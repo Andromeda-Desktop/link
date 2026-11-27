@@ -722,6 +722,11 @@ impl Link {
         self.send(&device_id, Message::CameraKeyframe).await
     }
 
+    /// Moves the running webcam to the phone's other camera; the node and stream stay.
+    async fn switch_camera(&self, device_id: String) -> Result<(), LinkError> {
+        self.send(&device_id, Message::CameraSwitch).await
+    }
+
     /// `StartCamera` asked for a phone camera; `link-session` answers with `OpenCamera`.
     #[zbus(signal)]
     async fn camera_requested(emitter: &SignalEmitter<'_>, device_id: &str, front: bool) -> zbus::Result<()>;

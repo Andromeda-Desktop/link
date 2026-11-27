@@ -830,6 +830,7 @@ class LinkRepository(
                     )
                 is LinkEvent.CameraStopped -> _camera.emit(CameraCommand.Stopped(event.desktopId))
                 is LinkEvent.CameraKeyframeRequested -> _camera.emit(CameraCommand.Keyframe(event.desktopId))
+                is LinkEvent.CameraSwitchRequested -> _camera.emit(CameraCommand.Switch(event.desktopId))
                 is LinkEvent.SoundRequested -> _sound.emit(SoundCommand.Requested(event.desktopId))
                 is LinkEvent.SoundStopped -> _sound.emit(SoundCommand.Stopped(event.desktopId))
                 is LinkEvent.CommandsChanged ->
