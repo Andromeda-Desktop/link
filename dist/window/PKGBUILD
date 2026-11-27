@@ -8,7 +8,7 @@ url='https://github.com/Andromeda-Desktop/link'
 license=(GPL-3.0-or-later)
 depends=("andromeda-link=$pkgver" cairo pango fontconfig freetype2 harfbuzz fribidi librsvg glib2 libxkbcommon wayland
   libglvnd sdbus-cpp systemd-libs libcups libxcrypt ffmpeg libva qrencode md4c libwebp libjxl)
-provides=(andromeda-link-app)
+provides=(andromeda-link-app andromeda-link-app-git)
 conflicts=(andromeda-link-app andromeda-link-app-git)
 replaces=(andromeda-link-app andromeda-link-app-git)
 options=(!strip !debug)

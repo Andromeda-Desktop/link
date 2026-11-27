@@ -10,7 +10,7 @@ license=(GPL-3.0-or-later)
 depends=(glibc gcc-libs libpipewire dbus fuse3 gstreamer gst-plugins-base-libs gst-plugins-good gst-plugins-bad gst-plugin-pipewire)
 optdepends=('bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
   "networkmanager: joining the phone's hotspot or Wi-Fi Direct group for large transfers away from Wi-Fi"
-  'andromeda-link-app: the Link window (from the Andromeda desktop repository)')
+  'andromeda-link-window: the Link window')
 provides=(andromeda-link)
 conflicts=(andromeda-link andromeda-link-git)
 backup=(etc/ufw/applications.d/andromeda-link)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds one .deb from release binaries already built on the target release (Ubuntu 24.04 or later, Debian 13), with
-# the same files as dist/arch/PKGBUILD: the daemon, session and mount; the window is andromeda-link-app. The daemon and the
+# the same files as dist/arch/PKGBUILD: the daemon, session and mount; the window is andromeda-link-window. The daemon and the
 # mount start with the graphical session here, since only Andromeda has andromeda-session.target.
 # Usage: build-deb.sh TARGET_RELEASE_DIR OUT_DIR
 set -euo pipefail
@@ -41,7 +41,7 @@ install -Dm644 "$ROOT/LICENSE" "$P/usr/share/doc/andromeda-link/copyright"
 cp -r "$ROOT/dist/icons" "$P/usr/share/"
 
 install -d "$P/DEBIAN"
-# andromeda-link-app below 1 is the old Qt app package; 2026.x is the Andromeda Link window.
+# andromeda-link-app below 1 is the old Qt app package; the window is andromeda-link-window.
 cat > "$P/DEBIAN/control" << EOF
 Package: andromeda-link
 Version: $VERSION
@@ -50,7 +50,7 @@ Maintainer: Andromeda <sitish@akintechnologies.com>
 Depends: libc6, libgcc-s1, libxkbcommon0, libpipewire-0.3-0t64 | libpipewire-0.3-0, dbus, fuse3, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire
 Replaces: andromeda-link-app (<< 1)
 Breaks: andromeda-link-app (<< 1)
-Recommends: andromeda-link-app, v4l2loopback-dkms
+Recommends: andromeda-link-window, v4l2loopback-dkms
 Suggests: bluez, network-manager
 Description: Andromeda Link: phone and desktop continuity
  Clipboard, notifications, media, files, texts, and screen mirroring between an Android phone and the desktop.

@@ -14,7 +14,7 @@ optdepends=('iw: Wi-Fi power save off while mirroring, for a faster picture'
   'v4l2loopback-dkms: the phone camera in apps that read V4L2 only, such as Chromium browsers'
   'bluez: Link over Bluetooth when no Wi-Fi reaches the phone'
   "networkmanager: joining the phone's hotspot or Wi-Fi Direct group for large transfers away from Wi-Fi"
-  'andromeda-link-app: the Link window (from the Andromeda desktop repository)')
+  'andromeda-link-window: the Link window')
 provides=(andromeda-link)
 conflicts=(andromeda-link-git)
 replaces=(andromeda-link-git)
