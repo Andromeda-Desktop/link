@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm mingw-w64-x86-64-dev
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm mingw-w64-x86-64-dev protobuf-compiler
       - run: rustup target add x86_64-pc-windows-gnullvm && rustup component add clippy
       - run: tools/win-check.sh
 
@@ -30,4 +30,10 @@ jobs:
       # CRLF checkout would break tools/win-check.sh under bash.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # prost-build (link-quickshare) needs protoc: the upstream release, pinned by its digest.
+      - run: |
+          curl -fsSLo protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-win64.zip
+          echo "f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3  protoc.zip" | sha256sum -c
+          7z x -bd -o"$RUNNER_TEMP/protoc" protoc.zip
+          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc.exe" >> "$GITHUB_ENV"
       - run: cargo test --locked $(tools/win-check.sh --list | sed 's/^/-p /')
