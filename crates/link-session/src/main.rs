@@ -11,7 +11,6 @@ mod awake;
 mod camera;
 #[cfg(unix)]
 mod clipboard;
-#[cfg(unix)]
 mod input;
 mod link;
 #[cfg(target_os = "macos")]
@@ -79,7 +78,6 @@ async fn next_clipboard(clipboard: &mut Option<clipboard::Backend>) -> anyhow::R
     }
 }
 
-#[cfg(unix)]
 async fn pump_input(input: &mut Option<input::Backend>) -> anyhow::Result<()> {
     match input {
         Some(input) => input.pump().await,

@@ -8,6 +8,8 @@ pub mod mac;
 pub mod uinput;
 #[cfg(target_os = "linux")]
 pub mod wayland;
+#[cfg(windows)]
+pub mod win;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
@@ -20,9 +22,18 @@ pub enum Backend {
     X11(Box<x11::X11>),
     #[cfg(target_os = "macos")]
     Mac(mac::Mac),
+    #[cfg(windows)]
+    Win(win::Win),
 }
 
 impl Backend {
+    /// `SendInput`, which needs no permission.
+    #[cfg(windows)]
+    #[expect(clippy::unnecessary_wraps, reason = "the other platforms' interface")]
+    pub fn native() -> Option<Self> {
+        Some(Self::Win(win::Win))
+    }
+
     /// `CGEvent`, once the user gives the Accessibility permission.
     #[cfg(target_os = "macos")]
     pub fn native() -> Option<Self> {
@@ -53,6 +64,8 @@ impl Backend {
             Self::X11(_) => "XTest",
             #[cfg(target_os = "macos")]
             Self::Mac(_) => "CGEvent",
+            #[cfg(windows)]
+            Self::Win(_) => "SendInput",
         }
     }
 
@@ -66,15 +79,21 @@ impl Backend {
             Self::X11(backend) => backend.run(action),
             #[cfg(target_os = "macos")]
             Self::Mac(backend) => backend.run(action),
+            #[cfg(windows)]
+            Self::Win(backend) => backend.run(action),
         }
     }
 
     /// Whether [`Action::Shortcut`] works: the backend can hold modifiers.
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     pub const fn shortcuts(&self) -> bool {
         match self {
+            #[cfg(target_os = "linux")]
             Self::Wayland(_) | Self::Ei(_) => true,
+            #[cfg(target_os = "linux")]
             Self::X11(_) => false,
+            #[cfg(windows)]
+            Self::Win(_) => true,
         }
     }
 
@@ -87,6 +106,8 @@ impl Backend {
             Self::Wayland(_) | Self::X11(_) => std::future::pending().await,
             #[cfg(target_os = "macos")]
             Self::Mac(_) => std::future::pending().await,
+            #[cfg(windows)]
+            Self::Win(_) => std::future::pending().await,
         }
     }
 }
@@ -120,7 +141,7 @@ const KEYS: [(&str, u32); 19] = [
 ];
 
 /// A place on a shared monitor, for remote control's direct touch.
-#[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS offers no remote control"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only Linux offers remote control"))]
 pub struct Point {
     /// The monitor's output name, as the `ScreenCast` portal's `mapping_id`.
     pub output: Option<String>,
@@ -134,7 +155,7 @@ pub struct Point {
 pub enum Action {
     /// Relative motion in logical pixels.
     Move(f64, f64),
-    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS offers no remote control"))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only Linux offers remote control"))]
     Point(Point),
     Scroll(f64, f64),
     Button {
@@ -169,7 +190,7 @@ impl Modifier {
     }
 
     /// The left-hand key's keysym.
-    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS offers no shortcuts"))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "used by the Linux backends"))]
     pub const fn keysym(self) -> u32 {
         match self {
             Self::Shift => 0xffe1,
@@ -180,7 +201,7 @@ impl Modifier {
     }
 
     /// The xkb real modifier's bit: Shift, Control, Mod1 and Mod4.
-    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS offers no shortcuts"))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "used by the Linux backends"))]
     pub const fn mask(self) -> u32 {
         match self {
             Self::Shift => 1,
