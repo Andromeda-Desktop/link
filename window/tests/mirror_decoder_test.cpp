@@ -1,5 +1,6 @@
 #include "core/deferred_call.h"
 #include "mirror_decoder.h"
+#include "mirror_video.h"
 
 #include <fstream>
 #include <iterator>
@@ -86,6 +87,12 @@ namespace {
 int main() {
   bool ok = endedDestroys();
   ok = decodes(linkapp::MirrorCodec::H264, "mirror-h264.bin") && ok;
-  ok = decodes(linkapp::MirrorCodec::Hevc, "mirror-hevc.bin") && ok;
+  // Fedora's libavcodec has no HEVC decoder; VideoToolbox always has one.
+  std::string why;
+  if (linkapp::openVideoDecoder(linkapp::MirrorCodec::Hevc, why) != nullptr) {
+    ok = decodes(linkapp::MirrorCodec::Hevc, "mirror-hevc.bin") && ok;
+  } else {
+    std::println("mirror_decoder_test: HEVC skipped: {}", why);
+  }
   return ok ? 0 : 1;
 }

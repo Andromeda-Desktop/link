@@ -36,7 +36,9 @@ printf "[properties]\npkg_config_libdir = ['%s', '%s', '%s']\n" "$build/libdesk/
 [ -d "$build/window" ] || meson setup "$build/window" "$link/window" --cross-file "$cross" --cross-file "$build/window.ini" \
   -Dcargo_target=aarch64-apple-darwin --buildtype=release
 meson compile -C "$build/window"
-[ "$(uname)" != Darwin ] || meson test -C "$build/window" --no-rebuild --print-errorlogs
+# The bottles' dylibs carry @@HOMEBREW_PREFIX@@ install names until the bundle step rewrites them: dyld finds them
+# by leaf name here.
+[ "$(uname)" != Darwin ] || DYLD_LIBRARY_PATH=$deps/lib meson test -C "$build/window" --no-rebuild --print-errorlogs
 cargo build -q --release --locked --target aarch64-apple-darwin --manifest-path "$link/Cargo.toml" \
   -p link-daemon -p link-session -p link-nowplaying
 bin=$build/cargo/aarch64-apple-darwin/release
