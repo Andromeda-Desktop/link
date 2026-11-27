@@ -367,7 +367,7 @@ namespace linkapp {
         auto position = text(clockOf(at), Tokens::typeCaption, ColorRole::Label2, s);
         m_liveView.position = position.get();
         seek->addChild(std::move(position));
-        auto bar = ui::progressBar({.fill = colorSpecFromRole(ColorRole::Label1), .track = colorSpecFromRole(ColorRole::Fill2),
+        auto bar = ui::progressBar({.fill = core(), .track = colorSpecFromRole(ColorRole::Fill2),
                                     .radius = 2.0F * s, .progress = static_cast<float>(at) / static_cast<float>(p->lengthMs),
                                     .height = 4.0F * s, .flexGrow = 1.0F});
         m_liveView.seek = bar.get();
@@ -380,8 +380,12 @@ namespace linkapp {
         volume->setPadding(6.0F * s, 0.0F, 0.0F, 0.0F);
         volume->addChild(ui::glyph({.glyph = std::string("volume"), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
         volume->addChild(ui::slider({.minValue = 0.0, .maxValue = 100.0, .step = 1.0, .value = static_cast<double>(phone.mediaVolume),
-                                     .trackHeight = 6.0F * s, .flexGrow = 1.0F,
-                                     .onValueChanged = [this, pid](double v) { m_client->setMediaVolume(pid, static_cast<int>(v)); }}));
+                                     .controlHeight = 6.0F * s, .flexGrow = 1.0F,
+                                     .onValueChanged = [this, pid](double v) { m_client->setMediaVolume(pid, static_cast<int>(v)); },
+                                     .configure = [](Slider& slider) {
+                                       slider.setFilled(true);
+                                       slider.setColors(ColorRole::Label1, ColorRole::Fill2);
+                                     }}));
         volume->addChild(text(std::to_string(phone.mediaVolume), Tokens::typeFootnote, ColorRole::Label2, s));
         media->addChild(std::move(volume));
       }

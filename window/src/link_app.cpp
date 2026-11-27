@@ -782,7 +782,7 @@ namespace linkapp {
   }
 
   AppWindow& LinkApp::createWindow() {
-    AppWindow& window = addWindow({.appId = info().id, .title = i18n::tr("link.pages.waiting"), .width = 1200, .height = 780, .minWidth = 760,
+    AppWindow& window = addWindow({.appId = info().id, .title = i18n::tr("link.pages.waiting"), .width = 1280, .height = 800, .minWidth = 760,
                                    .sidebarWidth = Tokens::componentSidebarWidth,
                                    .material = AppWindow::Material::Solid});
     m_window = &window;
