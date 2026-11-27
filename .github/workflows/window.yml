@@ -48,7 +48,7 @@ jobs:
             fedora) rpmbuild -bb dist/window/andromeda-link-window.spec --define "stage $PWD/stage" \
                       --define "linkversion $v" --define "_rpmdir $PWD/out" ;;
             arch) useradd -m builder && chown -R builder "$PWD"
-                  su builder -c "cd dist/window && sed -i 's/^pkgver=.*/pkgver=${GITHUB_REF_NAME#v}/' PKGBUILD \
+                  su builder -c "cd dist/window && sed -i 's/^pkgver=.*/pkgver=$(echo "$v" | tr '~' .)/' PKGBUILD \
                     && STAGE=$PWD/stage PKGDEST=$PWD/out makepkg --nodeps --noconfirm" ;;
           esac
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
