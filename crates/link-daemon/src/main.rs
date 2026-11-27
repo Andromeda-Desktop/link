@@ -31,6 +31,7 @@ mod messages;
 mod mirror;
 mod mpris;
 mod notifications;
+mod pair;
 mod paths;
 mod quickshare;
 mod relay;
@@ -70,7 +71,8 @@ fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         None => runtime.block_on(run()),
         Some("doctor") => runtime.block_on(doctor()),
-        Some(other) => anyhow::bail!("unknown command {other:?}; the only command is doctor"),
+        Some("pair") => runtime.block_on(pair::pair()),
+        Some(other) => anyhow::bail!("unknown command {other:?}; the commands are doctor and pair"),
     }
 }
 
