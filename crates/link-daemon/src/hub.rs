@@ -366,7 +366,6 @@ enum Command {
     SetNotifyLocked {
         on: bool,
     },
-    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     ClipboardPeers {
         reply: oneshot::Sender<Vec<DeviceId>>,
     },

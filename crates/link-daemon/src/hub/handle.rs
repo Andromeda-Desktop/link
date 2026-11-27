@@ -229,7 +229,6 @@ impl HubHandle {
     }
 
     /// Connected devices holding the clipboard grant.
-    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn clipboard_peers(&self) -> Vec<DeviceId> {
         self.request(|reply| Command::ClipboardPeers { reply }).await.unwrap_or_default()
     }
@@ -268,7 +267,6 @@ impl HubHandle {
         self.request(|reply| Command::SetAutoAccept { id, enabled, reply }).await.unwrap_or(false)
     }
 
-    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub fn transfers(&self) -> &TransferHandle {
         &self.transfers
     }

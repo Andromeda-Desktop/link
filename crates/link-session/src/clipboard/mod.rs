@@ -6,15 +6,21 @@ pub mod mac;
 pub mod portal;
 #[cfg(target_os = "linux")]
 pub mod wayland;
+#[cfg(windows)]
+pub mod win;
+#[cfg(any(windows, test))]
+pub mod win_format;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use tokio::io::AsyncReadExt;
+#[cfg(unix)]
 use tokio::sync::oneshot;
 
 /// Advertised with a selection served for a phone, so a read of it is never sent back.
@@ -34,7 +40,14 @@ pub enum Event {
     /// A new selection: each read type's bytes with the names it is offered under, the preferred one first.
     Local { types: Vec<(Vec<String>, Vec<u8>)> },
     /// A paste of the phone's offer wants `mime` written into `sink`; `done` hears whether it was.
+    #[cfg(unix)]
     Paste { mime: String, sink: OwnedFd, done: Option<oneshot::Sender<bool>> },
+    /// A paste of `device`'s offer `id` wants `mime`; `reply` takes its bytes, or `None` when they cannot come.
+    #[cfg(windows)]
+    Paste { device: String, id: u64, mime: String, reply: std::sync::mpsc::SyncSender<Option<Vec<u8>>> },
+    /// `device`'s offer `id` of `mimes` and `size` bytes is now the clipboard.
+    #[cfg(windows)]
+    Taken { device: String, id: u64, mimes: Vec<String>, size: u64 },
 }
 
 pub enum Backend {
@@ -46,6 +59,8 @@ pub enum Backend {
     X11(x11::X11),
     #[cfg(target_os = "macos")]
     Mac(mac::Mac),
+    #[cfg(windows)]
+    Win(win::Win),
 }
 
 impl Backend {
@@ -53,6 +68,11 @@ impl Backend {
     #[expect(clippy::unnecessary_wraps, reason = "the Linux backends' interface")]
     pub fn native() -> Option<Self> {
         Some(Self::Mac(mac::Mac::connect()))
+    }
+
+    #[cfg(windows)]
+    pub fn native() -> Option<Self> {
+        crate::attempt("Windows clipboard", win::Win::connect().map(Some)).map(Self::Win)
     }
 
     /// Data-control or the X11 selection, whichever the session offers without asking the user.
@@ -79,10 +99,13 @@ impl Backend {
             Self::X11(_) => "the X11 CLIPBOARD selection",
             #[cfg(target_os = "macos")]
             Self::Mac(_) => "NSPasteboard",
+            #[cfg(windows)]
+            Self::Win(_) => "the Windows clipboard",
         }
     }
 
     /// Makes a phone's offer the selection; pastes of it come back as `Event::Paste`.
+    #[cfg(unix)]
     #[cfg_attr(
         target_os = "macos",
         allow(clippy::unused_async, clippy::unused_async_trait_impl, reason = "the Linux backends' interface")
@@ -103,6 +126,14 @@ impl Backend {
         }
     }
 
+    /// Makes `device`'s offer `id` of `mimes` the clipboard; `Event::Taken` tells when it is, and pastes of it come
+    /// back as `Event::Paste` naming it.
+    #[cfg(windows)]
+    pub fn offer_remote(&mut self, device: &str, id: u64, mimes: &[String], size: u64) -> anyhow::Result<()> {
+        let Self::Win(backend) = self;
+        backend.offer_remote(device, id, mimes, size)
+    }
+
     pub async fn next(&mut self) -> anyhow::Result<Event> {
         match self {
             #[cfg(target_os = "linux")]
@@ -113,6 +144,8 @@ impl Backend {
             Self::X11(backend) => backend.next().await,
             #[cfg(target_os = "macos")]
             Self::Mac(backend) => backend.next().await,
+            #[cfg(windows)]
+            Self::Win(backend) => backend.next().await,
         }
     }
 }

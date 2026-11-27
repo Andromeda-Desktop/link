@@ -303,6 +303,19 @@
       <arg name="sink" type="h" direction="in"/>
       <arg name="bytes" type="t" direction="out"/>
     </method>
+    <!-- OfferClipboard for a connection that cannot pass descriptors (the Windows pipe): types holds each type's
+         names, in order of preference, with its bytes, at most 64 MiB in all. Errors: .Rejected. -->
+    <method name="OfferClipboardData">
+      <arg name="types" type="a(asay)" direction="in"/>
+    </method>
+    <!-- PullClipboard for a connection that cannot pass descriptors: returns type mime of a device's ClipboardOffered
+         clip. Errors: as PullClipboard. -->
+    <method name="PullClipboardData">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="id" type="t" direction="in"/>
+      <arg name="mime" type="s" direction="in"/>
+      <arg name="data" type="ay" direction="out"/>
+    </method>
     <!-- "Visible to LocalSend": answers LocalSend discovery and accepts LocalSend offers (with the same consent as
          Link), and lists LocalSend devices in Nearby. Off until turned on; kept across restarts. -->
     <method name="SetLocalSendVisible">

@@ -1768,6 +1768,7 @@ name = "link-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "rustix",
  "tokio",
  "windows-sys 0.61.2",
  "zbus",

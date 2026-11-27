@@ -2,7 +2,6 @@
 #![expect(clippy::too_many_arguments, reason = "the NotificationPosted signal's arguments are the D-Bus contract")]
 
 use std::collections::HashMap;
-#[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
@@ -19,11 +18,11 @@ use link_core::proto::message::{
     NotificationAction, NotificationDismiss, NotificationPosted, Ping, RemoteInput, Ring, Ringing, Share, ShareKind,
     SystemCommand, SystemCommandKind, TransferId, dialable,
 };
-#[cfg(unix)]
-use link_core::proto::message::{MAX_SHARE_LEN, is_text_mime};
+use link_core::proto::message::{MAX_CLIP_SIZE, MAX_SHARE_LEN, is_text_mime};
 use link_core::store::{StoredCommand, phone_requires};
 #[cfg(unix)]
-use link_core::transfer::{ClipBytes, LocalClip, Source};
+use link_core::transfer::Source;
+use link_core::transfer::{ClipBytes, LocalClip};
 use tokio::sync::{mpsc, watch};
 use zbus::fdo;
 use zbus::object_server::SignalEmitter;
@@ -314,11 +313,57 @@ impl Link {
     ) -> Result<u64, LinkError> {
         let peer = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
         let sink = File::from(OwnedFd::from(sink));
-        match self.hub.transfers().pull_clip(peer, id, mime, sink).await {
-            Ok(bytes) => Ok(bytes),
-            Err(Error::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
-            Err(error) => Err(LinkError::Failed(error.to_string())),
+        pulled(self.hub.transfers().pull_clip(peer, id, mime, sink).await, &device_id)
+    }
+
+    /// `offer_clipboard` with the bytes inline, for a connection that cannot pass descriptors: each type's names,
+    /// in order of preference, with its bytes.
+    async fn offer_clipboard_data(&self, types: Vec<(Vec<String>, Vec<u8>)>) -> Result<(), LinkError> {
+        let total = types.iter().map(|(_, data)| data.len() as u64).sum::<u64>();
+        if total > MAX_CLIP_SIZE {
+            return Err(LinkError::Rejected(format!("{total} bytes, over {MAX_CLIP_SIZE}")));
         }
+        let clip = tokio::task::spawn_blocking(move || {
+            let mut clip = LocalClip { types: Vec::with_capacity(types.len()), copied: None };
+            for (names, data) in types {
+                let short_text = data.len() <= MAX_SHARE_LEN && std::str::from_utf8(&data).is_ok();
+                let mut file = None;
+                for name in names {
+                    let bytes = if short_text && is_text_mime(&name) {
+                        ClipBytes::Text(String::from_utf8_lossy(&data).into_owned())
+                    } else {
+                        let file = match &mut file {
+                            Some(file) => file,
+                            None => file.insert(written(&data)?),
+                        };
+                        ClipBytes::File(file.try_clone()?)
+                    };
+                    clip.types.push((name, bytes));
+                }
+            }
+            std::io::Result::Ok(clip)
+        });
+        let clip = clip.await.map_err(|error| LinkError::Failed(error.to_string()))?;
+        let clip = clip.map_err(|error| LinkError::Failed(error.to_string()))?;
+        let peers = self.hub.clipboard_peers().await;
+        self.hub.transfers().offer_clip(peers, clip).await.map_err(|error| LinkError::Rejected(error.to_string()))
+    }
+
+    /// `pull_clipboard` for a connection that cannot pass descriptors: returns the bytes.
+    async fn pull_clipboard_data(&self, device_id: String, id: u64, mime: String) -> Result<Vec<u8>, LinkError> {
+        use std::io::{Read as _, Seek as _};
+        let peer = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        let failed = |error: std::io::Error| LinkError::Failed(error.to_string());
+        let mut file = link_api::anonymous_file().map_err(failed)?;
+        let sink = file.try_clone().map_err(failed)?;
+        let size = pulled(self.hub.transfers().pull_clip(peer, id, mime, sink).await, &device_id)?;
+        let read = tokio::task::spawn_blocking(move || {
+            file.seek(std::io::SeekFrom::Start(0))?;
+            let mut data = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+            file.take(size).read_to_end(&mut data)?;
+            std::io::Result::Ok(data)
+        });
+        read.await.map_err(|error| LinkError::Failed(error.to_string()))?.map_err(failed)
     }
 
     /// Connected device id to `(battery percent, charging, network, signal)`; network is wifi, cellular, ethernet,
@@ -1605,4 +1650,22 @@ fn host_name() -> String {
 #[cfg(windows)]
 fn host_name() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+/// A pull's byte count, or the error for the caller.
+fn pulled(result: Result<u64, Error>, device_id: &str) -> Result<u64, LinkError> {
+    match result {
+        Ok(bytes) => Ok(bytes),
+        Err(Error::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
+        Err(error) => Err(LinkError::Failed(error.to_string())),
+    }
+}
+
+/// `data` in a new anonymous file, read from its start.
+fn written(data: &[u8]) -> std::io::Result<File> {
+    use std::io::{Seek as _, Write as _};
+    let mut file = link_api::anonymous_file()?;
+    file.write_all(data)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    Ok(file)
 }

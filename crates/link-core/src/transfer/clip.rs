@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt as _;
 use std::sync::Arc;
@@ -13,7 +12,6 @@ use link_proto::clip::{ClipRefused, ClipState, Serve};
 use link_proto::message::{ClipOffer, ClipPull, MAX_CLIP_SIZE, MAX_SHARE_LEN, Message, is_text_mime};
 use link_proto::transfer::Budget;
 use ring::rand::{SecureRandom, SystemRandom};
-#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 #[cfg(unix)]
 use tokio::net::unix::pipe;
@@ -408,11 +406,11 @@ async fn serve(session: &SessionHandle, header: ClipPull, content: Option<Conten
     Ok(())
 }
 
-/// A paste target: a pipe (a Wayland data source's) is written without blocking the runtime, a file directly.
+/// A paste target: a pipe (a Wayland data source's) or a file, each written without blocking the runtime.
 enum Sink {
     #[cfg(unix)]
     Pipe(pipe::Sender),
-    File(File),
+    File(tokio::fs::File),
 }
 
 impl Sink {
@@ -422,25 +420,33 @@ impl Sink {
         if file.metadata()?.file_type().is_fifo() {
             return Ok(Self::Pipe(pipe::Sender::from_file(file)?));
         }
-        Ok(Self::File(file))
+        Ok(Self::File(tokio::fs::File::from_std(file)))
     }
 
-    #[cfg_attr(
-        windows,
-        expect(clippy::unused_async, clippy::unused_async_trait_impl, reason = "only Unix pastes into a pipe")
-    )]
     async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
         match self {
             #[cfg(unix)]
             Self::Pipe(pipe) => pipe.write_all(bytes).await?,
-            Self::File(file) => file.write_all(bytes)?,
+            Self::File(file) => file.write_all(bytes).await?,
+        }
+        Ok(())
+    }
+
+    /// Waits until every byte is written: a file's writes finish on the blocking pool after `write_all` returns.
+    async fn finish(mut self) -> Result<(), Error> {
+        match &mut self {
+            #[cfg(unix)]
+            Self::Pipe(_) => {}
+            Self::File(file) => file.flush().await?,
         }
         Ok(())
     }
 }
 
 async fn write_sink(sink: File, bytes: &[u8]) -> Result<(), Error> {
-    Sink::new(sink)?.write_all(bytes).await
+    let mut sink = Sink::new(sink)?;
+    sink.write_all(bytes).await?;
+    sink.finish().await
 }
 
 /// Copies a `clip-data` stream into the sink within its budget, returning the byte count.
@@ -455,6 +461,7 @@ async fn copy(mut recv: RecvStream, sink: File, mut budget: Budget) -> Result<u6
         }
         sink.write_all(&chunk).await?;
     }
+    sink.finish().await?;
     Ok(budget.offset())
 }
 

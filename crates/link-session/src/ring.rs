@@ -39,22 +39,7 @@ impl Ring {
         if !on {
             return;
         }
-        let sound = tokio::spawn(async {
-            loop {
-                // Dropping the child, when the task is aborted, ends the sound at once.
-                let child = PLAYERS.iter().find_map(|(player, sound)| {
-                    tokio::process::Command::new(player).arg(sound).kill_on_drop(true).spawn().ok()
-                });
-                match child {
-                    // A player that fails would fail again at once.
-                    Some(mut child) => match child.wait().await {
-                        Ok(status) if status.success() => {}
-                        result => return log::warn!("ringing: the player ended with {result:?}"),
-                    },
-                    None => return log::warn!("ringing: none of {PLAYERS:?} runs"),
-                }
-            }
-        });
+        let sound = tokio::spawn(play());
         self.now = Some((device.to_owned(), sound, Instant::now() + RING_FOR));
         report(link, device, true).await;
     }
@@ -62,6 +47,12 @@ impl Ring {
     pub async fn stop(&mut self, link: &Link) {
         if let Some((device, sound, _)) = self.now.take() {
             sound.abort();
+            // Dropping the task stops its sound; on Windows that stop is process-wide, so it ends before a new ring.
+            if let Err(error) = sound.await
+                && error.is_panic()
+            {
+                log::warn!("ringing: {error}");
+            }
             report(link, &device, false).await;
         }
     }
@@ -73,6 +64,49 @@ impl Ring {
             None => std::future::pending().await,
         }
     }
+}
+
+/// The sound on repeat until the task is aborted.
+#[cfg(unix)]
+async fn play() {
+    loop {
+        // Dropping the child, when the task is aborted, ends the sound at once.
+        let child = PLAYERS.iter().find_map(|(player, sound)| {
+            tokio::process::Command::new(player).arg(sound).kill_on_drop(true).spawn().ok()
+        });
+        match child {
+            // A player that fails would fail again at once.
+            Some(mut child) => match child.wait().await {
+                Ok(status) if status.success() => {}
+                result => return log::warn!("ringing: the player ended with {result:?}"),
+            },
+            None => return log::warn!("ringing: none of {PLAYERS:?} runs"),
+        }
+    }
+}
+
+/// The incoming-call sound on repeat until the task is aborted, which stops it.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "FFI: winmm PlaySoundW")]
+async fn play() {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_LOOP, SND_NODEFAULT};
+    struct Stop;
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            // SAFETY: a null sound stops the one this process plays.
+            unsafe { PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0) };
+        }
+    }
+    // Registry sound events (PlaySound docs); the first is the toast catalog's looping call sound.
+    let played = [windows_sys::core::w!("Notification.Looping.Call"), windows_sys::core::w!("SystemAsterisk")]
+        .into_iter()
+        // SAFETY: static wide strings; SND_ASYNC returns at once, and the sound loops until a null PlaySoundW.
+        .any(|alias| unsafe { PlaySoundW(alias, std::ptr::null_mut(), SND_ALIAS | SND_ASYNC | SND_LOOP | SND_NODEFAULT) } != 0);
+    if !played {
+        return log::warn!("ringing: Windows has no sound for an incoming call");
+    }
+    let _stop = Stop;
+    std::future::pending::<()>().await;
 }
 
 async fn report(link: &Link, device: &str, on: bool) {

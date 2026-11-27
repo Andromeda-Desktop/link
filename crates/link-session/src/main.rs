@@ -9,7 +9,6 @@ mod audio_nodes;
 mod awake;
 #[cfg(target_os = "linux")]
 mod camera;
-#[cfg(unix)]
 mod clipboard;
 mod input;
 mod link;
@@ -21,9 +20,8 @@ mod mic;
 mod notify;
 #[cfg(target_os = "linux")]
 mod portal;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod prefetch;
-#[cfg(unix)]
 mod ring;
 #[cfg(target_os = "linux")]
 mod screen;
@@ -70,7 +68,6 @@ fn on_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
 }
 
-#[cfg(unix)]
 async fn next_clipboard(clipboard: &mut Option<clipboard::Backend>) -> anyhow::Result<clipboard::Event> {
     match clipboard {
         Some(clipboard) => clipboard.next().await,
@@ -132,27 +129,35 @@ async fn report_status(link: &link::Link, volume: Option<&volume::Volume>, syste
 }
 
 /// Gives a new selection to the daemon, which sends it to phones now or on connect, or serves a paste of `remote`,
-/// the phone clip the selection holds as (device id, clip id). A phone clip's own selection never comes back here.
-#[cfg(unix)]
+/// the phone clip the selection holds as (device id, clip id); on Windows the paste names its clip. `prefetch` follows
+/// the selection: none once another app's, a new one when a phone clip becomes it. A phone clip's own selection never
+/// comes back here.
 fn on_clipboard(
     link: &link::Link,
     event: clipboard::Event,
-    remote: Option<(String, u64)>,
-    #[cfg(target_os = "linux")] prefetch: Option<prefetch::Prefetch>,
+    #[cfg(unix)] remote: Option<(String, u64)>,
+    #[cfg(any(target_os = "linux", windows))] prefetch: &mut Option<prefetch::Prefetch>,
 ) {
+    #[cfg(any(target_os = "linux", windows))]
+    let pasted = prefetch.clone();
     match event {
         clipboard::Event::Local { types } => {
+            #[cfg(any(target_os = "linux", windows))]
+            {
+                *prefetch = None;
+            }
             // In a task: a large offer must not hold up a paste the loop has to serve meanwhile.
             let link = link.clone();
             tokio::spawn(async move { link.offer_clipboard(types).await });
         }
+        #[cfg(unix)]
         clipboard::Event::Paste { mime, sink, done } => {
             let link = link.clone();
             tokio::spawn(async move {
                 let pulled = match remote {
                     Some(remote) => {
                         #[cfg(target_os = "linux")]
-                        let served = match prefetch {
+                        let served = match pasted {
                             Some(prefetch) => prefetch.serve(&remote, &mime, sink).await,
                             None => Err(sink),
                         };
@@ -169,6 +174,29 @@ fn on_clipboard(
                     let _ = done.send(pulled);
                 }
             });
+        }
+        #[cfg(windows)]
+        clipboard::Event::Paste { device, id, mime, reply } => {
+            let link = link.clone();
+            tokio::spawn(async move {
+                let clip = (device, id);
+                let held = match &pasted {
+                    Some(prefetch) => prefetch.held(&clip, &mime).await,
+                    None => None,
+                };
+                let data = match held {
+                    Some(held) => held.data().map(<[u8]>::to_vec),
+                    None => link.pull_clipboard(&clip.0, clip.1, &mime).await,
+                };
+                // The clipboard thread blocks on this answer, so the channel is never full.
+                if reply.try_send(data).is_err() {
+                    log::warn!("the clipboard thread stopped before a paste of {mime} was answered");
+                }
+            });
+        }
+        #[cfg(windows)]
+        clipboard::Event::Taken { device, id, mimes, size } => {
+            *prefetch = prefetch::Prefetch::start(link, &device, id, &mimes, size);
         }
     }
 }
@@ -330,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
                 let (device, id) = (args.device_id.to_owned(), args.id);
                 let mimes: Vec<String> = args.mimes.iter().map(|&mime| mime.to_owned()).collect();
                 if let Some(backend) = clipboard.as_mut() {
-                    match backend.offer_remote(&prefetch::offered(&mimes)).await {
+                    match backend.offer_remote(&prefetch::offered(&mimes, args.size)).await {
                         Ok(()) => {
                             prefetch = prefetch::Prefetch::start(&link, &device, id, &mimes, args.size);
                             remote = Some((device, id));
@@ -340,12 +368,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             event = next_clipboard(&mut clipboard) => match event {
-                Ok(event) => {
-                    if matches!(event, clipboard::Event::Local { .. }) {
-                        prefetch = None;
-                    }
-                    on_clipboard(&link, event, remote.clone(), prefetch.clone());
-                }
+                Ok(event) => on_clipboard(&link, event, remote.clone(), &mut prefetch),
                 // The unit restarts the service, which connects the backends again.
                 Err(error) => return Err(error.context("the clipboard backend stopped")),
             },
