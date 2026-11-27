@@ -16,7 +16,7 @@ case ${1:?distro} in
       libavutil-dev libavfilter-dev libswscale-dev libva-dev libtomlplusplus-dev libmd4c-dev libwebp-dev libjxl-dev \
       libstb-dev ;;
   fedora)
-    dnf install -y -q git meson ninja-build gcc-c++ pkgconf python3 rpm-build dbus-daemon freetype-devel fontconfig-devel \
+    dnf install -y -q git meson ninja-build gcc-c++ libasan pkgconf python3 rpm-build dbus-daemon freetype-devel fontconfig-devel \
       cairo-devel pango-devel harfbuzz-devel fribidi-devel librsvg2-devel libxkbcommon-devel glib2-devel json-devel \
       zlib-ng-compat-devel wayland-devel wayland-protocols-devel libglvnd-devel sdbus-cpp-devel systemd-devel \
       cups-devel libxcrypt-devel qrencode-devel libavcodec-free-devel libavutil-free-devel libavfilter-free-devel \

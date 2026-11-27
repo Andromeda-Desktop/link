@@ -21,4 +21,5 @@ meson install -C "$build/desk" --no-rebuild --tags devel > /dev/null
 [ -d "$build/window" ] || PKG_CONFIG_PATH="$build/libdesk/lib/pkgconfig" meson setup "$build/window" "$link/window" --prefix=/usr --libdir=lib \
   --buildtype=release
 meson compile -C "$build/window"
+meson test -C "$build/window" --no-rebuild --print-errorlogs
 DESTDIR="$dest" meson install -C "$build/window" --no-rebuild
