@@ -665,7 +665,7 @@ mod tests {
             assert!(Instant::now() < first, "no heartbeat round trip: {:?}", phone.link());
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let sender = MirrorSender::open(&phone, 16, 16, None, true).await?;
+        let sender = MirrorSender::open(&phone, crate::mirror::VideoKind::Mirror, 16, 16, None, true).await?;
         let video = tokio::spawn(async move {
             sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
             for pts_us in 1.. {
@@ -702,6 +702,48 @@ mod tests {
         drop(pair);
         let bytes = read.await?;
         assert!(bytes > 1_000_000, "only {bytes} bytes of video crossed, so the path was not full");
+        Ok(())
+    }
+
+    /// A phone mirrors and streams its camera at once: each keyframe's stream joins its own video, never the other's.
+    #[tokio::test]
+    async fn a_mirror_and_a_camera_at_once_keep_their_own_video() -> Result {
+        use crate::mirror::{MirrorSender, Unit, VideoKind};
+        use crate::transfer::TransferEvent;
+        use link_proto::message::MIRROR_KEYFRAME;
+
+        let mut pair = pair_through("camera", 1024, Some(50_000_000)).await?;
+        let phone = pair.handles[0].clone();
+        let mirror = MirrorSender::open(&phone, VideoKind::Mirror, 16, 16, None, true).await?;
+        let camera = MirrorSender::open(&phone, VideoKind::Camera, 16, 16, None, true).await?;
+        for gop in 0..3u8 {
+            for (sender, tag) in [(&mirror, 1u8), (&camera, 2u8)] {
+                let pts_us = u64::from(gop) * 2;
+                sender.send(&Unit { pts_us, flags: MIRROR_KEYFRAME, data: vec![tag, gop] }).await?;
+                sender.send(&Unit { pts_us: pts_us + 1, flags: 0, data: vec![tag, gop] }).await?;
+            }
+        }
+        let transfers = pair.transfers.as_mut().ok_or("no transfer events")?;
+        let (mut mirror_rx, mut camera_rx) = (None, None);
+        while mirror_rx.is_none() || camera_rx.is_none() {
+            match tokio::time::timeout(Duration::from_secs(10), transfers.recv()).await? {
+                Some(TransferEvent::Mirror { stream, .. }) => mirror_rx = stream.take(),
+                Some(TransferEvent::Camera { stream, .. }) => camera_rx = stream.take(),
+                Some(_) => {}
+                None => return Err("the transfer actor ended".into()),
+            }
+        }
+        for (receiver, tag) in [(mirror_rx.as_mut(), 1u8), (camera_rx.as_mut(), 2u8)] {
+            let receiver = receiver.ok_or("a stream was taken")?;
+            // Older GOPs may be dropped as stale; the last one always arrives whole.
+            let mut gops = Vec::new();
+            while !gops.ends_with(&[2, 2]) {
+                let unit = tokio::time::timeout(Duration::from_secs(10), receiver.next()).await??.ok_or("ended")?;
+                assert_eq!(unit.data[0], tag, "a unit of the other video arrived: {gops:?}");
+                gops.push(unit.data[1]);
+            }
+        }
+        drop((mirror, camera));
         Ok(())
     }
 
@@ -752,7 +794,7 @@ mod tests {
             return Err("two phones".into());
         };
 
-        let sender = MirrorSender::open(a_phone, 16, 16, None, true).await?;
+        let sender = MirrorSender::open(a_phone, crate::mirror::VideoKind::Mirror, 16, 16, None, true).await?;
         let video = tokio::spawn(async move {
             sender.send(&Unit { pts_us: 0, flags: MIRROR_KEYFRAME, data: vec![1; 64 * 1024] }).await?;
             for pts_us in 1.. {

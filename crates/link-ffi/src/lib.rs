@@ -148,6 +148,8 @@ pub struct Sharing {
     pub speaker: bool,
     /// The desktop may ask for this phone's microphone; off after pairing.
     pub mic: bool,
+    /// The desktop may ask for this phone's camera as a webcam; off after pairing.
+    pub webcam: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -163,6 +165,7 @@ pub enum Feature {
     Messages,
     Speaker,
     Mic,
+    Webcam,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1178,6 +1181,7 @@ impl LinkClient {
             Feature::Messages => store::Feature::Messages,
             Feature::Speaker => store::Feature::Speaker,
             Feature::Mic => store::Feature::Mic,
+            Feature::Webcam => store::Feature::Webcam,
         };
         self.run(async move { client.set_sharing(id, feature, on).await }).await
     }

@@ -4,6 +4,7 @@ use super::{
     NotificationPosted, PRESENTING, PairTarget, Peer, SCREEN_SHAPE, ScreenShape, Sent, SessionHandle, Share, Source,
     Status, TransferId, UNPAIR_TELL_TIMEOUT, UPGRADE_TIMEOUT, browse, feature_of, oneshot,
 };
+use crate::mirror::VideoKind;
 
 impl Client {
     /// Pairs and keeps the session open.
@@ -82,8 +83,28 @@ impl Client {
             desktop.and_then(|desktop| desktop.mirror_codecs.iter().copied().find(|codec| encoders.contains(codec)));
         let streams = desktop.is_some_and(|desktop| desktop.peer.has(MIRROR_STREAMS));
         session.send(Message::MirrorStarted(MirrorStarted { width, height, codec })).await?;
-        let sender = MirrorSender::open(&session, width, height, codec, streams).await?;
+        let sender = MirrorSender::open(&session, VideoKind::Mirror, width, height, codec, streams).await?;
         self.commands.send(Command::Mirroring { id, on: true }).await.map_err(|_| Error::Stopped)?;
+        Ok((sender, codec))
+    }
+
+    /// Tells the desktop that sent `camera-request` the video's size and codec, then opens the stream the access units
+    /// go on. The codec is picked as in [`Client::start_mirror`]; the caller encodes in it.
+    pub async fn start_camera(
+        &self,
+        id: DeviceId,
+        width: u32,
+        height: u32,
+        encoders: &[Codec],
+    ) -> Result<(MirrorSender, Option<Codec>), Error> {
+        let session = self.session(id.clone()).await?;
+        let desktops = self.desktops().await?;
+        let codec = desktops
+            .iter()
+            .find(|desktop| desktop.peer.id == id)
+            .and_then(|desktop| desktop.mirror_codecs.iter().copied().find(|codec| encoders.contains(codec)));
+        session.send(Message::CameraStarted(MirrorStarted { width, height, codec })).await?;
+        let sender = MirrorSender::open(&session, VideoKind::Camera, width, height, codec, true).await?;
         Ok((sender, codec))
     }
 

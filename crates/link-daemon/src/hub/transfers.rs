@@ -56,6 +56,13 @@ impl Hub {
                 self.sounds.stream(from, &stream, None);
                 return;
             }
+            TransferEvent::Camera { from, stream } => {
+                log::info!("{from}: refusing a camera stream; this desktop asked for none");
+                if let Some(mut receiver) = stream.take() {
+                    receiver.stop();
+                }
+                return;
+            }
             TransferEvent::Speaker { from, stream } => {
                 log::info!("{from}: refusing a speaker stream; only phones play one");
                 if let Some(mut receiver) = stream.take() {

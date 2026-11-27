@@ -144,6 +144,9 @@ pub const MIC: &str = "feature:mic";
 /// A phone's hello carries this when it answers `sound-request` with a `sound-data` stream; desktops ask no older phone.
 pub const SOUND: &str = "feature:sound";
 
+/// A phone's hello carries this when it answers `camera-request` with `camera-data` streams; desktops ask no older phone.
+pub const WEBCAM: &str = "feature:webcam";
+
 /// The largest lag a `mirror-lag` reports, in milliseconds.
 pub const MAX_MIRROR_LAG_MS: u32 = 60_000;
 
@@ -616,6 +619,15 @@ pub enum Message {
     SoundStop,
     /// The header of a phone-to-desktop stream of the phone's media sound: Opus units (48 kHz stereo) in mirroring's framing.
     SoundData,
+    CameraRequest(CameraRequest),
+    /// Phone to desktop once the user allowed the camera: the size and codec of the `camera-data` streams.
+    CameraStarted(MirrorStarted),
+    /// Either side ends the webcam.
+    CameraStop(MirrorStop),
+    /// Desktop to phone: send a keyframe now, after a loss.
+    CameraKeyframe,
+    /// The header of a phone-to-desktop camera video stream, framed and numbered like `mirror-data`.
+    CameraData(MirrorData),
     UsbReady,
     RemoteRequest(RemoteRequest),
     RemoteStarted(RemoteStarted),
@@ -665,6 +677,7 @@ pub enum Message {
 }
 
 impl Message {
+    #[expect(clippy::too_many_lines, reason = "one arm per message type")]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Hello(_) => "hello",
@@ -720,6 +733,11 @@ impl Message {
             Self::MicData => "mic-data",
             Self::SoundRequest => "sound-request",
             Self::SoundStop => "sound-stop",
+            Self::CameraRequest(_) => "camera-request",
+            Self::CameraStarted(_) => "camera-started",
+            Self::CameraStop(_) => "camera-stop",
+            Self::CameraKeyframe => "camera-keyframe",
+            Self::CameraData(_) => "camera-data",
             Self::SoundData => "sound-data",
             Self::UsbReady => "usb-ready",
             Self::RemoteRequest(_) => "remote-request",
@@ -775,6 +793,7 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::CameraKeyframe
             | Self::SpeakerData
             | Self::MicRequest
             | Self::MicStop
@@ -787,6 +806,7 @@ impl Message {
             | Self::TextsChanged
             | Self::CallsChanged => Value::serialized(&Empty {}),
             Self::MirrorRequest(body) => Value::serialized(body),
+            Self::CameraRequest(body) => Value::serialized(body),
             Self::Share(body) => Value::serialized(body),
             Self::ShareAck(body) => Value::serialized(body),
             Self::NotificationPosted(body) => Value::serialized(body),
@@ -818,12 +838,12 @@ impl Message {
             Self::Punch(body) => Value::serialized(body),
             Self::WifiDirectReady(body) => Value::serialized(body),
             Self::BtPairing(body) => Value::serialized(body),
-            Self::MirrorStarted(body) => Value::serialized(body),
+            Self::MirrorStarted(body) | Self::CameraStarted(body) => Value::serialized(body),
             Self::ScreenShape(body) => Value::serialized(body),
             Self::MirrorLag(body) => Value::serialized(body),
-            Self::MirrorStop(body) | Self::RemoteStop(body) => Value::serialized(body),
+            Self::MirrorStop(body) | Self::RemoteStop(body) | Self::CameraStop(body) => Value::serialized(body),
             Self::MirrorInput(body) => Value::serialized(body),
-            Self::MirrorData(body) => Value::serialized(body),
+            Self::MirrorData(body) | Self::CameraData(body) => Value::serialized(body),
             Self::RemoteRequest(body) => Value::serialized(body),
             Self::RemoteStarted(body) => Value::serialized(body),
             Self::FsList(body) => Value::serialized(body),
@@ -939,6 +959,14 @@ impl Message {
                 body.deserialized::<Empty>()?;
                 Self::SoundData
             }
+            "camera-request" => Self::CameraRequest(body.deserialized()?),
+            "camera-started" => Self::CameraStarted(body.deserialized()?),
+            "camera-stop" => Self::CameraStop(body.deserialized()?),
+            "camera-keyframe" => {
+                body.deserialized::<Empty>()?;
+                Self::CameraKeyframe
+            }
+            "camera-data" => Self::CameraData(body.deserialized()?),
             "usb-ready" => {
                 body.deserialized::<Empty>()?;
                 Self::UsbReady
@@ -1024,6 +1052,7 @@ impl Message {
             Self::Unpair
             | Self::HotspotRequest
             | Self::MirrorKeyframe
+            | Self::CameraKeyframe
             | Self::SpeakerData
             | Self::MicRequest
             | Self::MicStop
@@ -1091,13 +1120,16 @@ impl Message {
                     && punch.addresses.iter().all(|address| address.parse::<std::net::SocketAddr>().is_ok())
             }
             Self::MirrorRequest(request) => request.codecs.len() <= MAX_MIRROR_CODECS,
-            Self::MirrorStarted(MirrorStarted { width, height, .. }) => mirror_size_valid(*width, *height),
+            Self::MirrorStarted(MirrorStarted { width, height, .. })
+            | Self::CameraStarted(MirrorStarted { width, height, .. }) => mirror_size_valid(*width, *height),
+            Self::CameraRequest(request) => request.valid(),
             Self::ScreenShape(shape) => shape.valid(),
             Self::MirrorLag(lag) => lag.lag_ms <= MAX_MIRROR_LAG_MS,
-            Self::MirrorData(MirrorData { width, height, gop, .. }) => {
+            Self::MirrorData(MirrorData { width, height, gop, .. })
+            | Self::CameraData(MirrorData { width, height, gop, .. }) => {
                 mirror_size_valid(*width, *height) && *gop != Some(0)
             }
-            Self::MirrorStop(stop) | Self::RemoteStop(stop) => {
+            Self::MirrorStop(stop) | Self::RemoteStop(stop) | Self::CameraStop(stop) => {
                 stop.reason.as_ref().is_none_or(|reason| sized(reason, 1, MAX_REASON_LEN))
             }
             Self::RemoteStarted(started) => started.valid(),

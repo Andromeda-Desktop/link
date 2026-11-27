@@ -17,6 +17,37 @@ pub struct MirrorRequest {
     pub codecs: Vec<Codec>,
 }
 
+/// Which camera a webcam streams.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Facing {
+    #[default]
+    Back,
+    Front,
+}
+
+/// Desktop to phone, only to phones whose hello has [`WEBCAM`]: stream a camera as a webcam. The phone asks its user,
+/// then answers `camera-started` (or `camera-stop`). `codecs` as in [`MirrorRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraRequest {
+    pub facing: Facing,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codecs: Vec<Codec>,
+}
+
+impl CameraRequest {
+    pub(super) fn valid(&self) -> bool {
+        (320..=3840).contains(&self.width)
+            && (240..=2160).contains(&self.height)
+            && (1..=60).contains(&self.fps)
+            && self.codecs.len() <= MAX_MIRROR_CODECS
+    }
+}
+
 /// Desktop to phone about every 500 ms while it mirrors, only to phones whose hello has [`MIRROR_LAG`]: how late the
 /// least late video unit of the last half second arrived, past the least late unit of the mirror; or, when no unit
 /// arrived, how long ago the last one did.

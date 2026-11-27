@@ -15,12 +15,12 @@ use std::time::Duration;
 
 use link_proto::CloseCode;
 use link_proto::message::{
-    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, Codec, FsRefusal, GROUP_CHANNEL, HEARTBEAT, HotspotEnd,
-    LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message, MessagesRefusal, MirrorStarted,
-    MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind, NotificationDigest, NotificationPosted,
-    NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch, SCREEN_SHAPE, SHARE_OUTBOX, SHARING,
-    STATUS_SIGNAL, STATUS_STORAGE, STATUS_TOGGLES, SYSTEM_CONTROL, ScreenShape, Share, Sharing, Status, SystemCommand,
-    SystemResult, TEXTS_MMS, TransferId, WIFI_DIRECT_JOIN,
+    CALL_APP, CALLS, CAN_CONTROL, CLIP_CLOCK, CLIP_ITEMS, Call, CameraRequest, Codec, FsRefusal, GROUP_CHANNEL,
+    HEARTBEAT, HotspotEnd, LATE_HASH, MAX_PUNCH_ADDRESSES, MAX_SNAPSHOT, MESSAGES, MIRROR_STREAMS, Message,
+    MessagesRefusal, MirrorRequest, MirrorStarted, MirrorStop, NOTIFICATION_REPLIES, NOTIFICATION_SYNC, NetworkKind,
+    NotificationDigest, NotificationPosted, NotificationRemoved, NotificationSnapshot, PRESENTING, PhotoRefusal, Punch,
+    SCREEN_SHAPE, SHARE_OUTBOX, SHARING, STATUS_SIGNAL, STATUS_STORAGE, STATUS_TOGGLES, SYSTEM_CONTROL, ScreenShape,
+    Share, Sharing, Status, SystemCommand, SystemResult, TEXTS_MMS, TransferId, WIFI_DIRECT_JOIN,
 };
 use link_proto::session::Role;
 use tokio::sync::{mpsc, oneshot};
@@ -785,8 +785,12 @@ impl ClientActor {
                         self.phone.desktops().iter().any(|peer| peer.id == from && peer.grants.allows(feature))
                     });
                 if allowed {
-                    if let Message::MirrorRequest(request) = &message {
-                        self.mirror_codecs.insert(from.clone(), request.codecs.clone());
+                    match &message {
+                        Message::MirrorRequest(MirrorRequest { codecs })
+                        | Message::CameraRequest(CameraRequest { codecs, .. }) => {
+                            self.mirror_codecs.insert(from.clone(), codecs.clone());
+                        }
+                        _ => {}
                     }
                     self.emit(ClientEvent::Message { from, message });
                 } else if matches!(message, Message::MirrorRequest(_)) {
@@ -933,7 +937,7 @@ fn status_every(last: Option<Status>, now: Option<Status>) -> Duration {
 }
 
 fn is_stop(message: &Message) -> bool {
-    matches!(message, Message::MirrorStop(_) | Message::SoundStop | Message::MicStop)
+    matches!(message, Message::MirrorStop(_) | Message::SoundStop | Message::MicStop | Message::CameraStop(_))
 }
 
 /// What a desktop's stop of `feature` looks like: the phone acts out these when that switch turns off.
@@ -941,6 +945,7 @@ fn stops_of(feature: Feature) -> Vec<Message> {
     match feature {
         Feature::Screen => vec![Message::MirrorStop(MirrorStop { reason: None }), Message::SoundStop],
         Feature::Mic => vec![Message::MicStop],
+        Feature::Webcam => vec![Message::CameraStop(MirrorStop { reason: None })],
         _ => Vec::new(),
     }
 }
@@ -1025,6 +1030,7 @@ mod tests {
         };
         for (feature, stops) in [
             (Feature::Mic, vec![Message::MicStop]),
+            (Feature::Webcam, vec![Message::CameraStop(MirrorStop { reason: None })]),
             (Feature::Screen, vec![Message::MirrorStop(MirrorStop { reason: None }), Message::SoundStop]),
         ] {
             actor.set_sharing(&id, feature, true).await.expect("on");

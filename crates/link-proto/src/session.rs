@@ -89,6 +89,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::WifiDirect(_)
         | Message::BtPairing(_)
         | Message::MirrorStarted(_)
+        | Message::CameraStarted(_)
         | Message::ScreenShape(_)
         | Message::FsEntries(_)
         | Message::FsData(_)
@@ -118,6 +119,8 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::MirrorRequest(_)
         | Message::MirrorInput(_)
         | Message::MirrorKeyframe
+        | Message::CameraRequest(_)
+        | Message::CameraKeyframe
         | Message::MirrorLag(_)
         | Message::UsbReady
         | Message::FsList(_)
@@ -144,6 +147,7 @@ fn receives(role: Role, message: &Message) -> bool {
         | Message::MicStop
         | Message::SoundStop
         | Message::MirrorStop(_)
+        | Message::CameraStop(_)
         | Message::RemoteStop(_)
         | Message::MediaPlayer(_)
         | Message::MediaGone(_)

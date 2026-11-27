@@ -92,10 +92,12 @@ pub enum Feature {
     Speaker,
     /// The desktop may ask for the phone's microphone; a phone-side switch, off after pairing.
     Mic,
+    /// The desktop may ask for the phone's camera as a webcam; a phone-side switch, off after pairing.
+    Webcam,
 }
 
 /// One switch per feature and paired device, all on after pairing but `browse`, `screen`, `messages`, `input`,
-/// `system`, `dnd_sync`, `nearby`, and `mic`. A store from before a feature gets its value after pairing.
+/// `system`, `dnd_sync`, `nearby`, `mic`, and `webcam`. A store from before a feature gets its value after pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[expect(clippy::struct_excessive_bools, reason = "one independent switch per feature")]
@@ -116,6 +118,7 @@ pub struct Grants {
     pub nearby: bool,
     pub speaker: bool,
     pub mic: bool,
+    pub webcam: bool,
 }
 
 impl Default for Grants {
@@ -137,12 +140,13 @@ impl Default for Grants {
             nearby: false,
             speaker: true,
             mic: false,
+            webcam: false,
         }
     }
 }
 
 impl Feature {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Clipboard,
         Self::Files,
         Self::Notifications,
@@ -159,6 +163,7 @@ impl Feature {
         Self::Nearby,
         Self::Speaker,
         Self::Mic,
+        Self::Webcam,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -179,6 +184,7 @@ impl Feature {
             Self::Nearby => "nearby",
             Self::Speaker => "speaker",
             Self::Mic => "mic",
+            Self::Webcam => "webcam",
         }
     }
 
@@ -249,6 +255,11 @@ pub fn feature_of(message: &Message) -> Option<Feature> {
         Message::SystemCommand(_) | Message::SystemResult(_) => Some(Feature::System),
         Message::SpeakerData => Some(Feature::Speaker),
         Message::MicRequest | Message::MicStop | Message::MicData => Some(Feature::Mic),
+        Message::CameraRequest(_)
+        | Message::CameraStarted(_)
+        | Message::CameraStop(_)
+        | Message::CameraKeyframe
+        | Message::CameraData(_) => Some(Feature::Webcam),
         _ => None,
     }
 }
@@ -281,6 +292,7 @@ impl Grants {
             Feature::Nearby => self.nearby,
             Feature::Speaker => self.speaker,
             Feature::Mic => self.mic,
+            Feature::Webcam => self.webcam,
         }
     }
 
@@ -302,6 +314,7 @@ impl Grants {
             Feature::Nearby => &mut self.nearby,
             Feature::Speaker => &mut self.speaker,
             Feature::Mic => &mut self.mic,
+            Feature::Webcam => &mut self.webcam,
         };
         *flag = on;
     }

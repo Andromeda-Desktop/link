@@ -11,6 +11,7 @@ envelope = hello-msg / pair-spake-msg / pair-confirm-msg / unpair-msg / share-ms
   mirror-request-msg / mirror-started-msg / screen-shape-msg / mirror-stop-msg / mirror-input-msg /
   mirror-keyframe-msg / mirror-lag-msg / mirror-data-msg / speaker-data-msg / mic-request-msg / mic-stop-msg / mic-data-msg /
   sound-request-msg / sound-stop-msg / sound-data-msg /
+  camera-request-msg / camera-started-msg / camera-stop-msg / camera-keyframe-msg / camera-data-msg /
   usb-ready-msg /
   fs-list-msg / fs-entries-msg / fs-read-msg / fs-data-msg / fs-error-msg / fs-stat-msg / fs-thumb-msg /
   fs-write-msg / fs-delete-msg / photo-request-msg / photo-taken-msg / photos-recent-msg / photos-list-msg /
@@ -298,6 +299,18 @@ sound-request-msg = { type: "sound-request", id: uint, body: {} }
 sound-stop-msg = { type: "sound-stop", id: uint, body: {} }
 ; Phone to desktop, the header of a uni stream of Opus units (48 kHz stereo) in mirroring's framing.
 sound-data-msg = { type: "sound-data", id: uint, body: {} }
+; Desktop to phone, only to a phone whose hello has feature:webcam: stream a camera as a webcam. The phone asks its
+; user, then answers camera-started and sends the video on camera-data uni streams, or answers camera-stop.
+camera-request-msg = { type: "camera-request", id: uint, body: {
+  facing: "back" / "front", width: 320..3840, height: 240..2160, fps: 1..60, ? codecs: [1*4 mirror-codec] } }
+camera-started-msg = { type: "camera-started", id: uint, body: { width: 1..4096, height: 1..4096, ? codec: mirror-codec } }
+; Either way: ends the webcam.
+camera-stop-msg = { type: "camera-stop", id: uint, body: { ? reason: tstr } }
+; Desktop to phone: send a keyframe now, after a loss.
+camera-keyframe-msg = { type: "camera-keyframe", id: uint, body: {} }
+; Phone to desktop, the header of a camera video uni stream, framed and numbered like mirror-data.
+camera-data-msg = { type: "camera-data", id: uint, body: { width: 1..4096, height: 1..4096, ? gop: uint .ge 1,
+  ? codec: mirror-codec } }
 
 ; The desktop browses the phone's storage, read-only, while the phone's browse switch for it is on. A path is "/" for
 ; the roots, else "/<root>/<name>/..." with no empty, ".", or ".." component. req pairs each answer with its request.

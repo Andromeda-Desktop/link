@@ -126,15 +126,23 @@ impl Hub {
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or_else(|| format!("{id} is not connected"))?;
         session.send(Message::RemoteStarted(stream.started)).await.map_err(|error| error.to_string())?;
-        let sender =
-            match link_core::mirror::MirrorSender::open(&session, stream.width, stream.height, None, false).await {
-                Ok(sender) => sender,
-                Err(error) => {
-                    // The phone already shows remote control as started.
-                    self.tell_remote_stop(&id, "the desktop could not open the screen stream").await;
-                    return Err(error.to_string());
-                }
-            };
+        let sender = match link_core::mirror::MirrorSender::open(
+            &session,
+            link_core::mirror::VideoKind::Mirror,
+            stream.width,
+            stream.height,
+            None,
+            false,
+        )
+        .await
+        {
+            Ok(sender) => sender,
+            Err(error) => {
+                // The phone already shows remote control as started.
+                self.tell_remote_stop(&id, "the desktop could not open the screen stream").await;
+                return Err(error.to_string());
+            }
+        };
         log::info!("{id}: showing the screen at {}x{}", stream.width, stream.height);
         self.remotes.serve(id, stream.socket, sender).map_err(|error| error.to_string())
     }

@@ -28,6 +28,7 @@ pub(super) fn transfer_event(event: TransferEvent) -> Option<LinkEvent> {
         }
         TransferEvent::Busy { .. }
         | TransferEvent::Mirror { .. }
+        | TransferEvent::Camera { .. }
         | TransferEvent::Speaker { .. }
         | TransferEvent::Mic { .. }
         | TransferEvent::Sound { .. } => return None,
@@ -244,6 +245,7 @@ pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Deskt
         messages,
         speaker,
         mic,
+        webcam,
         ..
     } = peer.grants;
     Desktop {
@@ -265,6 +267,7 @@ pub(super) fn describe(peer: &Peer, link: DesktopLink, bluetooth: bool) -> Deskt
             messages,
             speaker,
             mic,
+            webcam,
         },
         bluetooth_address: peer.bluetooth.clone(),
         bt_pairing: peer.bt_pairing,

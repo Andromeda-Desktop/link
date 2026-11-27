@@ -163,6 +163,7 @@ pub fn describe(event: &TransferEvent) -> Value {
             "event": "clip-offered", "desktop": from, "clip": id, "mimes": mimes, "size": size, "text": text,
         }),
         TransferEvent::Mirror { from, .. } => json!({ "event": "mirror-stream", "desktop": from }),
+        TransferEvent::Camera { from, .. } => json!({ "event": "camera-stream", "desktop": from }),
         TransferEvent::Speaker { from, .. } => json!({ "event": "speaker-stream", "desktop": from }),
         TransferEvent::Mic { from, .. } => json!({ "event": "mic-stream", "desktop": from }),
         TransferEvent::Sound { from, .. } => json!({ "event": "sound-stream", "desktop": from }),

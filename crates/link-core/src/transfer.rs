@@ -82,6 +82,8 @@ pub enum TransferEvent {
     ClipOffered { from: DeviceId, id: u64, mimes: Vec<String>, size: u64, text: Option<String> },
     /// A peer opened its screen's video stream; the handler takes it or drops it.
     Mirror { from: DeviceId, stream: crate::mirror::MirrorStream },
+    /// A phone opened its camera's video stream (a webcam); the handler takes it or drops it.
+    Camera { from: DeviceId, stream: crate::mirror::MirrorStream },
     /// A desktop opened a stream of sound for the phone's speaker; the handler takes it or drops it.
     Speaker { from: DeviceId, stream: crate::mirror::MirrorStream },
     /// A phone opened its microphone's stream; the handler takes it or drops it.
@@ -218,7 +220,7 @@ pub struct TransferActor {
     busy: HashSet<DeviceId>,
     clips: Clips,
     /// Each peer's latest mirror, which takes its later video streams.
-    mirrors: HashMap<DeviceId, crate::mirror::MirrorParts>,
+    mirrors: HashMap<(DeviceId, crate::mirror::VideoKind), crate::mirror::MirrorParts>,
 }
 
 /// The caller runs the actor in a task it owns and reads the events.
@@ -472,7 +474,7 @@ impl TransferActor {
             return;
         }
         self.sessions.remove(peer);
-        self.mirrors.remove(peer);
+        self.mirrors.retain(|(id, _), _| id != peer);
         let withdrawn: Vec<TransferId> = self
             .outgoing
             .iter()
@@ -853,22 +855,40 @@ impl TransferActor {
         }
     }
 
+    /// A GOP stream joins its video's parts; a first stream starts a video and goes to the handler.
+    fn on_video(
+        &mut self,
+        peer: &DeviceId,
+        mut recv: RecvStream,
+        kind: crate::mirror::VideoKind,
+        header: &link_proto::message::MirrorData,
+    ) {
+        let key = (peer.clone(), kind);
+        if let Some(gop) = header.gop {
+            match self.mirrors.get(&key).filter(|parts| !parts.is_closed()) {
+                Some(parts) => parts.add(gop, recv),
+                None => recv.stop(0),
+            }
+            return;
+        }
+        let (receiver, parts) = crate::mirror::MirrorReceiver::new(recv, header);
+        self.mirrors.insert(key, parts);
+        let (from, stream) = (peer.clone(), crate::mirror::MirrorStream::new(receiver));
+        self.emit(match kind {
+            crate::mirror::VideoKind::Mirror => TransferEvent::Mirror { from, stream },
+            crate::mirror::VideoKind::Camera => TransferEvent::Camera { from, stream },
+        });
+    }
+
     fn on_header(&mut self, peer: &DeviceId, mut recv: RecvStream, header: Result<Envelope, Error>) {
         let header = match header {
             Ok(Envelope { message: Message::FileData(header), .. }) => header,
             Ok(Envelope { message: Message::ClipData(header), .. }) => return self.on_clip_data(peer, recv, header),
             Ok(Envelope { message: Message::MirrorData(header), .. }) => {
-                if let Some(gop) = header.gop {
-                    match self.mirrors.get(peer).filter(|parts| !parts.is_closed()) {
-                        Some(parts) => parts.add(gop, recv),
-                        None => recv.stop(0),
-                    }
-                    return;
-                }
-                let (receiver, parts) = crate::mirror::MirrorReceiver::new(recv, &header);
-                self.mirrors.insert(peer.clone(), parts);
-                let stream = crate::mirror::MirrorStream::new(receiver);
-                return self.emit(TransferEvent::Mirror { from: peer.clone(), stream });
+                return self.on_video(peer, recv, crate::mirror::VideoKind::Mirror, &header);
+            }
+            Ok(Envelope { message: Message::CameraData(header), .. }) => {
+                return self.on_video(peer, recv, crate::mirror::VideoKind::Camera, &header);
             }
             Ok(Envelope { message: Message::SpeakerData, .. }) => {
                 let stream = crate::mirror::MirrorStream::new(crate::mirror::MirrorReceiver::sound(recv));

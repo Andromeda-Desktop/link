@@ -27,8 +27,22 @@ const RETIRE_GRACE: Duration = Duration::from_millis(250);
 const READ_AHEAD: usize = 8;
 /// How long the end of the first stream waits for each unit still on the video stream.
 const DRAIN: Duration = Duration::from_millis(500);
-/// Video streams waiting to be read; one more is stopped at once.
-const MAX_PENDING_STREAMS: usize = 2;
+
+/// What a video stream shows: the phone's screen (`mirror-data`) or a camera as a webcam (`camera-data`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VideoKind {
+    Mirror,
+    Camera,
+}
+
+impl VideoKind {
+    pub fn header(self, data: MirrorData) -> Message {
+        match self {
+            Self::Mirror => Message::MirrorData(data),
+            Self::Camera => Message::CameraData(data),
+        }
+    }
+}
 
 /// One H.264 access unit in Annex B form.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +57,7 @@ pub struct Unit {
 pub struct MirrorSender {
     connection: Connection,
     tap: Option<Tap>,
+    kind: VideoKind,
     width: u32,
     height: u32,
     codec: Option<Codec>,
@@ -67,12 +82,13 @@ impl MirrorSender {
     /// of its own.
     pub async fn open(
         session: &SessionHandle,
+        kind: VideoKind,
         width: u32,
         height: u32,
         codec: Option<Codec>,
         streams: bool,
     ) -> Result<Self, Error> {
-        Self::start(session.connection().clone(), session.tap().cloned(), width, height, codec, streams).await
+        Self::start(session.connection().clone(), session.tap().cloned(), kind, width, height, codec, streams).await
     }
 
     /// Opens a stream of sound only, Opus units under `header` (`speaker-data` or `mic-data`), at the mirror's
@@ -86,6 +102,7 @@ impl MirrorSender {
             codec: None,
             connection,
             tap,
+            kind: VideoKind::Mirror,
             width: 0,
             height: 0,
             main: Mutex::new(main),
@@ -98,13 +115,14 @@ impl MirrorSender {
     async fn start(
         connection: Connection,
         tap: Option<Tap>,
+        kind: VideoKind,
         width: u32,
         height: u32,
         codec: Option<Codec>,
         streams: bool,
     ) -> Result<Self, Error> {
         let header = MirrorData { width, height, gop: None, codec };
-        let main = open_stream(&connection, tap.as_ref(), Message::MirrorData(header)).await?;
+        let main = open_stream(&connection, tap.as_ref(), kind.header(header)).await?;
         if streams {
             main.set_priority(MIRROR_PRIORITY);
         }
@@ -112,6 +130,7 @@ impl MirrorSender {
             codec,
             connection,
             tap,
+            kind,
             width,
             height,
             main: Mutex::new(main),
@@ -148,7 +167,7 @@ impl MirrorSender {
             }
             video.gop = seq;
             let header = MirrorData { width: self.width, height: self.height, gop: Some(seq), codec: self.codec };
-            let stream = open_stream(&self.connection, self.tap.as_ref(), Message::MirrorData(header)).await?;
+            let stream = open_stream(&self.connection, self.tap.as_ref(), self.kind.header(header)).await?;
             stream.set_priority(i32::try_from(seq).unwrap_or(MIRROR_PRIORITY - 1).min(MIRROR_PRIORITY - 1));
             video.stream = Some(stream);
         }
@@ -252,20 +271,66 @@ fn reader(mut recv: RecvStream) -> Units {
     rx
 }
 
-/// Where the transfer actor hands a mirror's later video streams.
-pub(crate) struct MirrorParts(mpsc::Sender<(u64, RecvStream)>);
+/// The newest video stream not yet read; a newer one stops it, so a reader that falls behind skips to fresh video.
+#[derive(Default)]
+struct Pending {
+    slot: StdMutex<Option<(u64, RecvStream)>>,
+    ready: tokio::sync::Notify,
+    closed: AtomicBool,
+}
 
-impl MirrorParts {
-    pub(crate) fn add(&self, gop: u64, recv: RecvStream) {
-        if let Err(refused) = self.0.try_send((gop, recv)) {
-            let (_, mut recv) = refused.into_inner();
-            log::debug!("refusing mirror video stream {gop}");
-            recv.stop(0);
+impl Pending {
+    fn take(&self) -> Option<(u64, RecvStream)> {
+        self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+
+    async fn next(&self) -> (u64, RecvStream) {
+        loop {
+            if let Some(part) = self.take().filter(|_| !self.closed.load(Ordering::Relaxed)) {
+                return part;
+            }
+            self.ready.notified().await;
         }
     }
 
+    fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        if let Some((_, mut recv)) = self.take() {
+            recv.stop(0);
+        }
+    }
+}
+
+/// Where the transfer actor hands a mirror's later video streams.
+pub(crate) struct MirrorParts(Arc<Pending>);
+
+impl MirrorParts {
+    pub(crate) fn add(&self, gop: u64, mut recv: RecvStream) {
+        if self.is_closed() {
+            recv.stop(0);
+            return;
+        }
+        let mut slot = self.0.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale = match slot.take() {
+            Some((held, older)) if held > gop => {
+                *slot = Some((held, older));
+                Some((gop, recv))
+            }
+            held => {
+                *slot = Some((gop, recv));
+                held
+            }
+        };
+        drop(slot);
+        if let Some((stale, mut recv)) = stale {
+            log::debug!("stopping mirror video stream {stale}: a newer one waits");
+            recv.stop(0);
+        }
+        self.0.ready.notify_one();
+    }
+
     pub(crate) fn is_closed(&self) -> bool {
-        self.0.is_closed()
+        self.0.closed.load(Ordering::Relaxed)
     }
 }
 
@@ -281,14 +346,14 @@ pub struct MirrorReceiver {
     /// A newer video stream, read once the current one has nothing ready.
     next: Option<Units>,
     gop: u64,
-    parts: mpsc::Receiver<(u64, RecvStream)>,
+    parts: Arc<Pending>,
     /// The first stream ended; what the video stream still has comes first.
     ended: bool,
 }
 
 impl MirrorReceiver {
     pub(crate) fn new(recv: RecvStream, header: &MirrorData) -> (Self, MirrorParts) {
-        let (tx, parts) = mpsc::channel(MAX_PENDING_STREAMS);
+        let parts = Arc::new(Pending::default());
         let receiver = Self {
             width: header.width,
             height: header.height,
@@ -297,10 +362,10 @@ impl MirrorReceiver {
             video: None,
             next: None,
             gop: 0,
-            parts,
+            parts: parts.clone(),
             ended: false,
         };
-        (receiver, MirrorParts(tx))
+        (receiver, MirrorParts(parts))
     }
 
     /// The end of a `speaker-data` or `mic-data` stream: sound only, so no video streams join it.
@@ -339,7 +404,7 @@ impl MirrorReceiver {
                     Some(unit) => return unit.map(Some),
                     None => self.ended = true,
                 },
-                Some((gop, mut recv)) = self.parts.recv() => {
+                (gop, mut recv) = self.parts.next() => {
                     if gop > self.gop {
                         self.gop = gop;
                         self.next = Some(reader(recv));
@@ -357,6 +422,12 @@ impl MirrorReceiver {
         self.parts.close();
         self.video = None;
         self.next = None;
+    }
+}
+
+impl Drop for MirrorReceiver {
+    fn drop(&mut self) {
+        self.parts.close();
     }
 }
 
@@ -465,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn a_keyframe_resets_the_stream_whose_write_flow_control_holds() -> Result<(), Error> {
         let (phone, desktop) = pair().await?;
-        let sender = MirrorSender::start(phone, None, 16, 16, None, true).await?;
+        let sender = MirrorSender::start(phone, None, VideoKind::Mirror, 16, 16, None, true).await?;
         let _main = accept(&desktop).await?;
         sender.send(&unit(1, MIRROR_KEYFRAME)).await?;
         let (mut old, _) = accept(&desktop).await?;
