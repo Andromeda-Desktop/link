@@ -278,7 +278,15 @@ impl link_core::bluetooth::BluetoothOpener for SocketOpener {
     fn open_l2cap(&self, _address: &str) -> std::io::Result<std::os::fd::OwnedFd> {
         use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
         let path = self.l2cap.as_ref().ok_or(std::io::ErrorKind::Unsupported)?;
+        #[cfg(target_os = "linux")]
         let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)?;
+        // macOS has no SOCK_CLOEXEC.
+        #[cfg(not(target_os = "linux"))]
+        let fd = {
+            let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::empty(), None)?;
+            rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC)?;
+            fd
+        };
         rustix::net::connect(&fd, &SocketAddrUnix::new(path)?)?;
         Ok(fd)
     }
