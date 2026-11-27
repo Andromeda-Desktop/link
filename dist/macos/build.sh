@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds "Andromeda Link.app" for arm64 macOS into OUT_DIR, on a Mac or cross on Linux: the static libdesk of the
 # pinned desktop commit (dist/window/libdesk-commit), the window, andromeda-linkd, link-session in its helper bundle,
-# and the now-playing dylib, with every non-system dylib inside and an ad-hoc signature. VERSION: at most 3 numbers.
+# the now-playing dylib and the desktop's andromeda-app-updater, with every non-system dylib inside and an ad-hoc signature. VERSION: at most 3 numbers.
 #   dist/macos/build.sh DESKTOP_DIR OUT_DIR [VERSION]
 # The desktop's tools/macos/deps.py fetches the Homebrew bottles (on Linux also the Darwin SDK from xtool).
 set -euo pipefail
@@ -28,7 +28,7 @@ mkdir -p "$build"
 meson compile -C "$build/desk"
 meson install -C "$build/desk" --no-rebuild --tags devel > /dev/null
 
-export MACOSX_DEPLOYMENT_TARGET=26.0 CARGO_TARGET_DIR=$build/cargo
+export MACOSX_DEPLOYMENT_TARGET=26.0 SDKROOT=$sdk CARGO_TARGET_DIR=$build/cargo
 export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=clang CC_aarch64_apple_darwin=clang CFLAGS_aarch64_apple_darwin="-isysroot $sdk"
 export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-target -C link-arg=arm64-apple-macos26 -C link-arg=-isysroot -C link-arg=$sdk -C link-arg=-fuse-ld=lld"
 printf "[properties]\npkg_config_libdir = ['%s', '%s', '%s']\n" "$build/libdesk/lib/pkgconfig" "$deps/lib/pkgconfig" \
@@ -41,6 +41,9 @@ meson compile -C "$build/window"
 [ "$(uname)" != Darwin ] || DYLD_LIBRARY_PATH=$deps/lib meson test -C "$build/window" --no-rebuild --print-errorlogs
 cargo build -q --release --locked --target aarch64-apple-darwin --manifest-path "$link/Cargo.toml" \
   -p link-daemon -p link-session -p link-nowplaying
+# The desktop's self-update helper: the app runs it to check, stage and swap its release.
+cargo build -q --release --locked --target aarch64-apple-darwin --manifest-path "$desktop/system/Cargo.toml" \
+  -p andromeda-app-updater
 bin=$build/cargo/aarch64-apple-darwin/release
 
 app="$out/Andromeda Link.app"
@@ -49,7 +52,7 @@ helper="$contents/Library/LoginItems/Andromeda Link Helper.app/Contents"
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Resources/LaunchAgents" "$contents/Resources/translations/link" \
   "$helper/MacOS" "$helper/Resources"
-cp "$build/window/andromeda-link-app" "$bin/andromeda-linkd" "$contents/MacOS/"
+cp "$build/window/andromeda-link-app" "$bin/andromeda-linkd" "$bin/andromeda-app-updater" "$contents/MacOS/"
 # linkd hands it to Apple's perl, whose identity MediaRemote still serves (crates/link-nowplaying).
 cp "$bin/liblink_nowplaying.dylib" "$contents/Frameworks/"
 # link-session runs from its own bundle, so Accessibility and notifications name it "Andromeda Link Helper".

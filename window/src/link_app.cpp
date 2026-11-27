@@ -726,7 +726,11 @@ namespace linkapp {
     return row;
   }
 
-  LinkApp::LinkApp() : DeskApp({.id = kAppId, .name = "Link"}) {
+  LinkApp::LinkApp()
+      : DeskApp({.id = kAppId,
+                 .name = "Link",
+                 .updateManifest = "https://github.com/Andromeda-Desktop/desktop/releases/latest/download/"
+                                   "Andromeda-Link-macos-arm64.json"}) {
     i18n::Service::instance().addDomain("link", ANDROMEDA_TRANSLATIONS_DIR);
   }
 
