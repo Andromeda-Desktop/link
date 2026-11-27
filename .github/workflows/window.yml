@@ -1,13 +1,13 @@
 # The Link window (window/) with the static libdesk of the pinned desktop commit (dist/window/libdesk-commit), one
 # package per distro, as artifacts window-<distro>, and the macOS app zip (window-macos), proven on a clean Mac.
-# release.yml calls it for a tag; a push that changes the window or its pin checks it here.
+# release.yml calls it for a tag; a push that changes the window, its pin or a crate checks it here.
 name: window
 on:
   workflow_call:
   workflow_dispatch:
   push:
     branches: [main, window, "ci/**"]
-    paths: [window/**, dist/window/**, dist/macos/**, crates/link-window-ffi/**, .github/workflows/window.yml]
+    paths: [window/**, dist/window/**, dist/macos/**, crates/**, Cargo.toml, Cargo.lock, .github/workflows/window.yml]
 
 permissions:
   contents: read
