@@ -1,13 +1,13 @@
 # The Link window (window/) with the static libdesk of the pinned desktop commit (dist/window/libdesk-commit), one
-# package per distro, as artifacts window-<distro>. release.yml calls it for a tag; a push that changes the window or
-# its pin checks it here.
+# package per distro, as artifacts window-<distro>, and the macOS app zip (window-macos), proven on a clean Mac.
+# release.yml calls it for a tag; a push that changes the window or its pin checks it here.
 name: window
 on:
   workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, window]
-    paths: [window/**, dist/window/**, .github/workflows/window.yml]
+    branches: [main, window, "ci/**"]
+    paths: [window/**, dist/window/**, dist/macos/**, crates/link-window-ffi/**, .github/workflows/window.yml]
 
 permissions:
   contents: read
@@ -94,3 +94,57 @@ jobs:
           [ -z "$missing" ] || { echo "$missing"; exit 1; }
           test -L /usr/bin/andromeda-link-app && test -d /usr/lib/andromeda-link/assets
           echo "window installs: $(du -sh /usr/lib/andromeda-link | cut -f1)"
+
+  # Andromeda Link.app: the window, linkd and link-session with every non-system dylib inside (dist/macos/build.sh),
+  # its meson tests run on the Mac: the mirror decoder decodes H.264 and HEVC with VideoToolbox.
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable, targets: aarch64-apple-darwin }
+      - run: echo "PIN=$(cat dist/window/libdesk-commit)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { repository: Andromeda-Desktop/desktop, ref: "${{ env.PIN }}", path: desktop }
+      # As the desktop's check-macos.yml: the scripts call GNU sed and realpath and the LLVM Mach-O tools by their
+      # Linux names; compiling stays with Apple clang. stb is the Arch package's commit.
+      - name: Tools
+        run: |
+          brew install meson ninja llvm lld pkgconf coreutils gnu-sed
+          mkdir -p /tmp/llvm-tools
+          for tool in llvm-otool llvm-install-name-tool llvm-strip llvm-ar llvm-nm; do
+            ln -s "$(brew --prefix)/opt/llvm/bin/$tool" /tmp/llvm-tools/
+          done
+          echo /tmp/llvm-tools >> "$GITHUB_PATH"
+          for dir in lld/bin coreutils/libexec/gnubin gnu-sed/libexec/gnubin; do
+            echo "$(brew --prefix)/opt/$dir" >> "$GITHUB_PATH"
+          done
+          git clone -q https://github.com/nothings/stb /tmp/stb-src
+          git -C /tmp/stb-src checkout -q 31c1ad37456438565541f4919958214b6e762fb4
+          mkdir -p /tmp/stb && cp /tmp/stb-src/*.h /tmp/stb/
+      - run: DARWIN_SDK=$(xcrun --show-sdk-path) STB_INCLUDE=/tmp/stb desktop/tools/macos/deps.py
+      # A bundle version is at most three numbers: a push build is 0.0.<commit count>.
+      - run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v=${GITHUB_REF_NAME#v}; else v="0.0.$(git rev-list --count HEAD)"; fi
+          dist/macos/build.sh desktop out "$v"
+          ditto -c -k --keepParent "out/Andromeda Link.app" out/Andromeda-Link-macos-arm64.zip
+          echo "zip: $(du -h out/Andromeda-Link-macos-arm64.zip | cut -f1)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: window-macos, path: out/Andromeda-Link-macos-arm64.zip }
+
+  # A Mac that never built anything installs only the zip: the window loads the agents and shows a pairing QR code.
+  macos-proof:
+    needs: macos
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: window-macos, path: pkg }
+      - run: brew install zbar
+      - run: dist/macos/proof.sh pkg/Andromeda-Link-macos-arm64.zip proof
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: proof-macos, path: proof }

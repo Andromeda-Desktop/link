@@ -1,6 +1,6 @@
-# A tag v* builds every Link package and publishes them as one GitHub release: the Android APK,
-# Ubuntu .debs, Fedora RPMs, Arch packages, and the Link window package for each of them. Secrets: LINK_KEYSTORE_BASE64, LINK_KEYSTORE_PASSWORD, and
-# LINK_KEY_ALIAS for the APK; without them the APK is unsigned.
+# A tag v* builds every Link package and publishes them as one GitHub release: the Android APK, Ubuntu .debs,
+# Fedora RPMs, Arch packages, the Link window package for each of them, and the macOS app zip. Secrets:
+# LINK_KEYSTORE_BASE64, LINK_KEYSTORE_PASSWORD, and LINK_KEY_ALIAS for the APK; without them the APK is unsigned.
 name: release
 on:
   push:
@@ -130,6 +130,7 @@ jobs:
             dist/**/*.deb
             dist/**/*.rpm
             dist/**/*.pkg.tar.zst
+            dist/**/*.zip
           generate_release_notes: true
           draft: ${{ github.event_name == 'workflow_dispatch' }}
 

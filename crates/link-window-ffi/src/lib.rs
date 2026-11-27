@@ -356,6 +356,28 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Call>, poster: Poster) {
     }
 }
 
+/// Loads andromeda-linkd and link-session as launchd agents through the bundle's install-agents.sh, when they are
+/// missing or name another copy of the app: launchd then keeps them running, as systemd does on Linux.
+#[cfg(target_os = "macos")]
+fn install_agents() -> std::io::Result<()> {
+    // The window is Andromeda Link.app/Contents/MacOS/andromeda-link-app.
+    let exe = std::env::current_exe()?;
+    let contents = exe.parent().and_then(std::path::Path::parent).ok_or(std::io::ErrorKind::NotFound)?;
+    let app = contents.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    // Gatekeeper runs a downloaded app from a random read-only copy until the user moves it; agents there break.
+    if app.to_string_lossy().contains("/AppTranslocation/") {
+        return Err(std::io::Error::other("move Andromeda Link to Applications, then open it again"));
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).ok_or(std::io::ErrorKind::NotFound)?;
+    let installed = std::fs::read_to_string(home.join("Library/LaunchAgents/org.andromeda.link-session.plist"));
+    let helper = format!("{}/Contents/Library/LoginItems/Andromeda Link Helper.app/", app.display());
+    if installed.is_ok_and(|plist| plist.contains(&helper)) {
+        return Ok(());
+    }
+    let status = std::process::Command::new(contents.join("Resources/install-agents.sh")).arg(app).status()?;
+    if status.success() { Ok(()) } else { Err(std::io::Error::other(format!("install-agents.sh: {status}"))) }
+}
+
 /// # Safety
 /// `post` must be callable with `ctx` from another thread until `link_close` returns.
 #[unsafe(no_mangle)]
@@ -363,6 +385,10 @@ pub unsafe extern "C" fn link_open(post: LinkPost, ctx: *mut c_void) -> *mut Lin
     let (commands, receiver) = mpsc::unbounded_channel();
     let poster = Poster { post, ctx };
     let thread = std::thread::Builder::new().name("link-conn".into()).spawn(move || {
+        #[cfg(target_os = "macos")]
+        if let Err(error) = install_agents() {
+            log::warn!("link: launchd agents: {error}");
+        }
         match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime.block_on(run(receiver, poster)),
             Err(error) => log::error!("link: no runtime: {error}"),

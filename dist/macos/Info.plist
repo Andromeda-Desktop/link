@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Andromeda Link</string>
+    <key>CFBundleDisplayName</key>
+    <string>Andromeda Link</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.andromeda.Link</string>
+    <key>CFBundleExecutable</key>
+    <string>andromeda-link-app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Andromeda Link finds and connects to your phone on this network.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Andromeda Link connects to your phone over Bluetooth when there is no network.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_andromeda-link._udp</string>
+    </array>
+</dict>
+</plist>

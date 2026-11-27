@@ -26,9 +26,10 @@ win-check:
 release *kinds:
     tools/release.sh {{kinds}}
 
-# "Andromeda Link.app" for macOS arm64, cross-built here: target/macos (see tools/macos/build.sh for its needs).
-mac-app:
-    tools/macos/build.sh
+# Andromeda Link.app for arm64 macOS (cross on Linux) against the desktop checkout around this repo, into
+# target/macos; build dirs stay in target/macos/build for the next run.
+mac-app desktop="..":
+    LIBDESK_ANY_COMMIT=1 MAC_BUILD_DIR=target/macos/build dist/macos/build.sh {{desktop}} target/macos
 
 # A worktree that shares this checkout's target dir, so it does not rebuild every crate from scratch.
 worktree name:
