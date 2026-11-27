@@ -97,8 +97,9 @@ enum Fed {
     Broken { pushed: bool, error: anyhow::Error },
 }
 
-/// The decode pipeline: system-memory frames into the `PipeWire` node and each loopback device. Leaky queues keep a
-/// slow consumer from holding up the others; nothing waits on the clock, the phone already paces the frames.
+/// The decode pipeline: system-memory YUY2 frames into the `PipeWire` node and each loopback device. Leaky queues keep
+/// a slow consumer from holding up the others; nothing waits on the clock, the phone already paces the frames.
+/// YUY2 because pipewiresink sends one data block per plane and libwebrtc (Chromium, Firefox) reads only the first.
 fn pipeline(
     caps: &str,
     decoder: &str,
@@ -107,19 +108,17 @@ fn pipeline(
     loopbacks: &[String],
 ) -> anyhow::Result<(gst::Pipeline, gst_app::AppSrc)> {
     let quote = |text: &str| text.replace(['"', '\\', ','], " ");
+    let convert = if decoder.starts_with("va") { "vapostproc" } else { "videoconvert" };
     let mut launch = format!(
-        "appsrc name=src is-live=true format=time caps={caps} ! {decoder} ! video/x-raw ! tee name=t \
+        "appsrc name=src is-live=true format=time caps={caps} ! {decoder} ! {convert} ! video/x-raw,format=YUY2 \
+         ! tee name=t \
          t. ! queue leaky=downstream max-size-buffers=2 ! pipewiresink mode=provide sync=false \
          client-name=andromeda-link-camera stream-properties=\"props,media.class=Video/Source,media.role=Camera,\
          node.name=andromeda-link-camera-{id},node.description=\\\"{}\\\"\"",
         quote(description)
     );
     for device in loopbacks {
-        let _ = write!(
-            launch,
-            " t. ! queue leaky=downstream max-size-buffers=2 ! videoconvert ! video/x-raw,format=YUY2 \
-             ! v4l2sink device={device} sync=false"
-        );
+        let _ = write!(launch, " t. ! queue leaky=downstream max-size-buffers=2 ! v4l2sink device={device} sync=false");
     }
     let pipeline =
         gst::parse::launch(&launch)?.downcast::<gst::Pipeline>().map_err(|_| anyhow::anyhow!("not a pipeline"))?;
