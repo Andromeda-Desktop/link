@@ -20,8 +20,16 @@ _warnings = ['-Wall', '-Wextra', '-Wno-missing-field-initializers', '-Wpedantic'
 
 _desk = dependency('andromeda-desk')
 _translations = '-DANDROMEDA_TRANSLATIONS_DIR="' + meson.current_source_dir() / 'translations' + '"'
-_av_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libavfilter'), dependency('libswscale'),
-            dependency('libva')]
+_darwin = host_machine.system() == 'darwin'
+if _darwin
+  add_languages('objcpp', native: false)
+  _video = files('src/mirror_decoder_vt.mm')
+  _video_deps = [dependency('appleframeworks', modules: ['VideoToolbox', 'CoreMedia', 'CoreVideo', 'CoreFoundation'])]
+else
+  _video = files('src/mirror_decoder_av.cpp')
+  _video_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libavfilter'),
+                 dependency('libswscale'), dependency('libva')]
+endif
 
 # Link1 through link-api (crates/link-window-ffi): cargo builds the static library; cargo decides what is stale.
 _ffi_lib = custom_target('link_window_ffi',
@@ -29,7 +37,7 @@ _ffi_lib = custom_target('link_window_ffi',
   command: [files('cargo_ffi.sh'), '@OUTPUT@', get_option('cargo_target')],
   build_always_stale: true,
 )
-_ffi_native = host_machine.system() == 'darwin' ? ['-liconv', '-framework', 'CoreFoundation'] : ['-lpthread', '-ldl', '-lm']
+_ffi_native = _darwin ? ['-liconv', '-framework', 'CoreFoundation'] : ['-lpthread', '-ldl', '-lm']
 _ffi = declare_dependency(link_with: _ffi_lib, link_args: _ffi_native,
   compile_args: ['-I' + meson.current_source_dir() / '../crates/link-window-ffi/include'])
 
@@ -43,20 +51,22 @@ test('link_model', executable('link_model_test', 'tests/link_model_test.cpp', li
 test('link_bus', executable('link_bus_test', 'tests/link_bus_test.cpp', 'src/link_bus.cpp', dependencies: [_desk, _ffi],
   include_directories: include_directories('src'), cpp_args: _warnings))
 
+# A cross build has no sanitizer runtime for the host and runs no tests.
+_asan = meson.can_run_host_binaries() ? ['-fsanitize=address'] : []
 test('mirror_decoder', executable('mirror_decoder_test', 'tests/mirror_decoder_test.cpp', 'src/mirror_decoder.cpp',
-  'src/mirror_decoder_av.cpp',
-  dependencies: [_desk] + _av_deps, include_directories: include_directories('src'),
-  cpp_args: _warnings + ['-fsanitize=address', '-fno-omit-frame-pointer'], link_args: ['-fsanitize=address']),
+  _video,
+  dependencies: [_desk] + _video_deps, include_directories: include_directories('src'),
+  cpp_args: _warnings + _asan + ['-fno-omit-frame-pointer'], link_args: _asan),
   env: ['ASAN_OPTIONS=detect_leaks=0'])
 
 # paths::assetsRoot finds <exe dir>/assets; /proc/self/exe resolves the bindir link to this directory.
 _own_dir = get_option('prefix') / get_option('libdir') / 'andromeda-link'
 executable('andromeda-link-app',
   files('src/main.cpp', 'src/app_main.cpp', 'src/link_app.cpp', 'src/link_bus.cpp', 'src/link_client.cpp',
-    'src/mirror_decoder.cpp', 'src/mirror_decoder_av.cpp'),
+    'src/mirror_decoder.cpp') + _video,
   link_with: _model,
   dependencies: [_desk, _ffi, dependency('libqrencode'), dependency('tomlplusplus').partial_dependency(includes: true)]
-    + _av_deps,
+    + _video_deps,
   cpp_args: _warnings + [_translations],
   install: true,
   install_dir: _own_dir,

@@ -18,13 +18,13 @@ namespace linkapp {
 
   // Link1 codec names ("h264", "hevc", "av1"); nullopt for any other string.
   std::optional<MirrorCodec> mirrorCodecFrom(std::string_view name);
-  // What this desktop decodes besides H.264, best first, for OpenMirrorWith: HEVC only on VA-API (software HEVC costs
-  // more CPU than hardware H.264), AV1 on VA-API or dav1d. Probes once (one VA-API device open), then cached.
+  // What this desktop decodes besides H.264, best first, for OpenMirrorWith: HEVC only in hardware (software HEVC costs
+  // more CPU than hardware H.264), AV1 on VA-API or dav1d (Linux only). Probes once, then cached.
   const std::vector<std::string>& mirrorCodecs();
 
   // Decodes a Link1 OpenMirror stream on a worker thread: units of a big-endian u32 length, u64 time (us) and a
-  // flags byte, then H.264, HEVC or AV1 (VA-API when the GPU has it, else software), scaled to the target size: on the GPU into a
-  // BGRA dmabuf when VA-API can, else to RGBA bytes.
+  // flags byte, then H.264, HEVC or AV1 (mirror_video.h: libav with VA-API when the GPU has it, VideoToolbox on macOS),
+  // scaled to the target size: on Linux into a BGRA dmabuf when VA-API can, else to RGBA bytes.
   // Callbacks run on the UI thread; a frame is posted only when the UI took the last one, so a slow UI drops frames
   // instead of queueing them.
   class MirrorDecoder {

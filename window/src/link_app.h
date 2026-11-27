@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-struct wl_surface;
+class Surface;
 namespace linkapp {
 
   enum class Page : std::uint8_t { Waiting, Messages, Calls, Photos, Files, Activity, Mirror, Settings };
@@ -28,7 +28,7 @@ namespace linkapp {
     struct Hooks {
       std::function<void(const std::string&)> textTo; // a missed call's "Text": opens a text to the number
       std::function<void()> openPhotos;               // a strip thumbnail clicked
-      std::function<void(const std::string&, std::uint32_t)> dragPhoto; // a strip thumbnail dragged: phone path, press serial
+      std::function<void(const std::string&)> dragPhoto; // a strip thumbnail dragged: phone path
     };
     FeedAdapter(LinkClient& client, const float& scale, Hooks hooks) : m_client(client), m_scale(scale), m_hooks(std::move(hooks)) {}
     [[nodiscard]] std::size_t itemCount() const override;
@@ -49,7 +49,6 @@ namespace linkapp {
     struct Press {
       float x = 0.0F; // scene position
       float y = 0.0F;
-      std::uint32_t serial = 0;
     };
     std::optional<Press> m_press; // a press on a strip thumbnail, until it drags
   };
@@ -266,7 +265,7 @@ namespace linkapp {
     void chooseAndSend(const std::string& deviceId);
     void openLocalFile(const std::string& path);
     // Drags a phone photo out: saved into the cache, offered as a file URI once there.
-    void dragPhoto(const std::string& path, std::uint32_t serial);
+    void dragPhoto(const std::string& path);
     // Shows this phone; the open page reloads its data from it.
     void choosePhone(const std::string& deviceId);
     void mirrorKeyInput(const InputArea::KeyData& data);
@@ -282,7 +281,7 @@ namespace linkapp {
     enum class DropCue : std::uint8_t { None, Send, CopyIn };
     [[nodiscard]] DropCue dropCueHere() const;
     DropCue m_dropCue = DropCue::None;
-    wl_surface* m_dropSurface = nullptr;
+    Surface* m_dropSurface = nullptr;
     // The pair view covers the page while this app pairs another phone (Pair Another Phone…).
     [[nodiscard]] bool pairShown() const;
     // Esc: cancels that pairing, else closes the Forget question.

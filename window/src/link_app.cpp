@@ -2,12 +2,11 @@
 
 #include "app/app_window.h"
 #include "i18n/i18n.h"
-#include "wayland/drag_and_drop.h"
 #include "protocols/async_file_writer.h"
 #include "protocols/uri.h"
-#include "wayland/wayland_connection.h"
 #include "core/log.h"
 #include "core/text_clipboard.h"
+#include "core/input/input_codes.h"
 #include "core/input/key_modifiers.h"
 #include "ui/controls/alert.h"
 #include "ui/controls/input.h"
@@ -23,7 +22,6 @@
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <linux/input-event-codes.h>
 #include <ctime>
 #include <filesystem>
 #include <sstream>
@@ -286,13 +284,14 @@ namespace linkapp {
         InputArea* area = nullptr;
         auto pick = ui::inputArea({.out = &area, .cursorShape = CursorShape::Pointer, .width = side, .height = side,
                                    .onPress = [this](const InputArea::PointerData& data) {
-                                     m_press = Press{.x = data.sceneX, .y = data.sceneY, .serial = data.serial};
+                                     m_press = Press{.x = data.sceneX, .y = data.sceneY};
                                    },
                                    .onClick = [this](const InputArea::PointerData&) { m_hooks.openPhotos(); }});
         area->setOnMotion([this, area, path, s](const InputArea::PointerData& data) {
           if (!area->pressed() || !m_press) return;
           if (std::hypot(data.sceneX - m_press->x, data.sceneY - m_press->y) < Style::dragStartThreshold * s) return;
-          m_hooks.dragPhoto(path, std::exchange(m_press, std::nullopt)->serial);
+          m_press.reset();
+          m_hooks.dragPhoto(path);
         });
         pick->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Fill1), .radius = radius, .width = side, .height = side}));
         Image* image = nullptr;
@@ -732,8 +731,8 @@ namespace linkapp {
   }
 
   LinkApp::~LinkApp() {
-    if (m_dropSurface != nullptr) {
-      if (DragAndDrop* dnd = loop().wayland().dragAndDrop()) dnd->clearTarget(m_dropSurface);
+    if (m_dropSurface != nullptr && m_window != nullptr && m_dropSurface == m_window->surface()) {
+      loop().display().clearDropTarget(*m_dropSurface);
     }
     // The viewer's image holds a texture of m_viewCache: the windows go before it.
     destroyWindows();
@@ -754,28 +753,26 @@ namespace linkapp {
 
   // Files dropped on the window: on an open phone folder they are copied into it, anywhere else sent to the phone.
   void LinkApp::registerDropTarget() {
-    wl_surface* surface = m_window->wlSurface();
-    DragAndDrop* dnd = loop().wayland().dragAndDrop();
-    if (surface == nullptr || dnd == nullptr || surface == m_dropSurface) return;
-    m_dropSurface = surface;
-    dnd->setAcceptedTypes({uri::kUriListMime});
+    Surface* surface = m_window->surface();
+    if (surface == nullptr || surface == m_dropSurface) return;
     const auto cue = [this](DropCue next) {
       if (next == m_dropCue) return;
       m_dropCue = next;
       m_window->requestRebuild();
     };
-    dnd->setTarget(surface, {.enter = [](const std::vector<std::string>& mimes) {
+    const bool registered = loop().display().setDropTarget(*surface, {uri::kUriListMime}, {.enter = [](const std::vector<std::string>& mimes) {
                                return std::ranges::contains(mimes, std::string(uri::kUriListMime));
                              },
                              .motion = [this, cue](float, float) -> std::uint32_t {
                                cue(dropCueHere());
-                               return m_dropCue == DropCue::None ? DragAndDrop::None : DragAndDrop::Copy;
+                               return m_dropCue == DropCue::None ? DropNone : DropCopy;
                              },
                              .leave = [cue] { cue(DropCue::None); },
                              .drop = [this, cue](float, float, std::uint32_t, const std::string& mime, std::string data) {
                                cue(DropCue::None);
                                if (mime == uri::kUriListMime) dropped(data);
                              }});
+    if (registered) m_dropSurface = surface;
   }
 
   void LinkApp::dropped(const std::string& uris) {
@@ -799,7 +796,7 @@ namespace linkapp {
     const bool absolute = path.starts_with('/');
     const std::string target = absolute ? uri::fileUri(path) : std::string{};
     std::unique_ptr<GAppLaunchContext, void (*)(gpointer)> context(g_app_launch_context_new(), g_object_unref);
-    if (const std::string token = loop().wayland().requestActivationToken(m_window->wlSurface()); !token.empty()) {
+    if (const std::string token = m_window->activationToken(); !token.empty()) {
       g_app_launch_context_setenv(context.get(), "XDG_ACTIVATION_TOKEN", token.c_str());
     }
     if (!absolute || !g_app_info_launch_default_for_uri(target.c_str(), context.get(), &error)) {
@@ -857,7 +854,7 @@ namespace linkapp {
                                                                       show(Page::Messages);
                                                                     },
                                                                 .openPhotos = [this] { show(Page::Photos); },
-                                                                .dragPhoto = [this](const std::string& path, std::uint32_t serial) { dragPhoto(path, serial); }});
+                                                                .dragPhoto = [this](const std::string& path) { dragPhoto(path); }});
       m_threads = std::make_unique<ThreadAdapter>(*m_client, m_scale, m_thread, m_search, [this](std::uint64_t id) { openThread(id); });
       m_conversation = std::make_unique<ConversationAdapter>(*m_client, m_scale);
       m_calls = std::make_unique<CallAdapter>(*m_client, m_scale, m_search);
@@ -1017,9 +1014,8 @@ namespace linkapp {
     m_window->requestRebuild();
   }
 
-  void LinkApp::dragPhoto(const std::string& path, std::uint32_t serial) {
-    DragAndDrop* dnd = loop().wayland().dragAndDrop();
-    if (dnd == nullptr || m_window == nullptr || m_window->wlSurface() == nullptr) return;
+  void LinkApp::dragPhoto(const std::string& path) {
+    if (m_window == nullptr || m_window->surface() == nullptr) return;
     const std::filesystem::path folder = std::filesystem::path(g_get_user_cache_dir()) / "andromeda" / "link-app" / "drag";
     std::error_code error;
     std::filesystem::create_directories(folder, error);
@@ -1040,7 +1036,7 @@ namespace linkapp {
       drop->uris = uris;
       for (const auto& reply : std::exchange(drop->waiting, {})) reply(uris);
     });
-    (void)dnd->startDrag(m_window->wlSurface(), serial,
+    (void)loop().display().startDrag(*m_window->surface(),
                          {.mimeTypes = {uri::kUriListMime},
                           .dataLater =
                               [drop](const std::string&, std::function<void(const std::string&)> reply) {
@@ -1050,7 +1046,7 @@ namespace linkapp {
                                   drop->waiting.push_back(std::move(reply));
                                 }
                               },
-                          .actions = DragAndDrop::Copy | DragAndDrop::Move});
+                          .actions = DropCopy | DropMove});
   }
 
   void LinkApp::chooseAndSend(const std::string& deviceId) {
@@ -2445,10 +2441,8 @@ namespace linkapp {
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     const std::string mime = ext == ".png" ? "image/png" : ext == ".webp" ? "image/webp" : ext == ".heic" ? "image/heic"
                            : ext == ".gif" ? "image/gif" : "image/jpeg";
-    if (DragAndDrop* dnd = loop().wayland().dragAndDrop()) {
-      dnd->setSelection(loop().wayland().lastInputSerial(),
-                        {.mimeTypes = {mime}, .data = [bytes](const std::string&) -> std::string { return *bytes; }});
-    }
+    Display& display = loop().display();
+    (void)display.setClipboard(display.lastInputSerial(), {mime}, [bytes](const std::string&) -> std::string { return *bytes; });
   }
 
   // PhotoLightbox (design-link-parity handoff.yaml): the dark stage (the Mirror's), the photo contain-fit with P24

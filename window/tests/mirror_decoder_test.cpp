@@ -10,7 +10,7 @@
 // The ended callback may destroy its decoder, as LinkClient does when the phone stops sharing (built with ASan).
 int main() {
   int fds[2];
-  if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0) return 1;
+  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return 1;
   ::close(fds[1]); // the phone stopped: the worker reads EOF at once
   std::unique_ptr<linkapp::MirrorDecoder> decoder;
   bool ended = false;
