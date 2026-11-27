@@ -27,9 +27,17 @@ wait_for() {
   exit 1
 }
 "$app/Contents/MacOS/andromeda-link-app" > "$out/window.log" 2>&1 &
+window=$!
 wait_for "the window loaded no linkd agent" launchctl print "gui/$(id -u)/org.andromeda.linkd"
 wait_for "andromeda-linkd made no socket" test -S "$HOME/Library/Application Support/Andromeda Link/link.sock"
-qr() { screencapture -x "$out/pairing.png" && zbarimg -q --raw "$out/pairing.png" > "$out/uri.txt"; }
+# A clean Mac's first-run permission prompts cover the window, so the capture is the window alone.
+window_id=$(mktemp -d)/window-id
+swiftc -O -o "$window_id" "$(dirname "$0")/window-id.swift"
+qr() {
+  local id
+  id=$("$window_id" "$window") && screencapture -x -o -l "$id" "$out/pairing.png" \
+    && zbarimg -q --raw "$out/pairing.png" > "$out/uri.txt"
+}
 wait_for "the window showed no pairing QR code" qr
 echo "pairing QR: $(cut -d'&' -f1 "$out/uri.txt")"
 cp "$logs"/*.log "$out/" 2> /dev/null || true
