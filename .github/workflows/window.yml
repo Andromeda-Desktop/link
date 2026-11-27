@@ -51,3 +51,43 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: "window-${{ matrix.distro }}", path: "out/**/*.*" }
 
+
+  # Each package in a clean container with only its declared dependencies (andromeda-link aside: a push build has no
+  # Link package of its version): every library of the window must resolve.
+  install:
+    needs: window
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: ubuntu, image: "ubuntu:26.04" }
+          - { distro: debian, image: "debian:testing" }
+          - { distro: fedora, image: "registry.fedoraproject.org/fedora:43" }
+          - { distro: arch, image: "archlinux:latest" }
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: "window-${{ matrix.distro }}", path: pkg }
+      - run: |
+          set -eu
+          p=$(find pkg -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.zst' \) | head -1)
+          case ${{ matrix.distro }} in
+            ubuntu|debian)
+              apt-get update -qq
+              deps=$(dpkg-deb -f "$p" Depends | tr ',' '\n' | grep -v andromeda-link | sed 's/([^)]*)//; s/|.*//' | xargs)
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $deps
+              dpkg -i --ignore-depends=andromeda-link "$p" ;;
+            fedora)
+              rpm -qpR "$p" | grep -v -e andromeda-link -e '^rpmlib(' -e '^/' | sed 's/ *[<>=].*//' > deps
+              xargs -a deps -d '\n' dnf install -y -q
+              rpm -i --nodeps "$p" ;;
+            arch)
+              pacman -Syu --noconfirm --needed $(pacman -Qip "$p" | sed -n 's/^Depends On *: //p' | tr ' ' '\n' \
+                | grep -v '^andromeda-link' | sed 's/[<>=].*//' | xargs)
+              pacman -Udd --noconfirm "$p" ;;
+          esac
+          missing=$(ldd /usr/lib/andromeda-link/andromeda-link-app | grep 'not found' || true)
+          [ -z "$missing" ] || { echo "$missing"; exit 1; }
+          test -L /usr/bin/andromeda-link-app && test -d /usr/lib/andromeda-link/assets
+          echo "window installs: $(du -sh /usr/lib/andromeda-link | cut -f1)"
