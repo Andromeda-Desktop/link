@@ -45,6 +45,8 @@ mod usb;
 #[cfg_attr(any(target_os = "macos", windows), path = "wifi_direct_none.rs")]
 mod wifi_direct;
 #[cfg(windows)]
+mod win_media;
+#[cfg(windows)]
 mod win_net;
 
 use std::net::{Ipv6Addr, SocketAddr};

@@ -42,8 +42,12 @@ struct Watched {
     player: MediaPlayer,
 }
 
+#[cfg(windows)]
+pub use crate::win_media::now_playing;
+
 /// On macOS, the Mac's own player for phones: what plays, from the now-playing adapter (crates/link-nowplaying) that
 /// Apple's perl loads. Media keys when the adapter does not run.
+#[cfg(not(windows))]
 pub async fn now_playing(hub: HubHandle, mut requests: mpsc::Receiver<Request>) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
     const PERL: &str = "use DynaLoader; my $l = DynaLoader::dl_load_file($ARGV[0], 0) or die DynaLoader::dl_error(); \
@@ -119,9 +123,11 @@ pub async fn now_playing(hub: HubHandle, mut requests: mpsc::Receiver<Request>) 
     }
 }
 
+#[cfg(not(windows))]
 const MAC_PLAYER: &str = "mac";
 
 /// The adapter's JSON line as the phone's player; None for `{}`, nothing playing.
+#[cfg(not(windows))]
 fn mac_player(line: &str) -> Option<MediaPlayer> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     let text =
@@ -164,6 +170,7 @@ fn mac_player(line: &str) -> Option<MediaPlayer> {
 
 /// On a desktop without MPRIS (macOS), the one player phones see: its commands press the media keys through
 /// `link-session`. Its state is unknown, so it shows as paused.
+#[cfg(not(windows))]
 pub async fn keys(hub: HubHandle, mut requests: mpsc::Receiver<Request>) -> anyhow::Result<()> {
     hub.desktop_player(MediaPlayer {
         player: "media-keys".to_owned(),
@@ -480,11 +487,15 @@ fn artwork(url: &str) -> Option<Vec<u8>> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
-    let image = bytes.starts_with(b"\x89PNG") || bytes.starts_with(&[0xFF, 0xD8]);
-    image.then_some(bytes)
+    is_image(&bytes).then_some(bytes)
 }
 
-fn truncate(text: &str, max: usize) -> String {
+/// Whether `bytes` start as a PNG or a JPEG.
+pub(crate) fn is_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG") || bytes.starts_with(&[0xFF, 0xD8])
+}
+
+pub(crate) fn truncate(text: &str, max: usize) -> String {
     let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;

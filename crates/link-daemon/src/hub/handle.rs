@@ -292,6 +292,7 @@ impl HubHandle {
         self.tell(Command::DesktopPlayerGone { player }).await;
     }
 
+    #[cfg_attr(windows, expect(dead_code, reason = "Windows reads its players through GSMTC, not media keys"))]
     pub async fn media_key(&self, key: &'static str) {
         self.tell(Command::MediaKey { key }).await;
     }

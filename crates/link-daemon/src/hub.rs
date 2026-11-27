@@ -376,6 +376,7 @@ enum Command {
     DesktopPlayerGone {
         player: String,
     },
+    #[cfg_attr(windows, expect(dead_code, reason = "Windows reads its players through GSMTC, not media keys"))]
     MediaKey {
         key: &'static str,
     },
