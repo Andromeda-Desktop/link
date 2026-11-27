@@ -35,6 +35,8 @@ mod remote;
 mod save;
 mod sealed;
 mod socket;
+#[cfg(windows)]
+mod supervisor;
 #[cfg_attr(windows, path = "usb_none.rs")]
 mod usb;
 #[cfg_attr(any(target_os = "macos", windows), path = "wifi_direct_none.rs")]
@@ -157,6 +159,10 @@ async fn run() -> anyhow::Result<()> {
     let replaced = std::future::pending::<()>;
     #[cfg(not(target_os = "linux"))]
     let follow_addresses = |_| std::future::pending::<()>();
+    #[cfg(windows)]
+    let session = supervisor::run();
+    #[cfg(not(windows))]
+    let session = std::future::pending::<()>();
     let stop = async {
         tokio::select! {
             () = replaced() => Err(anyhow::anyhow!("an upgrade replaced andromeda-linkd; exiting to run the new one")),
@@ -172,6 +178,7 @@ async fn run() -> anyhow::Result<()> {
         result = serve_api(transport, api, (events, qs_events), media_requests) => result,
         () = localsend_actor.run() => Ok(()),
         result = quick_share.run() => result,
+        () = session => Ok(()),
     };
     endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
     endpoint.wait_idle().await;
