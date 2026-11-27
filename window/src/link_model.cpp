@@ -387,7 +387,8 @@ namespace linkapp {
   } // namespace
 
   void Messages::setTexts(const std::string& phone, std::vector<Text> texts) {
-    if (phone != m_phone) m_unread.clear();
+    // TextReceived before the first Texts is this phone's: only a switch to another phone drops the unread ids.
+    if (!m_phone.empty() && phone != m_phone) m_unread.clear();
     m_phone = phone;
     m_texts = std::move(texts);
     std::ranges::sort(m_texts, [](const Text& a, const Text& b) { return std::tie(a.atMs, a.id) < std::tie(b.atMs, b.id); });
