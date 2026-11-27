@@ -7,6 +7,8 @@ mod capabilities;
 mod control;
 mod dbus;
 mod desktop_media;
+#[cfg(windows)]
+mod dpapi;
 #[cfg_attr(target_os = "macos", path = "hotspot_mac.rs")]
 #[cfg_attr(windows, path = "hotspot_none.rs")]
 mod hotspot;
