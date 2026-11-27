@@ -51,13 +51,15 @@ test('link_model', executable('link_model_test', 'tests/link_model_test.cpp', li
 test('link_bus', executable('link_bus_test', 'tests/link_bus_test.cpp', 'src/link_bus.cpp', dependencies: [_desk, _ffi],
   include_directories: include_directories('src'), cpp_args: _warnings))
 
-# A cross build has no sanitizer runtime for the host and runs no tests.
+# A cross build has no sanitizer runtime for the host and runs no tests. Intel's iHD VA driver frees with the wrong
+# deallocator in vaDestroyContext: alloc_dealloc_mismatch=0.
 _asan = meson.can_run_host_binaries() ? ['-fsanitize=address'] : []
 test('mirror_decoder', executable('mirror_decoder_test', 'tests/mirror_decoder_test.cpp', 'src/mirror_decoder.cpp',
   _video,
   dependencies: [_desk] + _video_deps, include_directories: include_directories('src'),
-  cpp_args: _warnings + _asan + ['-fno-omit-frame-pointer'], link_args: _asan),
-  env: ['ASAN_OPTIONS=detect_leaks=0'])
+  cpp_args: _warnings + _asan + ['-fno-omit-frame-pointer', '-DMIRROR_DATA_DIR="' + meson.current_source_dir() / 'tests/data' + '"'],
+  link_args: _asan),
+  env: ['ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=0'])
 
 # paths::assetsRoot finds <exe dir>/assets; /proc/self/exe resolves the bindir link to this directory.
 _own_dir = get_option('prefix') / get_option('libdir') / 'andromeda-link'

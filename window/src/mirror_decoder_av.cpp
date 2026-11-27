@@ -248,7 +248,10 @@ namespace linkapp {
     }
     kLog.info("mirror: {} via {}{}", decoder.name, decoder.codec->name, ctx->hw_device_ctx != nullptr ? " + VA-API" : "");
     ctx->get_format = pickFormat;
+    // A live picture: frame threads would hold back one picture per thread (16 on 16 cores) before the first shows.
     ctx->thread_count = 0;
+    ctx->thread_type = FF_THREAD_SLICE;
+    ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     auto out = std::make_unique<AvDecoder>(decoder, ctx);
     if (!out->ready() || avcodec_open2(ctx, decoder.codec, nullptr) < 0) {
       why = std::format("The {} decoder did not start.", decoder.name);
