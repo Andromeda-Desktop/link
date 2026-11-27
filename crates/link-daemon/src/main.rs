@@ -1,6 +1,8 @@
 //! `andromeda-linkd`: the desktop side of Link. No UI; clients drive it over `org.andromeda.Link1`, on the session bus
 //! or, where there is none, on a Unix socket or a named pipe.
 
+#[cfg(windows)]
+mod autostart;
 mod bluetooth;
 mod browse;
 mod capabilities;
@@ -87,6 +89,8 @@ async fn doctor() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let paths = paths::Paths::create()?;
+    #[cfg(windows)]
+    autostart::register();
     save::sweep(&paths.downloads);
     let identity = sealed::load(&paths.sealed_identity, &paths.identity).context("loading the device key")?;
     let mut store = Store::load(&paths.devices).context("loading the device store")?;
