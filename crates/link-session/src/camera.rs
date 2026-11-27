@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use link_video::{Codec, END, KEYFRAME, read_unit};
+use link_video::{Codec, END, KEYFRAME, quarter_turns, read_unit};
 use tokio::task::JoinHandle;
 
 use crate::link::Link;
@@ -61,16 +61,19 @@ async fn serve(link: &Link, id: &str, front: bool) -> anyhow::Result<()> {
     let description = format!("{name} camera");
     log::info!("{id}: \"{description}\" is on at {width}x{height} in {codec:?}");
     let mut wait_keyframe = false;
+    let mut turns = 0;
     let ended = loop {
-        let (pipeline, src) = pipeline(&caps, decoder, &description, id, &loopbacks())?;
+        let (pipeline, src) = pipeline(&caps, decoder, (width, height), turns, &description, id, &loopbacks())?;
         pipeline.set_state(gst::State::Playing)?;
         let bus = pipeline.bus().context("no bus")?;
-        let (back, fed) = tokio::task::spawn_blocking(move || {
-            let fed = feed(&mut socket, &src, &bus, wait_keyframe);
-            (socket, fed)
+        let turn = pipeline.by_name("turn").context("no turn element")?;
+        let (back, now, fed) = tokio::task::spawn_blocking(move || {
+            let fed = feed(&mut socket, &src, &bus, &turn, &mut turns, wait_keyframe);
+            (socket, turns, fed)
         })
         .await?;
         socket = back;
+        turns = now;
         pipeline.set_state(gst::State::Null)?;
         match fed {
             // A reader that cannot agree on a format fails the PipeWire sink: the node comes back for the next one.
@@ -100,18 +103,27 @@ enum Fed {
 /// The decode pipeline: system-memory YUY2 frames into the `PipeWire` node and each loopback device. Leaky queues keep
 /// a slow consumer from holding up the others; nothing waits on the clock, the phone already paces the frames.
 /// YUY2 because pipewiresink sends one data block per plane and libwebrtc (Chromium, Firefox) reads only the first.
+/// The element `turn` turns the picture upright by `turns` quarter turns; borders keep the size, so readers never
+/// renegotiate when the phone turns.
 fn pipeline(
     caps: &str,
     decoder: &str,
+    (width, height): (u32, u32),
+    turns: u8,
     description: &str,
     id: &str,
     loopbacks: &[String],
 ) -> anyhow::Result<(gst::Pipeline, gst_app::AppSrc)> {
     let quote = |text: &str| text.replace(['"', '\\', ','], " ");
-    let convert = if decoder.starts_with("va") { "vapostproc" } else { "videoconvert" };
+    let direction = direction(turns);
+    let convert = if decoder.starts_with("va") {
+        format!("vapostproc name=turn add-borders=true video-direction={direction}")
+    } else {
+        format!("videoflip name=turn video-direction={direction} ! videoscale add-borders=true ! videoconvert")
+    };
     let mut launch = format!(
-        "appsrc name=src is-live=true format=time caps={caps} ! {decoder} ! {convert} ! video/x-raw,format=YUY2 \
-         ! tee name=t \
+        "appsrc name=src is-live=true format=time caps={caps} ! {decoder} ! {convert} \
+         ! video/x-raw,format=YUY2,width={width},height={height},pixel-aspect-ratio=1/1 ! tee name=t \
          t. ! queue leaky=downstream max-size-buffers=2 ! pipewiresink mode=provide sync=false \
          client-name=andromeda-link-camera stream-properties=\"props,media.class=Video/Source,media.role=Camera,\
          node.name=andromeda-link-camera-{id},node.description=\\\"{}\\\"\"",
@@ -130,6 +142,16 @@ fn pipeline(
     Ok((pipeline, src))
 }
 
+/// The `video-direction` that turns a picture `turns` quarter turns clockwise.
+fn direction(turns: u8) -> &'static str {
+    match turns {
+        1 => "90r",
+        2 => "180",
+        3 => "90l",
+        _ => "identity",
+    }
+}
+
 /// The `v4l2loopback` devices, as `/dev/videoN` paths.
 fn loopbacks() -> Vec<String> {
     std::fs::read_dir(LOOPBACK_DEVICES)
@@ -143,11 +165,13 @@ fn loopbacks() -> Vec<String> {
 }
 
 /// Pushes the phone's units into the decoder, from a keyframe when `wait_keyframe`, until the stream ends on purpose
-/// (`END`), the socket closes, or the pipeline posts an error.
+/// (`END`), the socket closes, or the pipeline posts an error. Each unit's quarter turns set `turn` when they change.
 fn feed(
     socket: &mut std::os::unix::net::UnixStream,
     src: &gst_app::AppSrc,
     bus: &gst::Bus,
+    turn: &gst::Element,
+    turns: &mut u8,
     mut wait_keyframe: bool,
 ) -> Fed {
     let mut first = None;
@@ -162,6 +186,11 @@ fn feed(
             continue;
         }
         wait_keyframe = false;
+        if quarter_turns(unit.flags) != *turns {
+            *turns = quarter_turns(unit.flags);
+            turn.set_property_from_str("video-direction", direction(*turns));
+            log::info!("camera picture turns {} quarter turns clockwise", *turns);
+        }
         let base = *first.get_or_insert(unit.pts_us);
         let mut buffer = gst::Buffer::from_mut_slice(unit.data);
         if let Some(buffer) = buffer.get_mut() {

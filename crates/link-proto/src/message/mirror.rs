@@ -190,6 +190,8 @@ pub const MIRROR_CONFIG: u8 = 2;
 pub const MIRROR_AUDIO: u8 = 4;
 /// The desktop daemon's last, empty unit to a viewer when the phone ended mirroring on purpose; never on the wire.
 pub const MIRROR_END: u8 = 8;
+/// Camera video only: bits 5-6 hold the quarter turns clockwise that make the picture upright (0 on older phones).
+pub const MIRROR_TURNS_SHIFT: u8 = 5;
 /// A 1080p access unit stays well under this.
 pub const MAX_MIRROR_UNIT: usize = 4 * 1024 * 1024;
 pub const MAX_MIRROR_SIDE: u32 = 4096;

@@ -13,6 +13,8 @@ import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.util.Size
+import android.view.OrientationEventListener
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
@@ -44,7 +46,7 @@ import org.andromeda.link.screen.VideoEncoder
 /**
  * One camera of this phone as one desktop's webcam: CameraX draws into the shared [VideoEncoder]'s surface, whose
  * units go on the camera stream until Stop here, the desktop's stop, a camera error, or the link's end. One desktop
- * at a time. The picture keeps the sensor's landscape orientation.
+ * at a time. The picture keeps the sensor's orientation; each unit tells the desktop how far to turn it upright.
  */
 class CameraService :
     Service(),
@@ -74,6 +76,9 @@ class CameraService :
 
     @Volatile
     private var state: State = State.Idle
+
+    /** Follows how the phone is held while a camera is bound, so CameraX reports the turn that makes it upright. */
+    private var turning: OrientationEventListener? = null
 
     /** The only writer of [state] and [instance]; returns the state it left, or null for an invalid move. */
     @Synchronized
@@ -166,6 +171,19 @@ class CameraService :
                 ).setTargetFrameRate(Range(fps, fps))
                 .build()
         preview.setSurfaceProvider(mainExecutor) { request -> scope.launch { stream(request, fps) } }
+        turning =
+            object : OrientationEventListener(this) {
+                override fun onOrientationChanged(degrees: Int) {
+                    if (degrees == ORIENTATION_UNKNOWN) return
+                    preview.targetRotation =
+                        when (degrees) {
+                            in 45 until 135 -> Surface.ROTATION_270
+                            in 135 until 225 -> Surface.ROTATION_180
+                            in 225 until 315 -> Surface.ROTATION_90
+                            else -> Surface.ROTATION_0
+                        }
+                }
+            }.apply { enable() }
         val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
         val camera =
             try {
@@ -221,6 +239,8 @@ class CameraService :
         }
         // The camera lets go of the surface only after it stops drawing; the encoder goes then, not before.
         request.provideSurface(encoder.surface, mainExecutor) { encoder.release() }
+        // The encoder takes the sensor's picture as it is; the desktop turns it upright by the turns each unit carries.
+        request.setTransformationInfoListener(mainExecutor) { stream.quarterTurns = it.rotationDegrees / 90 % 4 }
         Log.i(TAG, "$desktop: webcam on at ${width}x$height $fps fps in $mime")
         val end =
             try {
@@ -239,6 +259,8 @@ class CameraService :
         reason: String?,
     ) {
         val from = move(State.Stopped) ?: return
+        turning?.disable()
+        turning = null
         // CameraX unbinds a destroyed owner's use cases and closes the camera.
         registry.currentState = Lifecycle.State.DESTROYED
         val desktop = from.desktop

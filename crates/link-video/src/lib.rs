@@ -14,6 +14,13 @@ pub const AUDIO: u8 = 4;
 /// The daemon's last unit, empty, when the phone ended mirroring on purpose; a socket closing without it
 /// lost the stream.
 pub const END: u8 = 8;
+/// Camera video only: bits 5-6 hold the quarter turns clockwise that make the picture upright.
+const TURNS_SHIFT: u8 = 5;
+
+/// The quarter turns clockwise, 0 to 3, that a camera unit's `flags` ask for.
+pub fn quarter_turns(flags: u8) -> u8 {
+    (flags >> TURNS_SHIFT) & 3
+}
 
 /// The stream's video codec, as `OpenMirrorWith` names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

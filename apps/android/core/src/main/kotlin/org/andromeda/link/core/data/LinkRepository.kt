@@ -1125,12 +1125,17 @@ private class FfiMirror(
             MirrorCodec.AV1, null -> null
         }
 
+    @Volatile override var quarterTurns = 0
+
     override suspend fun send(
         ptsUs: Long,
         keyframe: Boolean,
         config: Boolean,
         data: ByteArray,
-    ): Result<Unit> = unit(ptsUs, (if (keyframe) MIRROR_KEYFRAME else 0) or (if (config) MIRROR_CONFIG else 0), data)
+    ): Result<Unit> {
+        val flags = (if (keyframe) MIRROR_KEYFRAME else 0) or (if (config) MIRROR_CONFIG else 0)
+        return unit(ptsUs, flags or ((quarterTurns and 3) shl MIRROR_TURNS_SHIFT), data)
+    }
 
     override fun audio(
         channels: Int,
@@ -1178,6 +1183,7 @@ private class FfiMirror(
     private companion object {
         const val MIRROR_KEYFRAME = 1
         const val MIRROR_CONFIG = 2
+        const val MIRROR_TURNS_SHIFT = 5
     }
 }
 

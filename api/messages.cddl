@@ -240,7 +240,7 @@ bt-pairing-msg = { type: "bt-pairing", id: uint, body: { ? passkey: uint .le 999
 ; (mirror-request, 0-RTT); the phone shows Android's capture prompt, then says the size (mirror-started) and opens a
 ; unidirectional stream whose header is mirror-data, followed by H.264 access units: u32 length, u64 presentation
 ; time in microseconds, a flags byte (1 keyframe, 2 codec configuration, 4 audio: one 48 kHz stereo Opus packet
-; instead of video), then the bytes, at most 4 MiB. When the desktop's hello has feature:mirror-streams, that first
+; instead of video; on camera video bits 5-6 hold the quarter turns clockwise that make the picture upright), then the bytes, at most 4 MiB. When the desktop's hello has feature:mirror-streams, that first
 ; stream carries only the sound, and each keyframe (codec configuration in front) opens a new stream whose mirror-data
 ; has gop, counting up from 1, with the video after it. The newest gop is the one shown: the phone finishes the one
 ; before (resetting it unless acknowledged within 250 ms) and the desktop stops reading older ones. The

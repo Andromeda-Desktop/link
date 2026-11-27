@@ -74,6 +74,9 @@ interface MirrorStream {
     /** What [send] takes: H.264 when null. */
     val codec: VideoCodec?
 
+    /** Camera video only: the quarter turns clockwise, 0 to 3, that make the picture upright; each unit carries them. */
+    var quarterTurns: Int
+
     /** One access unit in [codec], Annex B; suspends while the network is behind. */
     suspend fun send(
         ptsUs: Long,
