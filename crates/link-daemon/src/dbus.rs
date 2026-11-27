@@ -2,8 +2,11 @@
 #![expect(clippy::too_many_arguments, reason = "the NotificationPosted signal's arguments are the D-Bus contract")]
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
+#[cfg(unix)]
 use std::os::unix::fs::FileExt as _;
 
 use futures_util::StreamExt;
@@ -12,11 +15,14 @@ use link_core::identity::DeviceId;
 use link_core::outbox::Sent;
 use link_core::proto::message::{
     CallAction, CallActionKind, DesktopStatus, InputAction, MAX_CAPABILITIES, MAX_CAPABILITY_LEN, MAX_NAME_LEN,
-    MAX_NUMBER_LEN, MAX_SHARE_LEN, MAX_TEXT_BODY, MediaCommand, MediaCommandKind, Message, MirrorAction, MirrorInput,
+    MAX_NUMBER_LEN, MAX_TEXT_BODY, MediaCommand, MediaCommandKind, Message, MirrorAction, MirrorInput,
     NotificationAction, NotificationDismiss, NotificationPosted, Ping, RemoteInput, Ring, Ringing, Share, ShareKind,
-    SystemCommand, SystemCommandKind, TransferId, dialable, is_text_mime,
+    SystemCommand, SystemCommandKind, TransferId, dialable,
 };
+#[cfg(unix)]
+use link_core::proto::message::{MAX_SHARE_LEN, is_text_mime};
 use link_core::store::{StoredCommand, phone_requires};
+#[cfg(unix)]
 use link_core::transfer::{ClipBytes, LocalClip, Source};
 use tokio::sync::{mpsc, watch};
 use zbus::fdo;
@@ -36,6 +42,7 @@ static SAVES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 const SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 pub const NAME: &str = "org.andromeda.Link1";
 /// The shell passes descriptors, not types; the receiver's platform types files by name.
+#[cfg(unix)]
 const OCTET_STREAM: &str = "application/octet-stream";
 
 pub struct Link {
@@ -1286,6 +1293,7 @@ async fn emit_posted(
 }
 
 /// A viewer's codecs besides H.264 ("hevc", "av1"), best first.
+#[cfg(unix)]
 fn parse_codecs(codecs: &[String]) -> Result<Vec<link_core::proto::message::Codec>, LinkError> {
     if codecs.len() > link_core::proto::message::MAX_MIRROR_CODECS {
         return Err(LinkError::Rejected("too many codecs".to_owned()));
@@ -1318,6 +1326,7 @@ impl Link {
         }
     }
 
+    #[cfg(unix)]
     async fn open_capture(
         &self,
         device_id: String,
@@ -1533,31 +1542,43 @@ pub async fn forward(
 
 /// The name other devices see: hostnamed's pretty name, else the host's own name.
 pub async fn device_name() -> String {
-    let pretty = async {
-        let system = zbus::Connection::system().await?;
-        let proxy = zbus::Proxy::new(
-            &system,
-            "org.freedesktop.hostname1",
-            "/org/freedesktop/hostname1",
-            "org.freedesktop.hostname1",
-        )
-        .await?;
-        proxy.get_property::<String>("PrettyHostname").await
-    };
-    let name = match pretty.await {
-        Ok(name) if !name.trim().is_empty() => name,
+    let name = match pretty_name().await {
+        Some(name) if !name.trim().is_empty() => name,
         _ => host_name(),
     };
     let name: String = name.trim().chars().take(MAX_NAME_LEN).collect();
     if name.is_empty() { UNNAMED.to_owned() } else { name }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// hostnamed's pretty name, where there is a system bus.
+#[cfg(unix)]
+async fn pretty_name() -> Option<String> {
+    let system = zbus::Connection::system().await.ok()?;
+    let proxy = zbus::Proxy::new(
+        &system,
+        "org.freedesktop.hostname1",
+        "/org/freedesktop/hostname1",
+        "org.freedesktop.hostname1",
+    )
+    .await
+    .ok()?;
+    proxy.get_property::<String>("PrettyHostname").await.ok()
+}
+
+#[cfg(windows)]
+#[expect(clippy::unused_async, reason = "the Unix twin's signature")]
+async fn pretty_name() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 const UNNAMED: &str = "Linux desktop";
 #[cfg(target_os = "macos")]
 const UNNAMED: &str = "Mac";
+#[cfg(windows)]
+const UNNAMED: &str = "Windows PC";
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn host_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default()
 }
@@ -1570,4 +1591,10 @@ fn host_name() -> String {
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default()
+}
+
+/// The computer's `NetBIOS` name, as Windows sets it for every process; at most 15 characters.
+#[cfg(windows)]
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
 }

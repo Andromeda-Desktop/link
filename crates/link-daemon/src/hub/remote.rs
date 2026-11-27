@@ -1,5 +1,3 @@
-use std::os::fd::OwnedFd;
-
 use crate::mirror::Failure;
 
 use link_core::proto::message::{MIRROR_CODECS, MirrorRequest, SPEAKER};
@@ -103,7 +101,7 @@ impl Hub {
     }
 
     /// Refused when the phone plays no speaker streams or its switch is off; a new stream replaces the phone's last.
-    pub(super) async fn open_speaker(&mut self, id: DeviceId) -> Result<OwnedFd, Failure> {
+    pub(super) async fn open_speaker(&mut self, id: DeviceId) -> Result<crate::local::Handle, Failure> {
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or(Failure::NotConnected)?;
         if !self.phone_has(&id, SPEAKER) {
@@ -113,16 +111,17 @@ impl Hub {
             return Err(Failure::Refused("not-allowed".to_owned()));
         }
         let failed = |error: &dyn std::fmt::Display| Failure::Failed(error.to_string());
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|error| failed(&error))?;
+        let (ours, theirs) = crate::local::pair().map_err(|error| failed(&error))?;
         let sender = link_core::mirror::MirrorSender::open_sound(&session, Message::SpeakerData)
             .await
             .map_err(|error| failed(&error))?;
         log::info!("{id}: playing desktop sound on the phone");
-        self.speakers.serve(id, ours.into(), sender).map_err(|error| failed(&error))?;
-        Ok(theirs.into())
+        self.speakers.serve(id, ours, sender);
+        Ok(theirs)
     }
 
     pub(super) async fn serve_remote(&mut self, id: DeviceId, stream: RemoteStream) -> Result<(), String> {
+        let socket = crate::local::adopt(stream.socket).map_err(|error| error.to_string())?;
         let session = self.sessions.get(&id).filter(|session| session.is_live()).cloned();
         let session = session.ok_or_else(|| format!("{id} is not connected"))?;
         session.send(Message::RemoteStarted(stream.started)).await.map_err(|error| error.to_string())?;
@@ -144,7 +143,8 @@ impl Hub {
             }
         };
         log::info!("{id}: showing the screen at {}x{}", stream.width, stream.height);
-        self.remotes.serve(id, stream.socket, sender).map_err(|error| error.to_string())
+        self.remotes.serve(id, socket, sender);
+        Ok(())
     }
 
     pub(super) async fn stop_remote(&mut self, id: &DeviceId, reason: &str) {

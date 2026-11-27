@@ -21,6 +21,8 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
     TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use zbus::connection::AuthMechanism;
 use zbus::connection::socket::{ReadHalf, Socket, Split, WriteHalf};
@@ -87,6 +89,26 @@ pub async fn open(name: &str) -> io::Result<NamedPipeClient> {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the Link pipe belongs to another account"));
     }
     Ok(client)
+}
+
+/// Whether the client connected to `server` runs in this process's Windows session: the DACL admits the account's
+/// processes in every session, such as a second Remote Desktop login.
+pub fn same_session(server: &NamedPipeServer) -> io::Result<bool> {
+    let mut pid = 0;
+    // SAFETY: the handle is the connected pipe `server` owns.
+    if unsafe { GetNamedPipeClientProcessId(server.as_raw_handle(), &raw mut pid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(session_of(pid)? == session_of(std::process::id())?)
+}
+
+fn session_of(pid: u32) -> io::Result<u32> {
+    let mut session = 0;
+    // SAFETY: `session` is a valid out pointer.
+    if unsafe { ProcessIdToSessionId(pid, &raw mut session) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(session)
 }
 
 fn user_sid() -> io::Result<String> {

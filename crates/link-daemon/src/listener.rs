@@ -6,7 +6,9 @@ use std::sync::Arc;
 use link_core::control::Control;
 use link_core::identity::Spki;
 use link_core::pairing::pair_as_server;
-use link_core::path::{LinkKind, Route, StreamLink};
+use link_core::path::Route;
+#[cfg(unix)]
+use link_core::path::{LinkKind, StreamLink};
 use link_core::proto::message::Hello;
 use link_core::proto::message::{
     BLUETOOTH_SCHEME, BT_PAIRING, CALL_APP, CALLS, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, GROUP_CHANNEL,
@@ -82,10 +84,7 @@ impl Listener {
                     }
                 }
                 // An RFCOMM link: its QUIC connection arrives on the endpoint like any other.
-                Some(fd) = self.bluetooth.incoming.recv() => match StreamLink::new(fd, LinkKind::Bluetooth) {
-                    Ok(link) => log::info!("Bluetooth RFCOMM link {}", self.server.socket.accept_link(link)),
-                    Err(error) => log::info!("Bluetooth: {error}"),
-                },
+                Some(connection) = self.bluetooth.incoming.recv() => self.add_bluetooth(connection),
                 Some(joined) = connections.join_next() => {
                     if let Err(join) = joined {
                         log::error!("connection task: {join}");
@@ -93,6 +92,22 @@ impl Listener {
                 }
             }
         }
+    }
+}
+
+impl Listener {
+    #[cfg(unix)]
+    fn add_bluetooth(&self, connection: crate::bluetooth::Connection) {
+        match StreamLink::new(connection, LinkKind::Bluetooth) {
+            Ok(link) => log::info!("Bluetooth RFCOMM link {}", self.server.socket.accept_link(link)),
+            Err(error) => log::info!("Bluetooth: {error}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[expect(clippy::unused_self, clippy::needless_pass_by_value, reason = "the Unix twin's signature")]
+    fn add_bluetooth(&self, connection: crate::bluetooth::Connection) {
+        match connection {}
     }
 }
 

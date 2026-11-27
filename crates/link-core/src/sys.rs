@@ -3,9 +3,11 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 #[cfg(unix)]
-use std::os::unix::fs::{FileExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, FileExt as _, OpenOptionsExt as _};
 #[cfg(windows)]
 use std::os::windows::fs::{FileExt as _, MetadataExt as _, OpenOptionsExt as _};
 
@@ -101,14 +103,62 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Creates `dir` and its parents; `dir` itself grants its owner only, whatever its parent grants. On Windows it gets
+/// a protected DACL for the owner and SYSTEM, which everything created inside inherits.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(dir)?;
+        windows::owner_only(dir)
+    }
+}
+
+/// A folder of the user's profile that the user may move elsewhere.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub enum KnownFolder {
+    LocalAppData,
+    Downloads,
+}
+
+/// Where `folder` is now, as Explorer shows it.
+#[cfg(windows)]
+pub fn known_folder(folder: KnownFolder) -> io::Result<PathBuf> {
+    windows::known_folder(folder)
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code, reason = "FFI: kernel32 calls with NUL-terminated wide paths that outlive each call")]
 mod windows {
+    use std::ffi::OsString;
     use std::io;
-    use std::os::windows::ffi::OsStrExt as _;
-    use std::path::Path;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Path, PathBuf};
+    use std::ptr::null_mut;
 
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
     use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, MOVEFILE_WRITE_THROUGH, MoveFileExW};
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{
+        FOLDERID_Downloads, FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    };
+
+    use super::KnownFolder;
+
+    /// Full access for the object's owner (OWNER RIGHTS) and SYSTEM, inherited by files and folders; `P` drops the
+    /// entries inherited from the parent.
+    const OWNER_ONLY: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)";
 
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain([0]).collect()
@@ -122,6 +172,66 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(super::Space { free, total })
+    }
+
+    pub fn owner_only(dir: &Path) -> io::Result<()> {
+        let sddl: Vec<u16> = OWNER_ONLY.encode_utf16().chain([0]).collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: `sddl` is NUL-terminated; on success `descriptor` is a LocalAlloc block freed below.
+        let made = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                null_mut(),
+            )
+        };
+        if made == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let result = set_dacl(dir, descriptor);
+        // SAFETY: `descriptor` came from LocalAlloc above and nothing uses it after this.
+        unsafe { LocalFree(descriptor) };
+        result
+    }
+
+    fn set_dacl(dir: &Path, descriptor: PSECURITY_DESCRIPTOR) -> io::Result<()> {
+        let (mut present, mut defaulted, mut dacl) = (0, 0, null_mut::<ACL>());
+        // SAFETY: `descriptor` is valid; the DACL pointer points into it, which outlives its use here.
+        if unsafe { GetSecurityDescriptorDacl(descriptor, &raw mut present, &raw mut dacl, &raw mut defaulted) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let dir = wide(dir);
+        let info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        // SAFETY: `dir` is NUL-terminated and `dacl` valid across the call; owner, group and SACL stay unchanged.
+        let status = unsafe {
+            SetNamedSecurityInfoW(dir.as_ptr(), SE_FILE_OBJECT, info, null_mut(), null_mut(), dacl, null_mut())
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        Ok(())
+    }
+
+    pub fn known_folder(folder: KnownFolder) -> io::Result<PathBuf> {
+        let id = match folder {
+            KnownFolder::LocalAppData => &FOLDERID_LocalAppData,
+            KnownFolder::Downloads => &FOLDERID_Downloads,
+        };
+        let mut path = null_mut();
+        // SAFETY: `id` is a valid GUID; `path` receives a CoTaskMem string, freed below even on failure.
+        let status = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT.cast_unsigned(), null_mut(), &raw mut path) };
+        let result = if status == 0 {
+            // SAFETY: on success `path` is a NUL-terminated wide string.
+            let len = (0..usize::MAX).take_while(|&at| unsafe { *path.add(at) } != 0).count();
+            // SAFETY: `path` holds `len` valid u16s.
+            Ok(PathBuf::from(OsString::from_wide(unsafe { std::slice::from_raw_parts(path, len) })))
+        } else {
+            Err(io::Error::from_raw_os_error(status))
+        };
+        // SAFETY: `path` is null or the string the call allocated.
+        unsafe { CoTaskMemFree(path.cast()) };
+        result
     }
 
     /// Without `MOVEFILE_REPLACE_EXISTING` the move fails when `to` exists.
@@ -180,6 +290,21 @@ mod tests {
         rename_noreplace(&from, &to)?;
         assert_eq!(std::fs::read(&to)?, b"new");
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// The user's temp folder grants Administrators too; the private folder drops every inherited entry.
+    #[cfg(windows)]
+    #[test]
+    fn a_private_dir_grants_only_its_owner_and_system() -> Result {
+        let dir = scratch("private")?.join("state");
+        create_private_dir(&dir)?;
+        let listed = std::process::Command::new("icacls").arg(&dir).output()?;
+        let acl = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(listed.status.success(), "icacls failed: {acl}");
+        assert!(acl.contains("OWNER RIGHTS") && acl.contains("NT AUTHORITY\\SYSTEM"), "missing an entry: {acl}");
+        assert!(!acl.contains("(I)") && !acl.contains("Administrators") && !acl.contains("Users"), "too wide: {acl}");
+        std::fs::remove_dir_all(dir.parent().unwrap_or(&dir))?;
         Ok(())
     }
 }

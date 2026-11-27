@@ -46,14 +46,22 @@ pub async fn connect() -> zbus::Result<zbus::Connection> {
     }
 }
 
-/// A connection to `andromeda-linkd` over its named pipe: `$ANDROMEDA_LINK_SOCKET`, else [`pipe::default_name`].
+/// A connection to `andromeda-linkd` over its named pipe, [`pipe_name`].
 #[cfg(windows)]
 pub async fn connect() -> zbus::Result<zbus::Connection> {
-    let name = match std::env::var(SOCKET_ENV) {
-        Ok(name) => name,
-        Err(_) => pipe::default_name()?,
-    };
-    zbus::connection::Builder::socket(pipe::Pipe(pipe::open(&name).await?)).p2p().build().await
+    connect_pipe(&pipe_name()?).await
+}
+
+/// A peer-to-peer connection to the daemon's pipe `name`.
+#[cfg(windows)]
+pub async fn connect_pipe(name: &str) -> zbus::Result<zbus::Connection> {
+    zbus::connection::Builder::socket(pipe::Pipe(pipe::open(name).await?)).p2p().build().await
+}
+
+/// The pipe `andromeda-linkd` serves the API on: `$ANDROMEDA_LINK_SOCKET`, else [`pipe::default_name`].
+#[cfg(windows)]
+pub fn pipe_name() -> std::io::Result<String> {
+    std::env::var(SOCKET_ENV).or_else(|_| pipe::default_name())
 }
 
 /// A peer-to-peer connection to the daemon's socket at `path`.

@@ -3,7 +3,6 @@
 //! socket's end ends only the stream, and `StopRemoteControl` or the session leaving ends remote control.
 
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
 
 use link_core::identity::DeviceId;
 use link_core::mirror::{MirrorSender, Unit};
@@ -32,10 +31,7 @@ impl Remotes {
     }
 
     /// Pumps `socket` into `sender`, after ending the phone's previous stream.
-    pub fn serve(&mut self, id: DeviceId, socket: OwnedFd, sender: MirrorSender) -> std::io::Result<()> {
-        let socket = std::os::unix::net::UnixStream::from(socket);
-        socket.set_nonblocking(true)?;
-        let socket = tokio::net::UnixStream::from_std(socket)?;
+    pub fn serve(&mut self, id: DeviceId, socket: crate::local::Stream, sender: MirrorSender) {
         self.stop(&id);
         let pumped = id.clone();
         let pump = self.pumps.spawn(async move {
@@ -45,7 +41,6 @@ impl Remotes {
             pumped
         });
         self.running.insert(id, pump);
-        Ok(())
     }
 
     pub fn stop(&mut self, id: &DeviceId) {
@@ -66,7 +61,7 @@ impl Remotes {
     }
 }
 
-async fn pump(mut socket: tokio::net::UnixStream, sender: MirrorSender) -> anyhow::Result<()> {
+async fn pump(mut socket: crate::local::Stream, sender: MirrorSender) -> anyhow::Result<()> {
     let mut header = [0; 13];
     loop {
         match socket.read_exact(&mut header).await {

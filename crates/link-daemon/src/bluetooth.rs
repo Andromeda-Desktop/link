@@ -3,7 +3,6 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
 
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -14,10 +13,12 @@ use zbus::{OwnedObjectPath, OwnedVariant, Variant};
 #[path = "bluetooth_mac.rs"]
 mod mac;
 
+#[cfg(unix)]
 pub use link_core::bluetooth::SERVICE_UUID;
 #[cfg(target_os = "linux")]
 const PROFILE_PATH: &str = "/org/andromeda/Link1/Bluetooth";
 /// The RFCOMM channel the service record names; fixed, since the record must name the channel it listens on.
+#[cfg(unix)]
 const CHANNEL: u16 = 22;
 #[cfg(target_os = "linux")]
 /// The SDP record: `BlueZ`'s own for a custom UUID lacks what Android needs to accept it ("Bad Service Class ID list
@@ -39,7 +40,9 @@ const ADAPTER: &str = "/org/bluez/hci0";
 #[cfg(target_os = "linux")]
 const BEACON_PATH: &str = "/org/andromeda/Link1/Bluetooth/beacon";
 /// E2E only: a Unix socket stands in for RFCOMM, so the RFCOMM path runs without radios.
+#[cfg(unix)]
 const TEST_SOCKET: &str = "ANDROMEDA_LINK_TEST_BLUETOOTH_SOCKET";
+#[cfg(unix)]
 const TEST_ADDRESS: &str = "00:00:00:00:00:01";
 /// Connections waiting for the listener; more are refused.
 const BACKLOG: usize = 4;
@@ -47,21 +50,30 @@ const BACKLOG: usize = 4;
 /// Where Bluetooth connections come from. With no adapter, `address` is None and nothing arrives.
 pub struct Bluetooth {
     pub address: Option<String>,
-    pub incoming: mpsc::Receiver<OwnedFd>,
+    pub incoming: mpsc::Receiver<Connection>,
     /// What keeps the service registered; None for the test socket.
-    #[cfg_attr(target_os = "macos", expect(dead_code, reason = "the service lives on its run loop thread"))]
+    #[cfg_attr(
+        any(target_os = "macos", windows),
+        expect(dead_code, reason = "macOS keeps the service on its run loop thread; Windows registers none")
+    )]
     registration: Option<Registration>,
 }
 
 /// The profile lives as long as this connection to the system bus.
 #[cfg(target_os = "linux")]
 type Registration = zbus::Connection;
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "linux"))]
 type Registration = ();
+
+/// A connected RFCOMM socket. Windows has no Bluetooth backend yet, so no connection exists there.
+#[cfg(unix)]
+pub type Connection = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub enum Connection {}
 
 impl Bluetooth {
     /// Opens the adapter to pairing during each window; the test socket needs no radio.
-    #[cfg_attr(target_os = "macos", expect(clippy::unused_self, reason = "macOS needs no pairing window"))]
+    #[cfg_attr(not(target_os = "linux"), expect(clippy::unused_self, reason = "only BlueZ needs a pairing window"))]
     pub fn pairing_window(&self) -> watch::Sender<Option<Instant>> {
         #[cfg(target_os = "linux")]
         if self.registration.is_some() {
@@ -73,6 +85,7 @@ impl Bluetooth {
 
     /// Advertises over Bluetooth LE while it holds true, so a phone that types the pairing code finds this desktop
     /// with no shared network. The advertisement's service data under [`SERVICE_UUID`] is the adapter address.
+    #[cfg_attr(not(target_os = "linux"), expect(clippy::unused_self, reason = "only BlueZ advertises"))]
     pub fn pairing_beacon(&self) -> watch::Sender<bool> {
         let (tx, rx) = watch::channel(false);
         #[cfg(target_os = "linux")]
@@ -90,8 +103,13 @@ impl Bluetooth {
         self.registration.is_some()
     }
 
+    #[cfg_attr(
+        windows,
+        expect(clippy::unused_async, clippy::unused_async_trait_impl, reason = "the backends register asynchronously")
+    )]
     pub async fn start() -> Self {
         let (tx, incoming) = mpsc::channel(BACKLOG);
+        #[cfg(unix)]
         if let Some(path) = std::env::var_os(TEST_SOCKET) {
             return match test_socket(path.as_ref(), tx) {
                 Ok(()) => Self { address: Some(TEST_ADDRESS.to_owned()), incoming, registration: None },
@@ -105,6 +123,11 @@ impl Bluetooth {
         let registered = register(tx).await.map_err(|error| error.to_string());
         #[cfg(target_os = "macos")]
         let registered = mac::register(tx).await.map(|address| ((), address));
+        #[cfg(windows)]
+        let registered: Result<((), String), _> = {
+            drop(tx);
+            Err("no Bluetooth backend on Windows yet")
+        };
         match registered {
             Ok((registration, address)) => {
                 log::info!("Bluetooth: listening on {address}");
@@ -119,7 +142,7 @@ impl Bluetooth {
 }
 
 #[cfg(target_os = "linux")]
-async fn register(tx: mpsc::Sender<OwnedFd>) -> zbus::Result<(zbus::Connection, String)> {
+async fn register(tx: mpsc::Sender<Connection>) -> zbus::Result<(zbus::Connection, String)> {
     let bus = zbus::Connection::system().await?;
     let adapter = zbus::Proxy::new(&bus, "org.bluez", ADAPTER, "org.bluez.Adapter1").await?;
     let address: String = adapter.get_property("Address").await?;
@@ -142,7 +165,7 @@ async fn register(tx: mpsc::Sender<OwnedFd>) -> zbus::Result<(zbus::Connection, 
 
 #[cfg(target_os = "linux")]
 struct Profile {
-    incoming: mpsc::Sender<OwnedFd>,
+    incoming: mpsc::Sender<Connection>,
 }
 
 #[cfg(target_os = "linux")]
@@ -280,7 +303,8 @@ impl Beacon {
     }
 }
 
-fn test_socket(path: &std::path::Path, tx: mpsc::Sender<OwnedFd>) -> std::io::Result<()> {
+#[cfg(unix)]
+fn test_socket(path: &std::path::Path, tx: mpsc::Sender<Connection>) -> std::io::Result<()> {
     drop(std::fs::remove_file(path));
     let listener = tokio::net::UnixListener::bind(path)?;
     tokio::spawn(async move {

@@ -1,13 +1,20 @@
-use std::fs::{self, DirBuilder};
-use std::os::unix::fs::DirBuilderExt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
 #[cfg(target_os = "macos")]
 const HOME_STATE: &str = "Library/Application Support/Andromeda Link";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 const HOME_STATE: &str = ".local/state/andromeda-link";
+#[cfg(unix)]
+const NO_STATE: &str = "no state directory: set XDG_STATE_HOME or HOME";
+#[cfg(windows)]
+const NO_STATE: &str = "no state directory: Windows names no Local AppData folder";
+#[cfg(unix)]
+const NO_DOWNLOADS: &str = "no download directory: set HOME";
+#[cfg(windows)]
+const NO_DOWNLOADS: &str = "no download directory: Windows names no Downloads folder";
 
 pub struct Paths {
     pub state: PathBuf,
@@ -23,20 +30,19 @@ pub struct Paths {
 
 impl Paths {
     /// `$STATE_DIRECTORY` under systemd, else `$XDG_STATE_HOME/andromeda-link`, else `~/.local/state/andromeda-link`
-    /// (on macOS `~/Library/Application Support/Andromeda Link`).
+    /// (on macOS `~/Library/Application Support/Andromeda Link`, on Windows `Andromeda Link` in the Local `AppData` folder).
     pub fn create() -> anyhow::Result<Self> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
         let dir = std::env::var_os("STATE_DIRECTORY")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("XDG_STATE_HOME").map(|state| PathBuf::from(state).join("andromeda-link")))
-            .or_else(|| home.as_ref().map(|home| home.join(HOME_STATE)))
-            .context("no state directory: set XDG_STATE_HOME or HOME")?;
+            .or_else(default_state)
+            .context(NO_STATE)?;
         if !dir.exists() {
-            DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+            link_core::sys::create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         fs::metadata(&dir).with_context(|| format!("state directory {}", dir.display()))?;
         adopt_umbriel_state(&dir)?;
-        let downloads = download_dir(home.as_deref()).context("no download directory: set HOME")?;
+        let downloads = downloads_dir().context(NO_DOWNLOADS)?;
         Ok(Self {
             identity: dir.join("identity.pk8"),
             sealed_identity: dir.join("identity.cred"),
@@ -47,6 +53,17 @@ impl Paths {
             downloads,
         })
     }
+}
+
+#[cfg(unix)]
+fn default_state() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(HOME_STATE))
+}
+
+#[cfg(windows)]
+fn default_state() -> Option<PathBuf> {
+    let local = link_core::sys::known_folder(link_core::sys::KnownFolder::LocalAppData);
+    local.map(|local| local.join("Andromeda Link")).inspect_err(|error| log::error!("Local AppData: {error}")).ok()
 }
 
 /// Copies the identity and paired devices from `umbriel-link`, the state directory's old name, once.
@@ -66,11 +83,22 @@ fn adopt_umbriel_state(dir: &Path) -> anyhow::Result<()> {
 }
 
 /// The downloads folder as [`Paths::create`] picks it.
+#[cfg(unix)]
 pub fn downloads_dir() -> Option<PathBuf> {
     download_dir(std::env::var_os("HOME").map(PathBuf::from).as_deref())
 }
 
+/// `$XDG_DOWNLOAD_DIR`, else the Downloads folder wherever the user moved it.
+#[cfg(windows)]
+pub fn downloads_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_DOWNLOAD_DIR").map(PathBuf::from).or_else(|| {
+        let downloads = link_core::sys::known_folder(link_core::sys::KnownFolder::Downloads);
+        downloads.inspect_err(|error| log::error!("the Downloads folder: {error}")).ok()
+    })
+}
+
 /// `$XDG_DOWNLOAD_DIR`, else the one in `user-dirs.dirs`, else `~/Downloads`.
+#[cfg(unix)]
 fn download_dir(home: Option<&Path>) -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR") {
         return Some(PathBuf::from(dir));

@@ -1,5 +1,5 @@
-//! The API over the daemon's Unix socket, as on macOS: a real `andromeda-linkd` in its own network namespace serves two
-//! clients, which each get a method's reply and the property change it causes.
+//! The API over the daemon's Unix socket, as on macOS, or its named pipe on Windows: a real `andromeda-linkd` (on Linux
+//! in its own network namespace) serves two clients, which each get a method's reply and the property change it causes.
 #![expect(clippy::expect_used, reason = "a failed step fails the test")]
 
 use std::path::{Path, PathBuf};
@@ -21,14 +21,44 @@ impl Drop for Daemon {
     }
 }
 
+#[cfg(unix)]
+fn address(dir: &Path) -> PathBuf {
+    dir.join("link.sock")
+}
+
+#[cfg(windows)]
+fn address(_dir: &Path) -> String {
+    format!(r"\\.\pipe\andromeda-link-test-socket-{}", std::process::id())
+}
+
+#[cfg(unix)]
+async fn connect(dir: &Path) -> zbus::Result<zbus::Connection> {
+    link_api::connect_socket(&address(dir)).await
+}
+
+#[cfg(windows)]
+async fn connect(dir: &Path) -> zbus::Result<zbus::Connection> {
+    link_api::connect_pipe(&address(dir)).await
+}
+
+#[cfg(unix)]
+fn daemon() -> Command {
+    let mut command = Command::new("unshare");
+    // The client's uid must map to itself, or the D-Bus handshake refuses it.
+    command.args(["--user", "--map-current-user", "--net"]).arg(env!("CARGO_BIN_EXE_andromeda-linkd"));
+    command
+}
+
+#[cfg(windows)]
+fn daemon() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_andromeda-linkd"))
+}
+
 fn start(dir: &Path) -> Daemon {
     std::fs::create_dir_all(dir).expect("creating the test directory");
     let nowhere = format!("unix:path={}", dir.join("no-bus").display());
-    let child = Command::new("unshare")
-        // The client's uid must map to itself, or the D-Bus handshake refuses it.
-        .args(["--user", "--map-current-user", "--net"])
-        .arg(env!("CARGO_BIN_EXE_andromeda-linkd"))
-        .env(link_api::SOCKET_ENV, dir.join("link.sock"))
+    let child = daemon()
+        .env(link_api::SOCKET_ENV, address(dir))
         .env("XDG_STATE_HOME", dir.join("state"))
         .env("XDG_DOWNLOAD_DIR", dir.join("downloads"))
         .env("DBUS_SESSION_BUS_ADDRESS", &nowhere)
@@ -55,16 +85,15 @@ async fn pairing_becomes(proxy: &Link1Proxy<'_>, changes: &mut zbus::proxy::Prop
 async fn method_reply_and_signal_cross_the_socket() {
     let dir = std::env::temp_dir().join(format!("link-socket-test-{}", std::process::id()));
     let daemon = start(&dir);
-    let socket = dir.join("link.sock");
     let deadline = Instant::now() + WAIT;
     let first = loop {
-        if let Ok(connection) = link_api::connect_socket(&socket).await {
+        if let Ok(connection) = connect(&dir).await {
             break connection;
         }
-        assert!(Instant::now() < deadline, "andromeda-linkd serves no socket at {}", socket.display());
+        assert!(Instant::now() < deadline, "andromeda-linkd serves no API at {:?}", address(&dir));
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let second = link_api::connect_socket(&socket).await.expect("a second client");
+    let second = connect(&dir).await.expect("a second client");
     let caller = Link1Proxy::new(&first).await.expect("the first client's proxy");
     let watcher = Link1Proxy::new(&second).await.expect("the second client's proxy");
     let mut caller_changes = caller.receive_pairing_changed().await;

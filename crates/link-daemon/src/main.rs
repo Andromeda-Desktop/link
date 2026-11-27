@@ -1,5 +1,5 @@
 //! `andromeda-linkd`: the desktop side of Link. No UI; clients drive it over `org.andromeda.Link1`, on the session bus
-//! or, where there is none, on a Unix socket.
+//! or, where there is none, on a Unix socket or a named pipe.
 
 mod bluetooth;
 mod browse;
@@ -8,14 +8,17 @@ mod control;
 mod dbus;
 mod desktop_media;
 #[cfg_attr(target_os = "macos", path = "hotspot_mac.rs")]
+#[cfg_attr(windows, path = "hotspot_none.rs")]
 mod hotspot;
 mod hub;
+#[cfg(unix)]
 mod ifaddrs;
 #[cfg(target_os = "linux")]
 mod iwd;
 #[cfg(target_os = "linux")]
 mod l2cap;
 mod listener;
+mod local;
 mod localsend;
 mod low_delay;
 mod media;
@@ -30,12 +33,12 @@ mod remote;
 mod save;
 mod sealed;
 mod socket;
+#[cfg_attr(windows, path = "usb_none.rs")]
 mod usb;
-#[cfg_attr(target_os = "macos", path = "wifi_direct_none.rs")]
+#[cfg_attr(any(target_os = "macos", windows), path = "wifi_direct_none.rs")]
 mod wifi_direct;
 
 use std::net::{Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -44,6 +47,7 @@ use link_core::inbox::Inbox;
 use link_core::store::Store;
 use link_core::transfer;
 use link_core::transport::PathServer;
+#[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
@@ -89,14 +93,17 @@ async fn run() -> anyhow::Result<()> {
         store.port = port;
         store.save(&paths.devices)?;
     }
+    #[cfg(unix)]
     let transport = match link_api::socket_path() {
         Some(path) => Transport::Socket(path),
         None => Transport::Bus(zbus::Connection::session().await.context("connecting to the session bus")?),
     };
+    #[cfg(windows)]
+    let transport = Transport::Socket(link_api::pipe_name().context("naming the API pipe")?);
     let name = dbus::device_name().await;
     log::info!("{} listening on port {port} as {:?}", identity.device_id(), name);
 
-    let state_dir = paths.state.clone();
+    let (state_dir, downloads) = (paths.state.clone(), paths.downloads.clone());
     let inbox = Inbox::new(paths.downloads.clone(), &paths.state).context("opening the transfer state")?;
     let (transfers, transfer_actor, transfer_events) = transfer::transfers(inbox);
     let (signals, localsend_signals) = tokio::sync::mpsc::unbounded_channel();
@@ -123,7 +130,8 @@ async fn run() -> anyhow::Result<()> {
     if let Transport::Bus(bus) = &transport {
         dbus::serve(bus, handle.clone(), snapshots.clone(), nearby.clone()).await?;
     }
-    let (quick_share, qs_handle, qs_watches, qs_events) = quickshare::QuickShare::new(&name, &state_dir, mdns.clone())?;
+    let (quick_share, qs_handle, qs_watches, qs_events) =
+        quickshare::QuickShare::new(&name, &state_dir, downloads, mdns.clone())?;
     if let Transport::Bus(bus) = &transport {
         quickshare::serve(bus, qs_handle.clone(), qs_watches.clone(), name.clone()).await?;
         // Clients query on NameOwnerChanged: every interface is exported before the name is owned.
@@ -139,7 +147,10 @@ async fn run() -> anyhow::Result<()> {
     };
     let listener =
         listener::Listener::new(server, bluetooth, relay, relay_seen, handle.clone(), identity.spki().clone(), name);
+    #[cfg(unix)]
     let mut terminate = signal(SignalKind::terminate())?;
+    #[cfg(windows)]
+    let mut terminate = tokio::signal::windows::ctrl_shutdown()?;
     #[cfg(not(target_os = "linux"))]
     let replaced = std::future::pending::<()>;
     #[cfg(not(target_os = "linux"))]
@@ -166,8 +177,9 @@ async fn run() -> anyhow::Result<()> {
 }
 
 enum Transport {
+    #[cfg_attr(windows, expect(dead_code, reason = "Windows has no session bus"))]
     Bus(zbus::Connection),
-    Socket(PathBuf),
+    Socket(socket::Address),
 }
 
 /// Forwards state and events to the API's clients; desktop media control is MPRIS on the bus, media keys otherwise.

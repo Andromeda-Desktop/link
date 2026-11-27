@@ -28,6 +28,7 @@ impl HubHandle {
     }
 
     /// How many phones' `adb reverse` reach this desktop's USB listener now.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the USB path uses it"))]
     pub async fn usb_cables(&self, cables: usize) {
         self.tell(Command::UsbCables(cables)).await;
     }
@@ -72,6 +73,7 @@ impl HubHandle {
     }
 
     /// Asks the phone to mirror its screen; answered once the user allowed it there and the video stream arrived.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn open_mirror(
         &self,
         id: DeviceId,
@@ -86,6 +88,7 @@ impl HubHandle {
     }
 
     /// Starts or switches a phone's remote control to `stream`.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn serve_remote(&self, id: DeviceId, stream: RemoteStream) -> Result<(), String> {
         let (reply, answer) = oneshot::channel();
         self.tell(Command::ServeRemote { id, stream, reply }).await;
@@ -94,6 +97,7 @@ impl HubHandle {
 
     /// Asks the phone for its microphone, sound or camera (whose video may come in `codecs` besides H.264); answered
     /// once the user allowed it there and its stream arrived.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn open_capture(
         &self,
         id: DeviceId,
@@ -113,7 +117,8 @@ impl HubHandle {
     }
 
     /// Opens a stream of sound to the phone's speaker; returns the socket that takes its Opus units.
-    pub async fn open_speaker(&self, id: DeviceId) -> Result<std::os::fd::OwnedFd, crate::mirror::Failure> {
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    pub async fn open_speaker(&self, id: DeviceId) -> Result<crate::local::Handle, crate::mirror::Failure> {
         let (reply, answer) = oneshot::channel();
         self.tell(Command::OpenSpeaker { id, reply }).await;
         answer.await.unwrap_or(Err(crate::mirror::Failure::NotConnected))
@@ -224,11 +229,13 @@ impl HubHandle {
     }
 
     /// Connected devices holding the clipboard grant.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn clipboard_peers(&self) -> Vec<DeviceId> {
         self.request(|reply| Command::ClipboardPeers { reply }).await.unwrap_or_default()
     }
 
     /// Offers files to a Link device or a `localsend:<fingerprint>` peer.
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub async fn send_files(&self, device: String, sources: Vec<Source>) -> Result<TransferId, link_core::Error> {
         self.request(|reply| Command::SendFiles { device, sources, reply })
             .await
@@ -256,6 +263,7 @@ impl HubHandle {
         self.request(|reply| Command::SetAutoAccept { id, enabled, reply }).await.unwrap_or(false)
     }
 
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     pub fn transfers(&self) -> &TransferHandle {
         &self.transfers
     }

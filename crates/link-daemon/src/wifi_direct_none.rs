@@ -1,4 +1,4 @@
-//! macOS joins no Wi-Fi Direct group, so its hello leaves out `feature:wifi-direct-join` and phones use their hotspot.
+//! This desktop joins no Wi-Fi Direct group, so its hello leaves out `feature:wifi-direct-join` and phones use their hotspot.
 
 use crate::hotspot::{Active, Joined};
 

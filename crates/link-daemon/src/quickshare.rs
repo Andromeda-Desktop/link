@@ -50,6 +50,7 @@ enum Command {
         owner: String,
         on: bool,
     },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     Send {
         peer: String,
         files: Vec<(std::fs::File, String)>,
@@ -101,10 +102,11 @@ pub struct QuickShare {
 }
 
 impl QuickShare {
-    /// Visibility persists across restarts as a marker file in the state directory.
+    /// Visibility persists across restarts as a marker file in the state directory; received files go to `downloads`.
     pub fn new(
         name: &str,
         state_dir: &Path,
+        downloads: PathBuf,
         mdns: Option<ServiceDaemon>,
     ) -> anyhow::Result<(Self, Handle, Watches, mpsc::Receiver<Event>)> {
         let (commands_tx, commands) = mpsc::channel(8);
@@ -115,7 +117,7 @@ impl QuickShare {
         let this = Self {
             own: Endpoint::new(name, DEVICE_LAPTOP)?,
             mdns,
-            downloads: downloads_dir(),
+            downloads,
             marker: state_dir.join("quickshare-visible"),
             visible: None,
             visible_tx,
@@ -378,19 +380,6 @@ async fn accept(visible: Option<&Visible>) -> std::io::Result<(tokio::net::TcpSt
     }
 }
 
-/// `XDG_DOWNLOAD_DIR` from user-dirs.dirs, else ~/Downloads.
-fn downloads_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-    let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-    let configured = std::fs::read_to_string(config.join("user-dirs.dirs")).ok().and_then(|dirs| {
-        dirs.lines().find_map(|line| {
-            let value = line.strip_prefix("XDG_DOWNLOAD_DIR=")?.trim().trim_matches('"');
-            Some(PathBuf::from(value.replace("$HOME", &home.to_string_lossy())))
-        })
-    });
-    configured.unwrap_or_else(|| home.join("Downloads"))
-}
-
 impl Handle {
     async fn set_visible(&self, visible: bool) -> Result<(), String> {
         let (reply, result) = oneshot::channel();
@@ -404,6 +393,7 @@ impl Handle {
         }
     }
 
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
     async fn send(&self, peer: String, files: Vec<(std::fs::File, String)>) -> Result<u64, String> {
         let (reply, result) = oneshot::channel();
         self.0.send(Command::Send { peer, files, reply }).await.map_err(|_| "stopped".to_owned())?;
@@ -607,7 +597,7 @@ mod tests {
     /// A running Quick Share without mDNS that has found one peer, so a stop shows as an empty `nearby`.
     fn running() -> anyhow::Result<(Handle, Nearby)> {
         let state = std::env::temp_dir().join(format!("link-qs-test-{}", std::process::id()));
-        let (mut qs, handle, watches, _events) = QuickShare::new("test", &state, None)?;
+        let (mut qs, handle, watches, _events) = QuickShare::new("test", &state, state.join("downloads"), None)?;
         qs.peers.insert("p".to_owned(), Peer { name: "Phone".to_owned(), addresses: Vec::new() });
         qs.publish_nearby();
         tokio::spawn(qs.run());

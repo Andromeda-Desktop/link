@@ -276,49 +276,185 @@ enum Backend {
 }
 
 enum Command {
-    StartPairing { reply: oneshot::Sender<anyhow::Result<(String, String)>> },
+    StartPairing {
+        reply: oneshot::Sender<anyhow::Result<(String, String)>>,
+    },
     CancelPairing,
     UsbCables(usize),
-    Unpair { id: DeviceId, reply: oneshot::Sender<bool> },
-    SetPaused { id: DeviceId, paused: bool, reply: oneshot::Sender<bool> },
-    AnswerHotspot { id: DeviceId, allow: bool },
-    ConfirmBtPairing { passkey: u32, reply: oneshot::Sender<bool> },
-    Admit { spki: Spki, reply: oneshot::Sender<Admission> },
-    Paired { spki: Spki, name: String, window: u64 },
-    PairingFailed { reason: String, window: u64 },
-    ReleaseWindow { window: u64 },
-    Connected { id: DeviceId, hello: Hello, session: SessionHandle },
-    Disconnected { id: DeviceId, stable_id: usize },
-    Session { id: DeviceId, needs: Option<Feature>, reply: SessionReply },
-    SetAutoAccept { id: DeviceId, enabled: bool, reply: oneshot::Sender<bool> },
-    SetGrant { id: DeviceId, feature: String, granted: bool, reply: oneshot::Sender<bool> },
-    SendFiles { device: String, sources: Vec<Source>, reply: oneshot::Sender<Result<TransferId, link_core::Error>> },
-    Decide { id: TransferId, accept: bool, reply: oneshot::Sender<bool> },
-    CancelTransfer { id: TransferId, reply: oneshot::Sender<bool> },
-    SetLocalSend { visible: bool },
-    SetNotifyLocked { on: bool },
-    ClipboardPeers { reply: oneshot::Sender<Vec<DeviceId>> },
-    DesktopPlayer { player: MediaPlayer },
-    DesktopPlayerGone { player: String },
-    MediaKey { key: &'static str },
-    Browse { id: DeviceId, request: browse::Request, reply: browse::Reply },
-    SendText { id: DeviceId, to: String, body: String, reply: crate::messages::SendReply },
-    Dial { id: DeviceId, number: String, reply: crate::messages::SendReply },
-    TakePhoto { id: DeviceId, reply: crate::messages::PhotoReply },
-    OpenMirror { id: DeviceId, ask: crate::mirror::Ask },
-    ServeRemote { id: DeviceId, stream: RemoteStream, reply: oneshot::Sender<Result<(), String>> },
-    OpenCapture { id: DeviceId, audio: Capture, ask: crate::mirror::Ask },
-    StopCapture { id: DeviceId, audio: Capture },
-    OpenSpeaker { id: DeviceId, reply: oneshot::Sender<Result<std::os::fd::OwnedFd, crate::mirror::Failure>> },
-    StopRemote { id: DeviceId, reason: String },
-    SetCommands { commands: Vec<StoredCommand>, reply: oneshot::Sender<bool> },
-    SetCapabilities { owner: String, can: Vec<String> },
-    CapabilitiesGone { owner: String },
-    SetDesktopStatus { status: DesktopStatus },
-    SystemResult { id: DeviceId, serial: u64, error: Option<String> },
-    SystemToPhone { id: DeviceId, command: SystemCommand, reply: oneshot::Sender<Result<(), String>> },
-    Ping { id: DeviceId, message: Option<String>, reply: oneshot::Sender<Result<(), link_core::Error>> },
-    Doctor { reply: oneshot::Sender<Vec<Checkup>> },
+    Unpair {
+        id: DeviceId,
+        reply: oneshot::Sender<bool>,
+    },
+    SetPaused {
+        id: DeviceId,
+        paused: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    AnswerHotspot {
+        id: DeviceId,
+        allow: bool,
+    },
+    ConfirmBtPairing {
+        passkey: u32,
+        reply: oneshot::Sender<bool>,
+    },
+    Admit {
+        spki: Spki,
+        reply: oneshot::Sender<Admission>,
+    },
+    Paired {
+        spki: Spki,
+        name: String,
+        window: u64,
+    },
+    PairingFailed {
+        reason: String,
+        window: u64,
+    },
+    ReleaseWindow {
+        window: u64,
+    },
+    Connected {
+        id: DeviceId,
+        hello: Hello,
+        session: SessionHandle,
+    },
+    Disconnected {
+        id: DeviceId,
+        stable_id: usize,
+    },
+    Session {
+        id: DeviceId,
+        needs: Option<Feature>,
+        reply: SessionReply,
+    },
+    SetAutoAccept {
+        id: DeviceId,
+        enabled: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    SetGrant {
+        id: DeviceId,
+        feature: String,
+        granted: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    SendFiles {
+        device: String,
+        sources: Vec<Source>,
+        reply: oneshot::Sender<Result<TransferId, link_core::Error>>,
+    },
+    Decide {
+        id: TransferId,
+        accept: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    CancelTransfer {
+        id: TransferId,
+        reply: oneshot::Sender<bool>,
+    },
+    SetLocalSend {
+        visible: bool,
+    },
+    SetNotifyLocked {
+        on: bool,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    ClipboardPeers {
+        reply: oneshot::Sender<Vec<DeviceId>>,
+    },
+    DesktopPlayer {
+        player: MediaPlayer,
+    },
+    DesktopPlayerGone {
+        player: String,
+    },
+    MediaKey {
+        key: &'static str,
+    },
+    Browse {
+        id: DeviceId,
+        request: browse::Request,
+        reply: browse::Reply,
+    },
+    SendText {
+        id: DeviceId,
+        to: String,
+        body: String,
+        reply: crate::messages::SendReply,
+    },
+    Dial {
+        id: DeviceId,
+        number: String,
+        reply: crate::messages::SendReply,
+    },
+    TakePhoto {
+        id: DeviceId,
+        reply: crate::messages::PhotoReply,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    OpenMirror {
+        id: DeviceId,
+        ask: crate::mirror::Ask,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    ServeRemote {
+        id: DeviceId,
+        stream: RemoteStream,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    OpenCapture {
+        id: DeviceId,
+        audio: Capture,
+        ask: crate::mirror::Ask,
+    },
+    StopCapture {
+        id: DeviceId,
+        audio: Capture,
+    },
+    #[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
+    OpenSpeaker {
+        id: DeviceId,
+        reply: oneshot::Sender<Result<crate::local::Handle, crate::mirror::Failure>>,
+    },
+    StopRemote {
+        id: DeviceId,
+        reason: String,
+    },
+    SetCommands {
+        commands: Vec<StoredCommand>,
+        reply: oneshot::Sender<bool>,
+    },
+    SetCapabilities {
+        owner: String,
+        can: Vec<String>,
+    },
+    CapabilitiesGone {
+        owner: String,
+    },
+    SetDesktopStatus {
+        status: DesktopStatus,
+    },
+    SystemResult {
+        id: DeviceId,
+        serial: u64,
+        error: Option<String>,
+    },
+    SystemToPhone {
+        id: DeviceId,
+        command: SystemCommand,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Ping {
+        id: DeviceId,
+        message: Option<String>,
+        reply: oneshot::Sender<Result<(), link_core::Error>>,
+    },
+    Doctor {
+        reply: oneshot::Sender<Vec<Checkup>>,
+    },
 }
 
 /// One paired device as `link doctor` shows it.
@@ -435,7 +571,7 @@ pub struct Hub {
 
 /// `link-session`'s socket of access units for a phone's remote control, and what it shows.
 pub struct RemoteStream {
-    pub socket: std::os::fd::OwnedFd,
+    pub socket: crate::local::Handle,
     pub width: u32,
     pub height: u32,
     pub started: link_core::proto::message::RemoteStarted,

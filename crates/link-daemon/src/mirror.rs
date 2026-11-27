@@ -2,7 +2,6 @@
 //! and the pump from the phone's video stream into the viewer's socket, in the stream's own framing.
 
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use link_core::identity::DeviceId;
@@ -26,9 +25,10 @@ const CAMERA_HEIGHT: u32 = 720;
 /// How often a phone that takes `mirror-lag` hears how late its video arrives.
 const LAG_REPORT: Duration = Duration::from_millis(500);
 
+#[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
 pub struct Opened {
     /// The viewer's end of a socket carrying the phone's access units.
-    pub stream: OwnedFd,
+    pub stream: crate::local::Handle,
     pub width: u32,
     pub height: u32,
     /// H.264 when None.
@@ -36,6 +36,7 @@ pub struct Opened {
 }
 
 #[derive(Debug)]
+#[cfg_attr(windows, expect(dead_code, reason = "only the Unix Link1 members that pass a descriptor use it"))]
 pub enum Failure {
     NotConnected,
     /// The session is on Bluetooth, which carries tens of KB/s, and the phone's hotspot did not come up.
@@ -226,17 +227,12 @@ impl Mirrors {
                 reply.send(Err(Failure::Failed(format!("the phone sent {codec:?} video, which was not asked for")))),
             );
         }
-        let (ours, theirs) = match std::os::unix::net::UnixStream::pair() {
+        let (ours, theirs) = match crate::local::pair() {
             Ok(pair) => pair,
             Err(error) => return drop(reply.send(Err(Failure::Failed(error.to_string())))),
         };
         let (width, height) = (receiver.width, receiver.height);
-        let ours = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours));
-        let ours = match ours {
-            Ok(ours) => ours,
-            Err(error) => return drop(reply.send(Err(Failure::Failed(error.to_string())))),
-        };
-        if reply.send(Ok(Opened { stream: theirs.into(), width, height, codec })).is_err() {
+        if reply.send(Ok(Opened { stream: theirs, width, height, codec })).is_err() {
             return receiver.stop();
         }
         match self.kind {
@@ -322,7 +318,7 @@ async fn power_save(on: bool) {
 /// flagged [`MIRROR_END`] follows; a viewer whose socket closes without it lost the stream and may open it again.
 async fn pump(
     receiver: &mut MirrorReceiver,
-    mut viewer: tokio::net::UnixStream,
+    mut viewer: crate::local::Stream,
     mut stopped: oneshot::Receiver<()>,
     session: Option<SessionHandle>,
 ) -> anyhow::Result<()> {
