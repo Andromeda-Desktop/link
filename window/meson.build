@@ -18,7 +18,7 @@ endif
 
 _warnings = ['-Wall', '-Wextra', '-Wno-missing-field-initializers', '-Wpedantic', '-Wconversion', '-Wshadow']
 
-_desk = dependency('andromeda-desk', static: true)
+_desk = dependency('andromeda-desk')
 _translations = '-DANDROMEDA_TRANSLATIONS_DIR="' + meson.current_source_dir() / 'translations' + '"'
 _av_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libavfilter'), dependency('libswscale'),
             dependency('libva')]
