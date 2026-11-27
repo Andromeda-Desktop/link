@@ -1,6 +1,8 @@
 //! What phone and desktop share about Bluetooth: how a phone opens a link, and the transfer limits over one.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 
 /// Files are offered over Bluetooth only up to this total; a larger offer waits for Wi-Fi or the hotspot.
@@ -22,6 +24,7 @@ pub const PAIRING_SCAN: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Opens a link to a desktop's Bluetooth adapter (`AA:BB:CC:DD:EE:FF`). Blocking, since the platforms connect
 /// synchronously; the phone calls it off the runtime.
+#[cfg(unix)]
 pub trait BluetoothOpener: Send + Sync {
     /// Opens RFCOMM as a byte-stream descriptor ([`crate::path::StreamLink`]). With `pair`, the platform first pairs
     /// Bluetooth with the desktop when it is not paired yet, which the user confirms on both screens; only Link

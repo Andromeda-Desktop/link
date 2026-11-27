@@ -5,7 +5,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,6 +17,7 @@ use crate::Error;
 use crate::control::STEP_TIMEOUT;
 use crate::identity::DeviceId;
 use crate::session::SessionHandle;
+use crate::sys;
 
 /// How a share call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl Queues {
     /// Writes atomically: a mode-0600 temporary file renamed over `path`.
     fn save(&self, path: &Path) -> Result<(), Error> {
         let tmp = path.with_extension("tmp");
-        let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut file = sys::private(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
         file.write_all(&serde_json::to_vec(self)?)?;
         file.sync_all()?;
         fs::rename(&tmp, path)?;

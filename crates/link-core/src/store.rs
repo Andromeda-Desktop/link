@@ -3,7 +3,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::SocketAddr;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,6 +14,7 @@ use link_proto::message::{Hotspot, Message};
 
 use crate::Error;
 use crate::identity::{DeviceId, Spki};
+use crate::sys;
 
 const MAX_ADDRESSES: usize = 8;
 
@@ -423,7 +423,7 @@ impl Store {
     /// Writes atomically: a mode-0600 temporary file renamed over `path`.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         let tmp = path.with_extension("tmp");
-        let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut file = sys::private(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
         file.write_all(&serde_json::to_vec_pretty(self)?)?;
         file.sync_all()?;
         fs::rename(&tmp, path)?;

@@ -3,6 +3,7 @@
 pub mod bluetooth;
 pub mod browse;
 pub mod camera;
+#[cfg(unix)]
 pub mod client;
 pub mod control;
 pub mod discovery;
@@ -16,12 +17,14 @@ pub mod net;
 pub mod outbox;
 pub mod pairing;
 pub mod path;
+#[cfg(unix)]
 pub mod phone;
 pub mod reach;
 pub mod relay;
 pub mod session;
 pub mod slot;
 pub mod store;
+pub mod sys;
 pub mod tls;
 pub mod transfer;
 pub mod transport;

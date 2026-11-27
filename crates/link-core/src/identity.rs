@@ -1,7 +1,6 @@
 use std::fmt::{self, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use ring::rand::SystemRandom;
@@ -9,6 +8,7 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::sys;
 
 const ED25519_SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
 const ED25519_SPKI_LEN: usize = ED25519_SPKI_PREFIX.len() + 32;
@@ -119,7 +119,7 @@ impl Identity {
 
     /// Writes the key to a new file at `path` with mode 0600.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
-        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        let mut file = sys::private(OpenOptions::new().write(true).create_new(true)).open(path)?;
         file.write_all(&self.pkcs8)?;
         file.sync_all()?;
         Ok(())

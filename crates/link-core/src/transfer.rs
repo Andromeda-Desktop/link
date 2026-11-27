@@ -4,7 +4,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +26,7 @@ use crate::control::{STEP_TIMEOUT, read_frame, write_frame};
 use crate::identity::DeviceId;
 use crate::inbox::{self, Inbox, Part, Record, RecordFile};
 use crate::session::SessionHandle;
+use crate::sys;
 use crate::wire::{RecvStream, SendStream};
 
 mod clip;
@@ -1286,7 +1286,7 @@ fn read_batch(
         buf.resize(want, 0);
         let mut filled = 0;
         while filled < want {
-            let read = file.read_at(&mut buf[filled..], offset + filled as u64)?;
+            let read = sys::read_at(&file, &mut buf[filled..], offset + filled as u64)?;
             if read == 0 {
                 return Err(Error::Io(std::io::Error::other("the file shrank while it was sent")));
             }
@@ -1379,7 +1379,7 @@ fn hash_all(files: &[(Arc<File>, u64)]) -> Result<Vec<Vec<u8>>, Error> {
         let mut offset = 0;
         while offset < *size {
             let want = usize::try_from(size - offset).map_or(BATCH, |left| left.min(BATCH));
-            let read = file.read_at(&mut buf[..want], offset)?;
+            let read = sys::read_at(file, &mut buf[..want], offset)?;
             if read == 0 {
                 return Err(Error::Io(std::io::Error::other("the file shrank while it was hashed")));
             }

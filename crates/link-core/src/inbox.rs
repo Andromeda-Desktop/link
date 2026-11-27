@@ -3,7 +3,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 use crate::identity::DeviceId;
+use crate::sys;
 
 /// `NAME_MAX` on Linux filesystems.
 const MAX_NAME: usize = 255;
@@ -26,11 +26,7 @@ pub struct Inbox {
     records: PathBuf,
 }
 
-/// Free and total bytes of the download directory's filesystem.
-pub struct Space {
-    pub free: u64,
-    pub total: u64,
-}
+pub use crate::sys::Space;
 
 /// A receiver's state for one transfer, kept on disk until it finishes or expires.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,11 +107,7 @@ impl Inbox {
 
     pub fn space(&self) -> Result<Space, Error> {
         fs::create_dir_all(&self.downloads)?;
-        let stat = rustix::fs::statvfs(&self.downloads).map_err(io::Error::from)?;
-        Ok(Space {
-            free: stat.f_bavail.saturating_mul(stat.f_frsize),
-            total: stat.f_blocks.saturating_mul(stat.f_frsize),
-        })
+        Ok(sys::space(&self.downloads)?)
     }
 
     /// Creates `.<name>.linkpart` with `O_EXCL`, numbering it when taken.
@@ -124,7 +116,7 @@ impl Inbox {
         let stem = cut(name, MAX_PART_STEM);
         for n in 0..1000 {
             let path = self.downloads.join(format!(".{}{PART_SUFFIX}", numbered(stem, n)));
-            match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+            match sys::private(OpenOptions::new().write(true).create_new(true)).open(&path) {
                 Ok(_) => return Ok(path),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.into()),
@@ -149,7 +141,7 @@ impl Inbox {
     pub fn save(&self, record: &Record) -> Result<(), Error> {
         let path = self.record_path(&record.transfer);
         let tmp = path.with_extension("tmp");
-        let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut file = sys::private(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
         file.write_all(&serde_json::to_vec(record)?)?;
         file.sync_data()?;
         fs::rename(&tmp, &path)?;
@@ -197,10 +189,10 @@ impl Inbox {
 fn place(part: &Path, path: &Path) -> io::Result<()> {
     match fs::hard_link(part, path) {
         Ok(()) => fs::remove_file(part),
-        // Android's SELinux policy denies apps `link`; a rename that refuses to replace is as safe.
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            let (cwd, flags) = (rustix::fs::CWD, rustix::fs::RenameFlags::NOREPLACE);
-            rustix::fs::renameat_with(cwd, part, cwd, path, flags).map_err(io::Error::from)
+        // Android's SELinux policy denies apps `link`, and FAT volumes have no hard links; a rename that refuses to
+        // replace is as safe.
+        Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported) => {
+            sys::rename_noreplace(part, path)
         }
         Err(error) => Err(error),
     }
@@ -227,15 +219,14 @@ impl Record {
 impl Part {
     /// Opens an existing part, cut to `offset`, and re-hashes what it holds: a digest context cannot be saved.
     pub fn open(path: &Path, offset: u64) -> Result<Self, Error> {
-        let flags = rustix::fs::OFlags::NOFOLLOW.bits();
-        let file = OpenOptions::new().read(true).write(true).custom_flags(flags.cast_signed()).open(path)?;
+        let file = sys::open_nofollow(OpenOptions::new().read(true).write(true), path)?;
         file.set_len(offset)?;
         let mut hasher = digest::Context::new(&digest::SHA256);
         let mut buf = vec![0; REHASH_CHUNK];
         let mut at = 0;
         while at < offset {
             let want = usize::try_from(offset - at).map_or(REHASH_CHUNK, |left| left.min(REHASH_CHUNK));
-            let read = file.read_at(&mut buf[..want], at)?;
+            let read = sys::read_at(&file, &mut buf[..want], at)?;
             if read == 0 {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
             }
@@ -246,7 +237,7 @@ impl Part {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.file.write_all_at(bytes, self.offset)?;
+        sys::write_all_at(&self.file, bytes, self.offset)?;
         self.hasher.update(bytes);
         self.offset += bytes.len() as u64;
         Ok(())

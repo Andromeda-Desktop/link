@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -16,6 +15,7 @@ use link_proto::message::{
 };
 
 use crate::session::SessionHandle;
+use crate::sys;
 
 /// Browse requests one desktop may have in flight; more are answered `busy`.
 pub const MAX_IN_FLIGHT: usize = 8;
@@ -189,15 +189,15 @@ impl Roots {
     fn write(&self, write: &FsWrite) -> Result<FsEntry, FsRefusal> {
         let path = self.writable(&write.path)?;
         let mut options = fs::OpenOptions::new();
-        options.write(true).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed());
+        options.write(true);
         if write.offset == 0 {
             options.create_new(true);
         }
-        let file = options.open(&path).map_err(|error| match error.kind() {
+        let file = sys::open_nofollow(&mut options, &path).map_err(|error| match error.kind() {
             io::ErrorKind::AlreadyExists => FsRefusal::Denied,
             _ => refusal(&error),
         })?;
-        file.write_all_at(&write.data, write.offset).map_err(|error| refusal(&error))?;
+        sys::write_all_at(&file, &write.data, write.offset).map_err(|error| refusal(&error))?;
         let metadata = file.metadata().map_err(|error| refusal(&error))?;
         let name = write.path.rsplit('/').next().unwrap_or_default().to_owned();
         Ok(FsEntry { name, dir: false, size: metadata.len(), mtime: mtime(&metadata) })
@@ -332,7 +332,7 @@ fn reading(roots: &Roots, read: &FsRead) -> Vec<Message> {
     let mut buf = vec![0; read.len as usize];
     let mut filled = 0;
     while filled < buf.len() {
-        match file.read_at(&mut buf[filled..], read.offset + filled as u64) {
+        match sys::read_at(&file, &mut buf[filled..], read.offset + filled as u64) {
             Ok(0) => break,
             Ok(n) => filled += n,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}

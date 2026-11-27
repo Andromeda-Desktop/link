@@ -4,7 +4,8 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write as _;
-use std::os::unix::fs::{FileExt, FileTypeExt};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt as _;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,7 +13,9 @@ use link_proto::clip::{ClipRefused, ClipState, Serve};
 use link_proto::message::{ClipOffer, ClipPull, MAX_CLIP_SIZE, MAX_SHARE_LEN, Message, is_text_mime};
 use link_proto::transfer::Budget;
 use ring::rand::{SecureRandom, SystemRandom};
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
+#[cfg(unix)]
 use tokio::net::unix::pipe;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -391,7 +394,7 @@ async fn serve(session: &SessionHandle, header: ClipPull, content: Option<Conten
             let mut offset = 0;
             while offset < size {
                 let want = usize::try_from(size - offset).map_or(CHUNK, |left| left.min(CHUNK));
-                let read = file.read_at(&mut buf[..want], offset)?;
+                let read = crate::sys::read_at(&file, &mut buf[..want], offset)?;
                 if read == 0 {
                     break;
                 }
@@ -407,20 +410,28 @@ async fn serve(session: &SessionHandle, header: ClipPull, content: Option<Conten
 
 /// A paste target: a pipe (a Wayland data source's) is written without blocking the runtime, a file directly.
 enum Sink {
+    #[cfg(unix)]
     Pipe(pipe::Sender),
     File(File),
 }
 
 impl Sink {
+    #[cfg_attr(windows, expect(clippy::unnecessary_wraps, reason = "only Unix pastes into a pipe"))]
     fn new(file: File) -> Result<Self, Error> {
+        #[cfg(unix)]
         if file.metadata()?.file_type().is_fifo() {
             return Ok(Self::Pipe(pipe::Sender::from_file(file)?));
         }
         Ok(Self::File(file))
     }
 
+    #[cfg_attr(
+        windows,
+        expect(clippy::unused_async, clippy::unused_async_trait_impl, reason = "only Unix pastes into a pipe")
+    )]
     async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
         match self {
+            #[cfg(unix)]
             Self::Pipe(pipe) => pipe.write_all(bytes).await?,
             Self::File(file) => file.write_all(bytes)?,
         }

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, IoSliceMut};
 use std::net::{IpAddr, SocketAddr};
+#[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -17,7 +18,9 @@ use std::time::{Duration, Instant};
 use quinn::congestion::{Controller, ControllerFactory};
 use quinn::udp::{RecvMeta, Transmit};
 use quinn::{AsyncUdpSocket, UdpPoller};
+#[cfg(unix)]
 use tokio::io::Interest;
+#[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{mpsc, watch};
 
@@ -62,9 +65,11 @@ pub trait MessageLink: Send + Sync + 'static {
     fn recv(&self, buf: &mut [u8]) -> impl Future<Output = io::Result<usize>> + Send;
 }
 
+#[cfg(unix)]
 /// A `SOCK_SEQPACKET` descriptor: `BlueZ`'s L2CAP socket, or one end of the Android app's socket pair.
 pub struct FdLink(AsyncFd<OwnedFd>);
 
+#[cfg(unix)]
 impl FdLink {
     pub fn new(fd: OwnedFd) -> io::Result<Self> {
         rustix::io::ioctl_fionbio(&fd, true)?;
@@ -74,6 +79,7 @@ impl FdLink {
     }
 }
 
+#[cfg(unix)]
 impl MessageLink for FdLink {
     fn kind(&self) -> LinkKind {
         LinkKind::Bluetooth
@@ -91,10 +97,12 @@ impl MessageLink for FdLink {
     }
 }
 
+#[cfg(unix)]
 /// A byte-stream descriptor (`BlueZ`'s RFCOMM socket, one end of a platform's stream socket pair): each message is a
 /// big-endian u16 length, then that many bytes. One task sends and one receives, so frames never interleave.
 pub struct StreamLink(AsyncFd<OwnedFd>, LinkKind);
 
+#[cfg(unix)]
 impl StreamLink {
     /// `kind` is what carries the stream: an RFCOMM socket is Bluetooth, a TCP stream over `adb reverse` is USB.
     pub fn new(fd: OwnedFd, kind: LinkKind) -> io::Result<Self> {
@@ -122,6 +130,7 @@ impl StreamLink {
     }
 }
 
+#[cfg(unix)]
 impl MessageLink for StreamLink {
     fn kind(&self) -> LinkKind {
         self.1
@@ -866,21 +875,28 @@ mod tests {
     use super::*;
     use crate::identity::Identity;
     use crate::tls::ServerPin;
-    use crate::transport::{Dialed, Dialer, PathServer, path_server_endpoint};
+    #[cfg(unix)]
+    use crate::transport::{Dialed, path_server_endpoint};
+    use crate::transport::{Dialer, PathServer};
+    #[cfg(unix)]
     use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
     use std::time::Duration;
 
     type Result = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+    #[cfg(unix)]
     const TOTAL: usize = 8 << 20;
+    #[cfg(unix)]
     const CHUNK: usize = 64 << 10;
 
+    #[cfg(unix)]
     fn byte(at: usize) -> u8 {
         u8::try_from(at % 251).unwrap_or(0)
     }
 
     /// One stream keeps flowing while the phone moves the connection from UDP to a link and back: it dials a virtual
     /// address, so quinn never sees the path change.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_live_stream_survives_moves_between_udp_and_a_link() -> Result {
         let server_socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;
@@ -973,6 +989,7 @@ mod tests {
 
     /// A desktop connection that moved onto a link ends when that link ends and the phone's last UDP address is
     /// gone, not at the idle timeout.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_connection_that_moved_onto_a_link_ends_with_it() -> Result {
         let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
@@ -1010,6 +1027,7 @@ mod tests {
     }
 
     /// A connection that runs over a link ends at both ends when one end closes the link, not at the idle timeout.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_connection_ends_with_its_link() -> Result {
         let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
@@ -1040,6 +1058,7 @@ mod tests {
     }
 
     /// QUIC runs over a byte-stream link (RFCOMM) as over a message one.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_stream_runs_whole_over_a_byte_stream_link() -> Result {
         let server = PathServer::bind(&Identity::generate()?, "[::1]:0".parse()?)?;
@@ -1073,6 +1092,7 @@ mod tests {
 
     /// A connection over UDP moves onto a USB link (a TCP stream) and back to UDP when the link ends, losing nothing;
     /// the USB link never gets the Bluetooth cap.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_connection_moves_onto_a_usb_link_and_back_to_udp_when_it_ends() -> Result {
         let server = PathServer::bind(&Identity::generate()?, "127.0.0.1:0".parse()?)?;
@@ -1120,6 +1140,7 @@ mod tests {
     }
 
     /// A frame that arrives in pieces, its length too, is still one message.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_byte_stream_link_joins_a_frame_that_arrives_in_pieces() -> Result {
         let (ours, theirs) = socketpair(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
@@ -1141,6 +1162,7 @@ mod tests {
     }
 
     /// An accepted link that no connection comes over ends.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn an_accepted_link_without_a_connection_ends() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("127.0.0.1:0")?)?;

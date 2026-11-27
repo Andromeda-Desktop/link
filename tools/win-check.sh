@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-crates=(link-proto link-quickshare)
+crates=(link-proto link-quickshare link-core)
 if [ "${1:-}" = --list ]; then printf '%s\n' "${crates[@]}"; exit 0; fi
 
 target=x86_64-pc-windows-gnullvm

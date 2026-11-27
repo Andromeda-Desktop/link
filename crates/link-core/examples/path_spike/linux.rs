@@ -1,7 +1,3 @@
-//! Desktop side of the channel spike: one QUIC endpoint on UDP and Bluetooth LE L2CAP. Echoes every bidirectional
-//! stream, drains every unidirectional one and prints its rate, and logs each path the connection moves to.
-//! Run: `cargo run -p link-core --example path_spike -- [psm] [udp-port]`, then advertise with `bluetoothctl`.
-
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -11,7 +7,7 @@ use link_core::identity::Identity;
 use link_core::path::{LinkKind, MessageLink, PathSocket};
 use link_core::transport::path_server_endpoint;
 
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Above any QUIC packet, so a path move never needs a smaller one.
 const L2CAP_MTU: u16 = 2048;
@@ -33,7 +29,7 @@ impl MessageLink for L2cap {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result {
+pub async fn main() -> Result {
     let mut args = std::env::args().skip(1);
     let psm = args.next().map_or(Ok(0xC5), |psm| u16::from_str_radix(psm.trim_start_matches("0x"), 16))?;
     let port: u16 = args.next().map_or(Ok(4718), |port| port.parse())?;
