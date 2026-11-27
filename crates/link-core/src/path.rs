@@ -1182,7 +1182,8 @@ mod tests {
         let port = socket.local_addr()?.port();
         let peer = std::net::UdpSocket::bind("127.0.0.1:0")?;
         peer.set_read_timeout(Some(Duration::from_secs(5)))?;
-        peer.send_to(b"hi", ("127.0.0.2", port))?;
+        let used = second_local_address()?;
+        peer.send_to(b"hi", (used, port))?;
         let mut buf = [0u8; 16];
         let mut meta = [RecvMeta::default()];
         std::future::poll_fn(|cx| socket.poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)).await?;
@@ -1195,8 +1196,21 @@ mod tests {
             src_ip: Some(stale),
         })?;
         let (_, from) = peer.recv_from(&mut buf)?;
-        assert_eq!(from.ip(), std::net::IpAddr::from([127, 0, 0, 2]));
+        assert_eq!(from.ip(), used);
         Ok(())
+    }
+
+    /// A local address other than 127.0.0.1. Linux loopback answers on all of 127/8; Windows loopback only on
+    /// 127.0.0.1, so there it is the host's own LAN address.
+    fn second_local_address() -> std::io::Result<std::net::IpAddr> {
+        #[cfg(not(windows))]
+        return Ok(std::net::IpAddr::from([127, 0, 0, 2]));
+        #[cfg(windows)]
+        if_addrs::get_if_addrs()?
+            .into_iter()
+            .map(|interface| interface.ip())
+            .find(|ip| ip.is_ipv4() && !ip.is_loopback())
+            .ok_or_else(|| std::io::Error::other("no LAN address"))
     }
 
     /// A batch goes into a link's queue whole or not at all; a cut batch would lose its last packets.
