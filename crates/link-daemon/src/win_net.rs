@@ -443,9 +443,11 @@ mod tests {
     /// the first back; needs an elevated shell, as on CI.
     #[test]
     fn the_doctor_reads_only_the_rules_for_its_program() -> anyhow::Result<()> {
-        let program = std::fs::canonicalize(std::env::current_exe()?)?;
+        let exe = std::env::current_exe()?;
+        let program = std::fs::canonicalize(&exe)?;
         let names = [0, 1].map(|n| BSTR::from(format!("andromeda-link-test-{}-{n}", std::process::id())));
-        let paths = [program.to_string_lossy().into_owned(), r"C:\Windows\System32\notepad.exe".to_owned()];
+        // A rule path must not contain '?' (MS-FASP 2.2.37), so the rule gets the plain path, not the \\?\ form.
+        let paths = [exe.to_string_lossy().into_owned(), r"C:\Windows\System32\notepad.exe".to_owned()];
         // SAFETY: COM calls on this test thread's MTA; the rules are removed before the policy drops.
         let facts = unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
