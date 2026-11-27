@@ -13,6 +13,7 @@ link-api = { path = "crates/link-api" }
 link-proto = { path = "crates/link-proto" }
 link-core = { path = "crates/link-core" }
 link-quickshare = { path = "crates/link-quickshare" }
+link-video = { path = "crates/link-video" }
 aes = "0.8"
 anyhow = "1"
 bytes = "1"

@@ -200,6 +200,32 @@
     <method name="StopMic">
       <arg name="device_id" type="s" direction="in"/>
     </method>
+    <!-- Asks link-session to offer a phone camera as a webcam: it answers CameraRequested with OpenCamera. Errors:
+         .Refused("unavailable") while DeviceInfo camera is empty; .Failed while it is asking or on. -->
+    <method name="StartCamera">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="front" type="b" direction="in"/>
+    </method>
+    <!-- Asks the phone for its front or back camera (about 1280x720 at 30 fps) and returns a socket of its video in
+         OpenMirror's framing, its size, and its codec as OpenMirrorWith picks it from codecs, once the user allowed
+         it on the phone (up to 60 s). Closing it or StopCamera ends the camera. Errors: as OpenMic, with the
+         phone's webcam switch. -->
+    <method name="OpenCamera">
+      <arg name="device_id" type="s" direction="in"/>
+      <arg name="front" type="b" direction="in"/>
+      <arg name="codecs" type="as" direction="in"/>
+      <arg name="stream" type="h" direction="out"/>
+      <arg name="width" type="u" direction="out"/>
+      <arg name="height" type="u" direction="out"/>
+      <arg name="codec" type="s" direction="out"/>
+    </method>
+    <method name="StopCamera">
+      <arg name="device_id" type="s" direction="in"/>
+    </method>
+    <!-- Asks the phone for a camera keyframe. -->
+    <method name="CameraKeyframe">
+      <arg name="device_id" type="s" direction="in"/>
+    </method>
     <!-- Asks link-session to play the phone's media sound without its screen: it answers PhoneSoundRequested with
          OpenPhoneSound. Errors: .Refused("unavailable") while DeviceInfo sound is empty; .Failed while it is asking
          or on. -->
@@ -291,7 +317,8 @@
          reports them (older phones never do); battery (i) is its percent while connected; speaker (b) is true while
          connected to a phone that plays OpenSpeaker streams with its speaker switch on. mic (s) is ready (connected, the
          phone has a microphone and its switch is on), asking (StartMic waits for the phone), on, or empty. sound (s) has the
-         same values for StartPhoneSound, with the screen switch. PropertiesChanged reports
+         same values for StartPhoneSound, with the screen switch; camera (s) for StartCamera, with the webcam switch.
+         PropertiesChanged reports
          each change. -->
     <property name="DeviceInfo" type="a{sa{sv}}" access="read"/>
     <!-- Devices whose offers are accepted without asking. -->
@@ -484,6 +511,11 @@
     <!-- StartMic asked for the phone's microphone; link-session answers with OpenMic. -->
     <signal name="MicRequested">
       <arg name="device_id" type="s"/>
+    </signal>
+    <!-- StartCamera asked for a phone camera; link-session answers with OpenCamera. -->
+    <signal name="CameraRequested">
+      <arg name="device_id" type="s"/>
+      <arg name="front" type="b"/>
     </signal>
     <!-- StartPhoneSound asked for the phone's media sound; link-session answers with OpenPhoneSound. -->
     <signal name="PhoneSoundRequested">

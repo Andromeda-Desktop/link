@@ -102,7 +102,7 @@ impl Client {
         let codec = desktops
             .iter()
             .find(|desktop| desktop.peer.id == id)
-            .and_then(|desktop| desktop.mirror_codecs.iter().copied().find(|codec| encoders.contains(codec)));
+            .and_then(|desktop| desktop.camera_codecs.iter().copied().find(|codec| encoders.contains(codec)));
         session.send(Message::CameraStarted(MirrorStarted { width, height, codec })).await?;
         let sender = MirrorSender::open(&session, VideoKind::Camera, width, height, codec, true).await?;
         Ok((sender, codec))

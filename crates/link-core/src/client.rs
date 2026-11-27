@@ -35,7 +35,7 @@ use crate::identity::DeviceId;
 use crate::inbox::Inbox;
 use crate::link_state::LinkState;
 use crate::messages::{self, Messages};
-use crate::mirror::MirrorSender;
+use crate::mirror::{MirrorSender, VideoKind};
 use crate::net;
 use crate::outbox::{self, Outbox, OutboxActor, Seen, Sent};
 use crate::path::{Hop, LinkId};
@@ -127,6 +127,8 @@ pub struct DesktopState {
     pub bluetooth: bool,
     /// What the desktop's last `mirror-request` said its viewer decodes besides H.264, best first.
     pub mirror_codecs: Vec<Codec>,
+    /// The same, from its last `camera-request`.
+    pub camera_codecs: Vec<Codec>,
 }
 
 enum Command {
@@ -245,8 +247,8 @@ pub struct ClientActor {
     keeping: HashSet<DeviceId>,
     /// Desktops this phone's screen streams to, kept like busy ones, and their hotspot with them.
     mirroring: HashSet<DeviceId>,
-    /// By desktop: [`DesktopState::mirror_codecs`].
-    mirror_codecs: HashMap<DeviceId, Vec<Codec>>,
+    /// By desktop and stream: [`DesktopState::mirror_codecs`], [`DesktopState::camera_codecs`].
+    video_codecs: HashMap<(DeviceId, VideoKind), Vec<Codec>>,
     retries: HashMap<DeviceId, Retry>,
     status: Option<Status>,
     /// The status last sent, when, and whether a newer one waits for [`STATUS_EVERY`] to pass.
@@ -330,7 +332,7 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         status_to: HashMap::new(),
         keeping: HashSet::new(),
         mirroring: HashSet::new(),
-        mirror_codecs: HashMap::new(),
+        video_codecs: HashMap::new(),
         retries: HashMap::new(),
         status: None,
         status_sent: None,
@@ -786,9 +788,11 @@ impl ClientActor {
                     });
                 if allowed {
                     match &message {
-                        Message::MirrorRequest(MirrorRequest { codecs })
-                        | Message::CameraRequest(CameraRequest { codecs, .. }) => {
-                            self.mirror_codecs.insert(from.clone(), codecs.clone());
+                        Message::MirrorRequest(MirrorRequest { codecs }) => {
+                            self.video_codecs.insert((from.clone(), VideoKind::Mirror), codecs.clone());
+                        }
+                        Message::CameraRequest(CameraRequest { codecs, .. }) => {
+                            self.video_codecs.insert((from.clone(), VideoKind::Camera), codecs.clone());
                         }
                         _ => {}
                     }
@@ -853,7 +857,16 @@ impl ClientActor {
                 peer: peer.clone(),
                 link: link(&peer.id),
                 bluetooth: link(&peer.id) == DesktopLink::Live && self.on_bluetooth(&peer.id),
-                mirror_codecs: self.mirror_codecs.get(&peer.id).cloned().unwrap_or_default(),
+                mirror_codecs: self
+                    .video_codecs
+                    .get(&(peer.id.clone(), VideoKind::Mirror))
+                    .cloned()
+                    .unwrap_or_default(),
+                camera_codecs: self
+                    .video_codecs
+                    .get(&(peer.id.clone(), VideoKind::Camera))
+                    .cloned()
+                    .unwrap_or_default(),
             })
             .collect()
     }

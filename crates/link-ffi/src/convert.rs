@@ -173,6 +173,15 @@ pub(super) fn translate(event: ClientEvent, runtime: &tokio::runtime::Handle) ->
                 Message::MirrorStop(stop) => LinkEvent::MirrorStopped { desktop_id, reason: stop.reason },
                 Message::MicRequest => LinkEvent::MicRequested { desktop_id },
                 Message::MicStop => LinkEvent::MicStopped { desktop_id },
+                Message::CameraRequest(request) => LinkEvent::CameraRequested {
+                    desktop_id,
+                    front: request.facing == message::Facing::Front,
+                    width: request.width,
+                    height: request.height,
+                    fps: request.fps,
+                },
+                Message::CameraStop(_) => LinkEvent::CameraStopped { desktop_id },
+                Message::CameraKeyframe => LinkEvent::CameraKeyframeRequested { desktop_id },
                 Message::SoundRequest => LinkEvent::SoundRequested { desktop_id },
                 Message::SoundStop => LinkEvent::SoundStopped { desktop_id },
                 Message::RemoteStarted(started) => LinkEvent::RemoteStarted {

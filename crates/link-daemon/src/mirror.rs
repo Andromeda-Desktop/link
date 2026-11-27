@@ -8,7 +8,7 @@ use std::time::Duration;
 use link_core::identity::DeviceId;
 use link_core::mirror::{MirrorReceiver, MirrorStream};
 use link_core::proto::message::{
-    Codec, MAX_MIRROR_LAG_MS, MIRROR_AUDIO, MIRROR_CONFIG, MIRROR_END, Message, MirrorLag,
+    CameraRequest, Codec, Facing, MAX_MIRROR_LAG_MS, MIRROR_AUDIO, MIRROR_CONFIG, MIRROR_END, Message, MirrorLag,
 };
 use link_core::session::SessionHandle;
 use tokio::io::AsyncWriteExt as _;
@@ -18,6 +18,11 @@ use tokio::time::Instant;
 
 /// Android asks the user every time; they may take a while to find the phone.
 pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What a webcam request asks for; the phone picks its camera's nearest size.
+const CAMERA_WIDTH: u32 = 1280;
+const CAMERA_HEIGHT: u32 = 720;
+const CAMERA_FPS: u32 = 30;
 
 /// How often a phone that takes `mirror-lag` hears how late its video arrives.
 const LAG_REPORT: Duration = Duration::from_millis(500);
@@ -56,23 +61,26 @@ pub enum Kind {
     /// Screen mirrors: video, and sound inside them.
     #[default]
     Screen,
-    Audio(Audio),
+    Capture(Capture),
 }
 
-/// A phone-to-desktop stream of sound alone, asked for with its own request.
+/// A phone-to-desktop stream besides the screen mirror, asked for with its own request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Audio {
+pub enum Capture {
     /// The phone's microphone (`mic-request`).
     Mic,
     /// The phone's media sound without its screen (`sound-request`).
     Sound,
+    /// One of the phone's cameras as a webcam (`camera-request`): video in mirroring's framing.
+    Camera(Facing),
 }
 
-impl Audio {
+impl Capture {
     pub fn name(self) -> &'static str {
         match self {
             Self::Mic => "microphone",
             Self::Sound => "sound",
+            Self::Camera(_) => "camera",
         }
     }
 
@@ -81,6 +89,7 @@ impl Audio {
         match self {
             Self::Mic => link_core::proto::message::MIC,
             Self::Sound => link_core::proto::message::SOUND,
+            Self::Camera(_) => link_core::proto::message::WEBCAM,
         }
     }
 
@@ -89,13 +98,22 @@ impl Audio {
         match self {
             Self::Mic => link_core::store::Feature::Mic,
             Self::Sound => link_core::store::Feature::Screen,
+            Self::Camera(_) => link_core::store::Feature::Webcam,
         }
     }
 
-    pub fn request(self) -> Message {
+    /// The request; a camera's asks for `codecs` besides H.264, best first.
+    pub fn request(self, codecs: Vec<Codec>) -> Message {
         match self {
             Self::Mic => Message::MicRequest,
             Self::Sound => Message::SoundRequest,
+            Self::Camera(facing) => Message::CameraRequest(CameraRequest {
+                facing,
+                width: CAMERA_WIDTH,
+                height: CAMERA_HEIGHT,
+                fps: CAMERA_FPS,
+                codecs,
+            }),
         }
     }
 
@@ -103,6 +121,7 @@ impl Audio {
         match self {
             Self::Mic => Message::MicStop,
             Self::Sound => Message::SoundStop,
+            Self::Camera(_) => Message::CameraStop(link_core::proto::message::MirrorStop { reason: None }),
         }
     }
 }
@@ -121,8 +140,8 @@ pub struct Mirrors {
 }
 
 impl Mirrors {
-    pub fn audio(audio: Audio) -> Self {
-        Self { kind: Kind::Audio(audio), ..Self::default() }
+    pub fn capture(audio: Capture) -> Self {
+        Self { kind: Kind::Capture(audio), ..Self::default() }
     }
 
     fn wifi_awake(&mut self, awake: bool) {
@@ -222,7 +241,7 @@ impl Mirrors {
             return receiver.stop();
         }
         match self.kind {
-            Kind::Audio(audio) => log::info!("{from}: the phone's {} is on", audio.name()),
+            Kind::Capture(audio) => log::info!("{from}: the phone's {} is on", audio.name()),
             Kind::Screen => {
                 log::info!("{from}: mirroring at {width}x{height} in {}", codec.map_or("H.264", codec_name));
             }

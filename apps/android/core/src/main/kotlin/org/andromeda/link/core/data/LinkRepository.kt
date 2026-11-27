@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import org.andromeda.link.core.domain.AudioUnits
 import org.andromeda.link.core.domain.CallAction
 import org.andromeda.link.core.domain.CallState
+import org.andromeda.link.core.domain.CameraCommand
 import org.andromeda.link.core.domain.ClipPart
 import org.andromeda.link.core.domain.Desktop
 import org.andromeda.link.core.domain.DesktopCommand
@@ -156,6 +157,7 @@ class LinkRepository(
     private val _remote = MutableSharedFlow<RemoteEvent>(extraBufferCapacity = MIRROR_BUFFER)
     private val _speaker = MutableSharedFlow<SpeakerStream>(extraBufferCapacity = MIRROR_BUFFER)
     private val _mic = MutableSharedFlow<MicCommand>(extraBufferCapacity = MIRROR_BUFFER)
+    private val _camera = MutableSharedFlow<CameraCommand>(extraBufferCapacity = MIRROR_BUFFER)
     private val _sound = MutableSharedFlow<SoundCommand>(extraBufferCapacity = MIRROR_BUFFER)
     private val _commands = MutableStateFlow<Map<String, List<DesktopCommand>>>(emptyMap())
     private val _capabilities = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
@@ -342,13 +344,7 @@ class LinkRepository(
         encoders: List<VideoCodec>,
     ): Result<MirrorStream> =
         call {
-            val codecs =
-                encoders.map { codec ->
-                    when (codec) {
-                        VideoCodec.HEVC -> MirrorCodec.HEVC
-                    }
-                }
-            FfiMirror(it.startMirror(desktopId, width.toUInt(), height.toUInt(), codecs))
+            FfiMirror(it.startMirror(desktopId, width.toUInt(), height.toUInt(), encoders.map(VideoCodec::toFfi)))
         }
 
     /** Tells the mirroring desktop the screen's corners and cutouts, so it can draw the phone's edge. */
@@ -389,6 +385,26 @@ class LinkRepository(
 
     /** Tells [desktopId] the microphone ended, or that the user did not start it. */
     suspend fun stopMic(desktopId: String): Result<Unit> = call { it.stopMic(desktopId) }
+
+    /** Desktops' webcam requests, ends and keyframe asks; the core passes only those of desktops whose Webcam switch is on. */
+    val camera: SharedFlow<CameraCommand> = _camera.asSharedFlow()
+
+    /** Tells [desktopId] the webcam's size and opens its video stream, in a codec picked as in [startMirror]. */
+    suspend fun startCamera(
+        desktopId: String,
+        width: Int,
+        height: Int,
+        encoders: List<VideoCodec>,
+    ): Result<MirrorStream> =
+        call {
+            FfiMirror(it.startCamera(desktopId, width.toUInt(), height.toUInt(), encoders.map(VideoCodec::toFfi)))
+        }
+
+    /** Tells [desktopId] the webcam ended, or why it did not start. */
+    suspend fun stopCamera(
+        desktopId: String,
+        reason: String?,
+    ): Result<Unit> = call { it.stopCamera(desktopId, reason) }
 
     /** Desktops' requests for the phone's sound without its screen; only those whose Screen switch is on. */
     val sound: SharedFlow<SoundCommand> = _sound.asSharedFlow()
@@ -808,6 +824,12 @@ class LinkRepository(
                 is LinkEvent.SpeakerStream -> _speaker.emit(SpeakerStream(event.desktopId, FfiRemote(event.stream)))
                 is LinkEvent.MicRequested -> _mic.emit(MicCommand.Requested(event.desktopId))
                 is LinkEvent.MicStopped -> _mic.emit(MicCommand.Stopped(event.desktopId))
+                is LinkEvent.CameraRequested ->
+                    _camera.emit(
+                        CameraCommand.Requested(event.desktopId, event.front, event.width.toInt(), event.height.toInt(), event.fps.toInt()),
+                    )
+                is LinkEvent.CameraStopped -> _camera.emit(CameraCommand.Stopped(event.desktopId))
+                is LinkEvent.CameraKeyframeRequested -> _camera.emit(CameraCommand.Keyframe(event.desktopId))
                 is LinkEvent.SoundRequested -> _sound.emit(SoundCommand.Requested(event.desktopId))
                 is LinkEvent.SoundStopped -> _sound.emit(SoundCommand.Stopped(event.desktopId))
                 is LinkEvent.CommandsChanged ->
@@ -976,6 +998,7 @@ private fun FfiDesktop.toDomain() =
                 sharing.messages,
                 sharing.speaker,
                 sharing.mic,
+                sharing.webcam,
             ),
         bluetoothAddress = bluetoothAddress,
         btPairing = btPairing,
@@ -1171,6 +1194,12 @@ private fun Feature.toFfi(): FfiFeature =
         Feature.Messages -> FfiFeature.MESSAGES
         Feature.Speaker -> FfiFeature.SPEAKER
         Feature.Mic -> FfiFeature.MIC
+        Feature.Webcam -> FfiFeature.WEBCAM
+    }
+
+private fun VideoCodec.toFfi() =
+    when (this) {
+        VideoCodec.HEVC -> MirrorCodec.HEVC
     }
 
 private fun PhoneNotification.toFfi() =

@@ -24,7 +24,7 @@ data class Desktop(
 /** Reconnecting: a session is open but the desktop's heartbeats are late. */
 enum class DesktopLink { Live, Reconnecting, Offline }
 
-/** This phone's switches for one desktop; all but browsing, the screen, messages, and the microphone on after pairing. */
+/** This phone's switches for one desktop; all but browsing, the screen, messages, the microphone and webcam on after pairing. */
 data class Sharing(
     val clipboard: Boolean = true,
     val files: Boolean = true,
@@ -37,6 +37,7 @@ data class Sharing(
     val messages: Boolean = false,
     val speaker: Boolean = true,
     val mic: Boolean = false,
+    val webcam: Boolean = false,
 ) {
     fun allows(feature: Feature): Boolean =
         when (feature) {
@@ -51,7 +52,8 @@ data class Sharing(
             Feature.Messages -> messages
             Feature.Speaker -> speaker
             Feature.Mic -> mic
+            Feature.Webcam -> webcam
         }
 }
 
-enum class Feature { Clipboard, Files, Notifications, Media, Ring, Calls, Browse, Screen, Messages, Speaker, Mic }
+enum class Feature { Clipboard, Files, Notifications, Media, Ring, Calls, Browse, Screen, Messages, Speaker, Mic, Webcam }

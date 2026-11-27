@@ -6,7 +6,7 @@ Version:        %{linkversion}
 Release:        1%{?dist}
 Summary:        Andromeda Link: phone and desktop continuity
 License:        GPL-3.0-or-later
-Requires:       dbus fuse3 gstreamer1-plugins-base gstreamer1-plugins-bad-free
+Requires:       dbus fuse3 gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free pipewire-gstreamer
 # Below 1 is the old Qt app package; the Andromeda Link window (2026.x) keeps the name.
 Obsoletes:      andromeda-link-app < 1
 Recommends:     andromeda-link-app

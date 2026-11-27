@@ -29,6 +29,7 @@ import org.andromeda.link.R
 import org.andromeda.link.audio.RATE
 import org.andromeda.link.audio.encodeOpus
 import org.andromeda.link.audio.packetBytes
+import org.andromeda.link.capture.CaptureRequests
 import org.andromeda.link.notifications.Channels
 import org.andromeda.link.notifications.NotificationId
 
@@ -54,7 +55,7 @@ class MicService : Service() {
             finish(tellDesktop = true)
             return START_NOT_STICKY
         }
-        val desktop = intent?.getStringExtra(PhoneMic.EXTRA_DESKTOP)
+        val desktop = intent?.getStringExtra(CaptureRequests.EXTRA_DESKTOP)
         if (desktop == null || running) {
             if (!running) stopSelf()
             return START_NOT_STICKY
@@ -173,7 +174,7 @@ class MicService : Service() {
             context: Context,
             desktop: String,
         ) {
-            context.startForegroundService(Intent(context, MicService::class.java).putExtra(PhoneMic.EXTRA_DESKTOP, desktop))
+            context.startForegroundService(Intent(context, MicService::class.java).putExtra(CaptureRequests.EXTRA_DESKTOP, desktop))
         }
 
         /** The desktop stopped; nothing is sent back to it. */

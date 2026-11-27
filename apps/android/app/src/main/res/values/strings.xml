@@ -147,6 +147,15 @@
     <string name="mic_not_now">Not now</string>
     <string name="mic_running">Microphone for %1$s</string>
     <string name="mic_stop">Stop</string>
+    <string name="feature_webcam">Webcam for the desktop</string>
+    <string name="channel_webcam">Webcam</string>
+    <string name="webcam_ask_title">%1$s asks for a camera as its webcam</string>
+    <string name="webcam_ask_question">Use as webcam for %1$s?</string>
+    <string name="webcam_ask_text">Start sends this phone\'s camera to the desktop until you stop it.</string>
+    <string name="webcam_start">Start</string>
+    <string name="webcam_not_now">Not now</string>
+    <string name="webcam_running">Webcam for %1$s</string>
+    <string name="webcam_stop">Stop</string>
     <string name="feature_calls">Calls</string>
     <string name="feature_messages">Contacts and texts</string>
     <string name="screen_control_off">Turn on control from the desktop</string>

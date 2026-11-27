@@ -74,7 +74,7 @@ impl Hub {
     /// Tells the phone what it shows, then opens the video stream and pumps `link-session`'s socket into it.
     /// Asks the phone for its microphone or its sound; `ask` gets the socket of its Opus units once the phone
     /// streams them.
-    pub(super) async fn open_audio(&mut self, id: DeviceId, audio: crate::mirror::Audio, ask: crate::mirror::Ask) {
+    pub(super) async fn open_capture(&mut self, id: DeviceId, audio: crate::mirror::Capture, ask: crate::mirror::Ask) {
         let Some(session) = self.sessions.get(&id).filter(|session| session.is_live()).cloned() else {
             return drop(ask.reply.send(Err(Failure::NotConnected)));
         };
@@ -84,17 +84,17 @@ impl Hub {
         if !self.shares(&id, audio.grant()) {
             return drop(ask.reply.send(Err(Failure::Refused("not-allowed".to_owned()))));
         }
-        if self.audio(audio).busy(&id) {
+        if self.capture(audio).busy(&id) {
             return drop(ask.reply.send(Err(Failure::Busy)));
         }
         log::info!("{id}: asking the phone for its {}", audio.name());
-        match session.send(audio.request()).await {
-            Ok(()) => self.audio(audio).wait(id, ask),
+        match session.send(audio.request(ask.codecs.clone())).await {
+            Ok(()) => self.capture(audio).wait(id, ask),
             Err(error) => drop(ask.reply.send(Err(Failure::Failed(error.to_string())))),
         }
     }
 
-    pub(super) async fn tell_audio_stop(&self, id: &DeviceId, audio: crate::mirror::Audio) {
+    pub(super) async fn tell_capture_stop(&self, id: &DeviceId, audio: crate::mirror::Capture) {
         if let Some(session) = self.sessions.get(id)
             && let Err(error) = session.send(audio.stop()).await
         {

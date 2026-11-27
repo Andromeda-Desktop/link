@@ -4,7 +4,7 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Scanning the desktop's pairing QR code inside the app. -->
+    <!-- Scanning the desktop's pairing QR code inside the app, and the webcam (CameraService). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- Dialing for a desktop needs telephony; phones without it still install. -->
@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <!-- Android requires it for any playback capture: the mirrored screen's sound (MirrorAudio). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Development permission, granted only over adb: automatic phone-to-desktop clipboard (ClipboardWatcher). -->
@@ -246,6 +247,18 @@
             android:name=".mic.MicService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".webcam.CameraService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
+
+        <activity
+            android:name=".webcam.CameraStartActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <activity
             android:name=".mic.MicStartActivity"

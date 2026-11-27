@@ -269,6 +269,23 @@ pub enum LinkEvent {
     MicStopped {
         desktop_id: String,
     },
+    /// The desktop asks for a camera as its webcam, at about `width` x `height` and `fps`: answer with
+    /// [`LinkClient::start_camera`] once the user allows it, or [`LinkClient::stop_camera`].
+    CameraRequested {
+        desktop_id: String,
+        front: bool,
+        width: u32,
+        height: u32,
+        fps: u32,
+    },
+    /// The desktop ended the webcam.
+    CameraStopped {
+        desktop_id: String,
+    },
+    /// The desktop lost camera video: send a keyframe now.
+    CameraKeyframeRequested {
+        desktop_id: String,
+    },
     /// The desktop asks for this phone's media sound without its screen: answer with [`LinkClient::start_sound`]
     /// once the capture is allowed, or [`LinkClient::stop_sound`].
     SoundRequested {
@@ -1341,6 +1358,28 @@ impl LinkClient {
         let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
         let sender = self.run(async move { client.start_mic(id).await }).await?;
         Ok(Arc::new(MirrorSession { runtime: self.runtime.handle().clone(), sender: Arc::new(sender), codec: None }))
+    }
+
+    /// Opens the webcam's video stream to the desktop that asked for it, after telling it the size and codec, picked as
+    /// in [`LinkClient::start_mirror`].
+    pub async fn start_camera(
+        &self,
+        desktop_id: String,
+        width: u32,
+        height: u32,
+        encoders: Vec<MirrorCodec>,
+    ) -> Result<Arc<MirrorSession>, LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        let encoders: Vec<_> = encoders.into_iter().map(Into::into).collect();
+        let (sender, codec) = self.run(async move { client.start_camera(id, width, height, &encoders).await }).await?;
+        let (runtime, sender, codec) = (self.runtime.handle().clone(), Arc::new(sender), codec.map(Into::into));
+        Ok(Arc::new(MirrorSession { runtime, sender, codec }))
+    }
+
+    /// Tells the desktop the webcam ended, or why it did not start (`reason`).
+    pub async fn stop_camera(&self, desktop_id: String, reason: Option<String>) -> Result<(), LinkError> {
+        let (client, id) = (self.client.clone(), parse_id(&desktop_id)?);
+        self.run(async move { client.send(id, Message::CameraStop(message::MirrorStop { reason })).await }).await
     }
 
     /// Tells the desktop the microphone ended, or that the user did not allow it.

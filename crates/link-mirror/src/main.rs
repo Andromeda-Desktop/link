@@ -39,6 +39,9 @@ struct Cli {
     /// Offer the phone no codec besides H.264, for a comparison run.
     #[arg(long)]
     h264: bool,
+    /// Decode the phone's back or front camera (its webcam) instead of its screen; needs --frames or --luma.
+    #[arg(long, value_name = "FACING", value_parser = ["back", "front"])]
+    camera: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -56,7 +59,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     gstreamer::init()?;
     let bus = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)?;
     let offered = if cli.h264 { Vec::new() } else { stream::offered(cli.frames.is_some()) };
-    let (socket, width, height, codec) = open(&bus, &cli.device, &offered)?;
+    if cli.camera.is_some() && cli.frames.is_none() && cli.luma.is_none() {
+        bail!("--camera needs --frames or --luma");
+    }
+    let (socket, width, height, codec) = open(&bus, &cli.device, &offered, cli.camera.as_deref())?;
     log::info!("mirroring {} at {width}x{height} in {codec:?}", cli.device);
     if let Some(dir) = cli.frames {
         return stream::to_png(socket, codec, &dir, cli.count);
@@ -79,15 +85,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     if status == glib::ExitCode::SUCCESS { Ok(()) } else { bail!("the window ended with {status:?}") }
 }
 
-/// Calls `OpenMirrorWith`, offering `codecs` besides H.264; it answers once the phone's user allowed capture.
-fn open(bus: &gio::DBusConnection, device: &str, codecs: &[&str]) -> anyhow::Result<Opened> {
+/// Calls `OpenMirrorWith`, or `OpenCamera` for `camera`, offering `codecs` besides H.264; it answers once the
+/// phone's user allowed capture.
+fn open(bus: &gio::DBusConnection, device: &str, codecs: &[&str], camera: Option<&str>) -> anyhow::Result<Opened> {
+    let (method, args) = match camera {
+        Some(facing) => ("OpenCamera", (device, facing == "front", codecs).to_variant()),
+        None => ("OpenMirrorWith", (device, codecs).to_variant()),
+    };
     let reply = bus
         .call_with_unix_fd_list_sync(
             Some(LINK),
             LINK_PATH,
             LINK,
-            "OpenMirrorWith",
-            Some(&(device, codecs).to_variant()),
+            method,
+            Some(&args),
             Some(glib::VariantTy::new("(huus)")?),
             gio::DBusCallFlags::NONE,
             OPEN_TIMEOUT_MS,

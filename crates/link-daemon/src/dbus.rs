@@ -25,7 +25,8 @@ use zbus::object_server::SignalEmitter;
 use crate::browse;
 use crate::hub::{Event, Gate, HubHandle, Signal, Snapshot};
 use crate::messages::SendFailure;
-use crate::mirror::Audio;
+use crate::mirror::Capture;
+use link_core::proto::message::Facing;
 
 pub const PATH: &str = "/org/andromeda/Link1";
 /// `SavePhoto` stops here, so a hostile phone cannot fill the disk.
@@ -605,18 +606,7 @@ impl Link {
     ) -> Result<(zbus::OwnedFd, u32, u32, String), LinkError> {
         use crate::mirror::Failure;
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
-        if codecs.len() > link_core::proto::message::MAX_MIRROR_CODECS {
-            return Err(LinkError::Rejected("too many codecs".to_owned()));
-        }
-        let codecs = codecs
-            .iter()
-            .map(|name| match name.as_str() {
-                "hevc" => Ok(link_core::proto::message::Codec::Hevc),
-                "av1" => Ok(link_core::proto::message::Codec::Av1),
-                _ => Err(LinkError::Rejected(format!("unknown codec {name}"))),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        match self.hub.open_mirror(id, codecs).await {
+        match self.hub.open_mirror(id, parse_codecs(&codecs)?).await {
             Ok(opened) => {
                 let codec = opened.codec.map_or("h264", crate::mirror::codec_name).to_owned();
                 Ok((opened.stream.into(), opened.width, opened.height, codec))
@@ -674,25 +664,67 @@ impl Link {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         device_id: String,
     ) -> Result<(), LinkError> {
-        self.audio_ready(&device_id, Audio::Mic)?;
+        self.capture_ready(&device_id, Capture::Mic)?;
         Self::mic_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
     }
 
     /// Asks the phone for its microphone and returns the socket of its Opus units (48 kHz mono) in `OpenMirror`'s
     /// framing, once the user allowed it on the phone (up to 60 s). Closing it, or `StopMic`, ends the microphone.
     async fn open_mic(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
-        self.open_audio(device_id, Audio::Mic).await
+        Ok(self.open_capture(device_id, Capture::Mic, Vec::new()).await?.stream.into())
     }
 
     async fn stop_mic(&self, device_id: String) -> Result<(), LinkError> {
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
-        self.hub.stop_audio(id, Audio::Mic).await;
+        self.hub.stop_audio(id, Capture::Mic).await;
         Ok(())
     }
 
     /// `StartMic` asked for the phone's microphone; `link-session` answers with `OpenMic`.
     #[zbus(signal)]
     async fn mic_requested(emitter: &SignalEmitter<'_>, device_id: &str) -> zbus::Result<()>;
+
+    /// Asks `link-session` to offer a phone camera as a webcam: it calls `OpenCamera` on `CameraRequested`. Refuses
+    /// at once ("unavailable") a phone whose `DeviceInfo` camera is empty.
+    async fn start_camera(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        device_id: String,
+        front: bool,
+    ) -> Result<(), LinkError> {
+        self.capture_ready(&device_id, Capture::Camera(Facing::Back))?;
+        Self::camera_requested(&emitter, &device_id, front).await.map_err(LinkError::ZBus)
+    }
+
+    /// Asks the phone for its front or back camera and returns the socket of its video in `OpenMirror`'s framing,
+    /// with its size and codec as `OpenMirrorWith` returns them, once the user allowed it on the phone (up to 60 s).
+    /// Closing it, or `StopCamera`, ends the camera.
+    async fn open_camera(
+        &self,
+        device_id: String,
+        front: bool,
+        codecs: Vec<String>,
+    ) -> Result<(zbus::OwnedFd, u32, u32, String), LinkError> {
+        let facing = if front { Facing::Front } else { Facing::Back };
+        let opened = self.open_capture(device_id, Capture::Camera(facing), parse_codecs(&codecs)?).await?;
+        let codec = opened.codec.map_or("h264", crate::mirror::codec_name).to_owned();
+        Ok((opened.stream.into(), opened.width, opened.height, codec))
+    }
+
+    async fn stop_camera(&self, device_id: String) -> Result<(), LinkError> {
+        let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
+        self.hub.stop_audio(id, Capture::Camera(Facing::Back)).await;
+        Ok(())
+    }
+
+    /// Asks the phone for a camera keyframe, after the consumer lost one.
+    async fn camera_keyframe(&self, device_id: String) -> Result<(), LinkError> {
+        self.send(&device_id, Message::CameraKeyframe).await
+    }
+
+    /// `StartCamera` asked for a phone camera; `link-session` answers with `OpenCamera`.
+    #[zbus(signal)]
+    async fn camera_requested(emitter: &SignalEmitter<'_>, device_id: &str, front: bool) -> zbus::Result<()>;
 
     /// Asks `link-session` to play the phone's media sound without its screen: it calls `OpenPhoneSound` on
     /// `PhoneSoundRequested`. Refuses at once ("unavailable") a phone whose `DeviceInfo` sound is empty.
@@ -701,19 +733,19 @@ impl Link {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         device_id: String,
     ) -> Result<(), LinkError> {
-        self.audio_ready(&device_id, Audio::Sound)?;
+        self.capture_ready(&device_id, Capture::Sound)?;
         Self::phone_sound_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
     }
 
     /// Asks the phone for its media sound and returns the socket of its Opus units (48 kHz stereo) in `OpenMirror`'s
     /// framing, once the capture is allowed on the phone (up to 60 s). Closing it, or `StopPhoneSound`, ends it.
     async fn open_phone_sound(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
-        self.open_audio(device_id, Audio::Sound).await
+        Ok(self.open_capture(device_id, Capture::Sound, Vec::new()).await?.stream.into())
     }
 
     async fn stop_phone_sound(&self, device_id: String) -> Result<(), LinkError> {
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
-        self.hub.stop_audio(id, Audio::Sound).await;
+        self.hub.stop_audio(id, Capture::Sound).await;
         Ok(())
     }
 
@@ -1238,13 +1270,32 @@ async fn emit_posted(
     .await
 }
 
+/// A viewer's codecs besides H.264 ("hevc", "av1"), best first.
+fn parse_codecs(codecs: &[String]) -> Result<Vec<link_core::proto::message::Codec>, LinkError> {
+    if codecs.len() > link_core::proto::message::MAX_MIRROR_CODECS {
+        return Err(LinkError::Rejected("too many codecs".to_owned()));
+    }
+    codecs
+        .iter()
+        .map(|name| match name.as_str() {
+            "hevc" => Ok(link_core::proto::message::Codec::Hevc),
+            "av1" => Ok(link_core::proto::message::Codec::Av1),
+            _ => Err(LinkError::Rejected(format!("unknown codec {name}"))),
+        })
+        .collect()
+}
+
 impl Link {
     /// Refuses at once a phone whose `DeviceInfo` field for `audio` is not ready.
-    fn audio_ready(&self, device_id: &str, audio: Audio) -> Result<(), LinkError> {
+    fn capture_ready(&self, device_id: &str, audio: Capture) -> Result<(), LinkError> {
         DeviceId::parse(device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
         let snapshots = self.snapshots.borrow();
         let info = snapshots.info.iter().find(|info| info.id == device_id);
-        match info.map(|info| if audio == Audio::Mic { info.mic } else { info.sound }) {
+        match info.map(|info| match audio {
+            Capture::Mic => info.mic,
+            Capture::Sound => info.sound,
+            Capture::Camera(_) => info.camera,
+        }) {
             None => Err(LinkError::Rejected("not a paired device".to_owned())),
             Some("") => Err(LinkError::Refused("unavailable".to_owned())),
             Some("ready") => Ok(()),
@@ -1252,11 +1303,16 @@ impl Link {
         }
     }
 
-    async fn open_audio(&self, device_id: String, audio: Audio) -> Result<zbus::OwnedFd, LinkError> {
+    async fn open_capture(
+        &self,
+        device_id: String,
+        audio: Capture,
+        codecs: Vec<link_core::proto::message::Codec>,
+    ) -> Result<crate::mirror::Opened, LinkError> {
         use crate::mirror::Failure;
         let id = DeviceId::parse(&device_id).map_err(|_| LinkError::Rejected("not a device id".to_owned()))?;
-        match self.hub.open_audio(id, audio).await {
-            Ok(opened) => Ok(opened.stream.into()),
+        match self.hub.open_capture(id, audio, codecs).await {
+            Ok(opened) => Ok(opened),
             Err(Failure::NotConnected) => Err(LinkError::NotConnected(format!("{device_id} is not connected"))),
             Err(Failure::Busy) => Err(LinkError::Failed(format!("that phone's {} is already on", audio.name()))),
             Err(Failure::Refused(reason)) => Err(LinkError::Refused(reason)),
@@ -1290,6 +1346,7 @@ fn info_fields(info: &crate::hub::DeviceInfo) -> HashMap<String, zbus::Variant<'
         ("speaker".to_owned(), info.speaker.into()),
         ("mic".to_owned(), info.mic.into()),
         ("sound".to_owned(), info.sound.into()),
+        ("camera".to_owned(), info.camera.into()),
     ]);
     if let Some((free, total)) = info.storage {
         fields.insert("storage_free".to_owned(), free.into());

@@ -14,6 +14,8 @@ enum class NotificationId {
     Mic,
     Camera,
     Trash,
+    WebcamRequest,
+    Webcam,
     ;
 
     /** Android refuses 0 for a foreground service. */

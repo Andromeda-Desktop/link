@@ -20,11 +20,11 @@ use link_core::path::LinkKind;
 use link_core::proto::CloseCode;
 use link_core::proto::message::{
     CALLS, CAMERA, CAN_CONTROL, CAN_INPUT, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, Call, CallState,
-    Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, FsRefusal, Hello, Hotspot, HotspotEnd, HotspotJoined,
-    LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, MessagesRefusal, NotificationPosted,
-    NotificationPull, PHONE_TOGGLES, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping, RemoteInput, Ringer,
-    SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind, SystemResult, TEXTS_MMS,
-    Text, TransferId, USB,
+    Capabilities, DesktopStatus, FEATURE, FS_STAT, FS_WRITE, Facing, FsRefusal, Hello, Hotspot, HotspotEnd,
+    HotspotJoined, LATE_HASH, MAX_SYSTEM_ERROR_LEN, MESSAGES, MediaPlayer, Message, MessagesRefusal,
+    NotificationPosted, NotificationPull, PHONE_TOGGLES, PHOTOS_PAGE, PHOTOS_RECENT, PhotoMedia, PhotoRefusal, Ping,
+    RemoteInput, Ringer, SHARE_OUTBOX, SYSTEM, SYSTEM_CONTROL, Share, Status, SystemCommand, SystemCommandKind,
+    SystemResult, TEXTS_MMS, Text, TransferId, USB,
 };
 use link_core::proto::pairing::{Secret, Secrets};
 use link_core::session::{Route, SessionEvent, SessionHandle};
@@ -56,7 +56,7 @@ use crate::desktop_media::{DesktopMediaHandle, Request};
 use crate::hotspot;
 use crate::localsend::LocalSendHandle;
 use crate::media::Media;
-use crate::mirror::Audio;
+use crate::mirror::Capture;
 use crate::notifications::Mirror;
 use crate::paths::Paths;
 
@@ -104,6 +104,8 @@ pub struct DeviceInfo {
     pub mic: &'static str,
     /// The phone's media sound without its screen: the same values as `mic`, with the screen switch.
     pub sound: &'static str,
+    /// The phone's cameras as a webcam: the same values as `mic`, with the webcam switch.
+    pub camera: &'static str,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -305,8 +307,8 @@ enum Command {
     TakePhoto { id: DeviceId, reply: crate::messages::PhotoReply },
     OpenMirror { id: DeviceId, ask: crate::mirror::Ask },
     ServeRemote { id: DeviceId, stream: RemoteStream, reply: oneshot::Sender<Result<(), String>> },
-    OpenAudio { id: DeviceId, audio: Audio, ask: crate::mirror::Ask },
-    StopAudio { id: DeviceId, audio: Audio },
+    OpenCapture { id: DeviceId, audio: Capture, ask: crate::mirror::Ask },
+    StopCapture { id: DeviceId, audio: Capture },
     OpenSpeaker { id: DeviceId, reply: oneshot::Sender<Result<std::os::fd::OwnedFd, crate::mirror::Failure>> },
     StopRemote { id: DeviceId, reason: String },
     SetCommands { commands: Vec<StoredCommand>, reply: oneshot::Sender<bool> },
@@ -426,6 +428,8 @@ pub struct Hub {
     mics: crate::mirror::Mirrors,
     /// Phones' media sound without the screen, the same way, to `OpenPhoneSound`'s sockets.
     sounds: crate::mirror::Mirrors,
+    /// Phones' cameras as webcams, the same way, to `OpenCamera`'s sockets.
+    cameras: crate::mirror::Mirrors,
     puncher: Puncher,
 }
 
@@ -559,8 +563,9 @@ impl Hub {
             presenting: HashSet::new(),
             remotes: crate::remote::Remotes::default(),
             speakers: crate::remote::Remotes::default(),
-            mics: crate::mirror::Mirrors::audio(Audio::Mic),
-            sounds: crate::mirror::Mirrors::audio(Audio::Sound),
+            mics: crate::mirror::Mirrors::capture(Capture::Mic),
+            sounds: crate::mirror::Mirrors::capture(Capture::Sound),
+            cameras: crate::mirror::Mirrors::capture(Capture::Camera(Facing::Back)),
             puncher,
         };
         hub.refresh();
@@ -584,6 +589,7 @@ impl Hub {
             let mirror_deadline = self.mirrors.deadline();
             let mic_deadline = self.mics.deadline();
             let sound_deadline = self.sounds.deadline();
+            let camera_deadline = self.cameras.deadline();
             let status_due = self.status_due;
             tokio::select! {
                 result = &mut shutdown => {
@@ -602,21 +608,30 @@ impl Hub {
                 }
                 () = sleep_until(mic_deadline) => {
                     for id in self.mics.expire() {
-                        self.tell_audio_stop(&id, Audio::Mic).await;
+                        self.tell_capture_stop(&id, Capture::Mic).await;
                     }
                 }
                 () = sleep_until(sound_deadline) => {
                     for id in self.sounds.expire() {
-                        self.tell_audio_stop(&id, Audio::Sound).await;
+                        self.tell_capture_stop(&id, Capture::Sound).await;
                     }
+                }
+                () = sleep_until(camera_deadline) => {
+                    for id in self.cameras.expire() {
+                        self.tell_capture_stop(&id, Capture::Camera(Facing::Back)).await;
+                    }
+                }
+                Some(id) = self.cameras.ended() => {
+                    log::info!("{id}: the camera stream ended");
+                    self.tell_capture_stop(&id, Capture::Camera(Facing::Back)).await;
                 }
                 Some(id) = self.mics.ended() => {
                     log::info!("{id}: the microphone stream ended");
-                    self.tell_audio_stop(&id, Audio::Mic).await;
+                    self.tell_capture_stop(&id, Capture::Mic).await;
                 }
                 Some(id) = self.sounds.ended() => {
                     log::info!("{id}: the phone's sound stream ended");
-                    self.tell_audio_stop(&id, Audio::Sound).await;
+                    self.tell_capture_stop(&id, Capture::Sound).await;
                 }
                 Some(id) = self.mirrors.ended() => {
                     self.tell_mirror_stop(&id, "the viewer closed").await;
@@ -647,7 +662,7 @@ impl Hub {
                     self.close_window();
                 }
             }
-            if self.mics.take_changed() | self.sounds.take_changed() {
+            if self.mics.take_changed() | self.sounds.take_changed() | self.cameras.take_changed() {
                 self.publish();
             }
         }
@@ -699,10 +714,10 @@ impl Hub {
             Command::Browse { id, request, reply } => self.browse(id, request, reply).await,
             Command::OpenMirror { id, ask } => self.open_mirror(id, ask).await,
             Command::ServeRemote { id, stream, reply } => drop(reply.send(self.serve_remote(id, stream).await)),
-            Command::OpenAudio { id, audio, ask } => self.open_audio(id, audio, ask).await,
-            Command::StopAudio { id, audio } => {
-                self.audio(audio).stopped(&id, Some(format!("the desktop stopped the {}", audio.name())));
-                self.tell_audio_stop(&id, audio).await;
+            Command::OpenCapture { id, audio, ask } => self.open_capture(id, audio, ask).await,
+            Command::StopCapture { id, audio } => {
+                self.capture(audio).stopped(&id, Some(format!("the desktop stopped the {}", audio.name())));
+                self.tell_capture_stop(&id, audio).await;
             }
             Command::OpenSpeaker { id, reply } => drop(reply.send(self.open_speaker(id).await)),
             Command::StopRemote { id, reason } => self.stop_remote(&id, &reason).await,
@@ -850,8 +865,14 @@ impl Hub {
             SessionEvent::Message { from, message: Message::MirrorStarted(started) } => {
                 log::info!("{from}: the phone allowed mirroring at {}x{}", started.width, started.height);
             }
-            SessionEvent::Message { from, message: Message::MicStop } => self.phone_stopped(&from, Audio::Mic),
-            SessionEvent::Message { from, message: Message::SoundStop } => self.phone_stopped(&from, Audio::Sound),
+            SessionEvent::Message { from, message: Message::CameraStarted(started) } => {
+                log::info!("{from}: the phone allowed its camera at {}x{}", started.width, started.height);
+            }
+            SessionEvent::Message { from, message: Message::MicStop } => self.phone_stopped(&from, Capture::Mic),
+            SessionEvent::Message { from, message: Message::SoundStop } => self.phone_stopped(&from, Capture::Sound),
+            SessionEvent::Message { from, message: Message::CameraStop(stop) } => {
+                self.camera_stopped(&from, stop.reason);
+            }
             SessionEvent::Message { from, message: Message::MirrorStop(stop) } => {
                 log::info!("{from}: the phone stopped mirroring: {:?}", stop.reason);
                 self.mirrors.stopped(&from, stop.reason);
@@ -1463,6 +1484,7 @@ impl Hub {
             self.mirrors.fail(&id, crate::mirror::Failure::NotConnected);
             self.mics.stopped(&id, Some("the phone disconnected".to_owned()));
             self.sounds.stopped(&id, Some("the phone disconnected".to_owned()));
+            self.cameras.stopped(&id, Some("the phone disconnected".to_owned()));
             self.speakers.stop(&id);
             if self.remotes.running(&id) {
                 self.remotes.stop(&id);
@@ -1567,23 +1589,30 @@ impl Hub {
             .collect()
     }
 
-    fn phone_stopped(&mut self, from: &DeviceId, audio: Audio) {
+    fn phone_stopped(&mut self, from: &DeviceId, audio: Capture) {
         log::info!("{from}: the phone stopped its {}", audio.name());
-        self.audio(audio).stopped(from, Some(format!("the phone stopped its {}", audio.name())));
+        self.capture(audio).stopped(from, Some(format!("the phone stopped its {}", audio.name())));
     }
 
-    fn audio(&mut self, audio: Audio) -> &mut crate::mirror::Mirrors {
+    fn camera_stopped(&mut self, from: &DeviceId, reason: Option<String>) {
+        log::info!("{from}: the phone stopped its camera: {reason:?}");
+        self.cameras.stopped(from, reason.or_else(|| Some("the phone stopped its camera".to_owned())));
+    }
+
+    fn capture(&mut self, audio: Capture) -> &mut crate::mirror::Mirrors {
         match audio {
-            Audio::Mic => &mut self.mics,
-            Audio::Sound => &mut self.sounds,
+            Capture::Mic => &mut self.mics,
+            Capture::Sound => &mut self.sounds,
+            Capture::Camera(_) => &mut self.cameras,
         }
     }
 
     /// The D-Bus `DeviceInfo` mic and sound fields: see [`DeviceInfo::mic`].
-    fn audio_state(&self, id: &DeviceId, audio: Audio) -> &'static str {
+    fn capture_state(&self, id: &DeviceId, audio: Capture) -> &'static str {
         let streams = match audio {
-            Audio::Mic => &self.mics,
-            Audio::Sound => &self.sounds,
+            Capture::Mic => &self.mics,
+            Capture::Sound => &self.sounds,
+            Capture::Camera(_) => &self.cameras,
         };
         streams.state(id).unwrap_or(
             if self.sessions.contains_key(id) && self.phone_has(id, audio.feature()) && self.shares(id, audio.grant()) {
@@ -1617,8 +1646,9 @@ impl Hub {
                     speaker: self.sessions.contains_key(&peer.id)
                         && self.phone_has(&peer.id, link_core::proto::message::SPEAKER)
                         && self.shares(&peer.id, Feature::Speaker),
-                    mic: self.audio_state(&peer.id, Audio::Mic),
-                    sound: self.audio_state(&peer.id, Audio::Sound),
+                    mic: self.capture_state(&peer.id, Capture::Mic),
+                    camera: self.capture_state(&peer.id, Capture::Camera(Facing::Back)),
+                    sound: self.capture_state(&peer.id, Capture::Sound),
                 }
             })
             .collect();

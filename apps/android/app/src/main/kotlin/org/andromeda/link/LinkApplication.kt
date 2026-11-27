@@ -48,6 +48,7 @@ import org.andromeda.link.screen.MirrorAsk
 import org.andromeda.link.screen.ScreenMirror
 import org.andromeda.link.transfer.TransferService
 import org.andromeda.link.update.UpdateJob
+import org.andromeda.link.webcam.PhoneWebcam
 import org.andromeda.link.widget.DesktopWidget
 import java.io.File
 
@@ -84,7 +85,8 @@ class AppContainer(
     val ringer = Ringer(application, repository, scope)
     val screen = ScreenMirror(application, repository, scope)
     private val speaker = PhoneSpeaker(repository, scope)
-    private val mic = PhoneMic(application, repository, scope)
+    val mic = PhoneMic(application, repository, scope)
+    val webcam = PhoneWebcam(application, repository, scope)
     private val mirrorAsk = MirrorAsk(application, repository, scope)
     val calls = Calls(application, repository, scope, mirror::appCall).also { mirror.onCallShown = it::appCallShown }
     private val bonding = BluetoothBonding(application, repository, scope)
@@ -113,6 +115,7 @@ class AppContainer(
         screen.start()
         speaker.start()
         mic.start()
+        webcam.start()
         mirrorAsk.start()
         calls.start()
         bonding.start()

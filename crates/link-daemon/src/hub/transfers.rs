@@ -57,10 +57,7 @@ impl Hub {
                 return;
             }
             TransferEvent::Camera { from, stream } => {
-                log::info!("{from}: refusing a camera stream; this desktop asked for none");
-                if let Some(mut receiver) = stream.take() {
-                    receiver.stop();
-                }
+                self.cameras.stream(from, &stream, None);
                 return;
             }
             TransferEvent::Speaker { from, stream } => {

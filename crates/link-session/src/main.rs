@@ -5,6 +5,8 @@
 #[cfg_attr(target_os = "macos", path = "macos/awake.rs")]
 mod audio_nodes;
 mod awake;
+#[cfg(target_os = "linux")]
+mod camera;
 mod clipboard;
 mod input;
 mod link;
@@ -242,6 +244,8 @@ async fn main() -> anyhow::Result<()> {
     let mut mic_requests = link.proxy.receive_mic_requested().await?;
     let mut sounds = nodes.and_then(|nodes| attempt("phone sound", mic::Mics::new(nodes, mic::Kind::Sound).map(Some)));
     let mut sound_requests = link.proxy.receive_phone_sound_requested().await?;
+    let mut cameras = attempt("phone webcams", camera::Cameras::new().map(Some));
+    let mut camera_requests = link.proxy.receive_camera_requested().await?;
     if let Some(speakers) = speakers.as_mut() {
         speakers.refresh().await;
     }
@@ -386,6 +390,11 @@ async fn main() -> anyhow::Result<()> {
             Some(signal) = mic_requests.next() => {
                 if let (Some(mics), Ok(args)) = (mics.as_mut(), signal.args()) {
                     mics.start(link.clone(), args.device_id.to_owned());
+                }
+            }
+            Some(signal) = camera_requests.next() => {
+                if let (Some(cameras), Ok(args)) = (cameras.as_mut(), signal.args()) {
+                    cameras.start(link.clone(), args.device_id.to_owned(), args.front);
                 }
             }
             Some(signal) = sound_requests.next() => {

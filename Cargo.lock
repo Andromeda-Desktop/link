@@ -1861,6 +1861,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gtk4",
+ "link-video",
  "log",
  "serde_json",
 ]
@@ -1969,6 +1970,7 @@ dependencies = [
  "gstreamer-app",
  "image",
  "link-api",
+ "link-video",
  "log",
  "objc2",
  "objc2-app-kit",
@@ -1992,6 +1994,13 @@ dependencies = [
  "x11rb",
  "xkbcommon",
  "zbus",
+]
+
+[[package]]
+name = "link-video"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
 ]
 
 [[package]]

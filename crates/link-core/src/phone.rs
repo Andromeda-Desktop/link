@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
     Hello, Hotspot, LATE_HASH, MESSAGES, MIC, MIRROR_CODECS, MIRROR_LAG, Message, PHONE_TOGGLES, PHOTOS_PAGE,
-    PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SOUND, SPEAKER, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, USB, bluetooth_address,
-    public_address, relay_entry,
+    PHOTOS_RECENT, PairMethod, SHARE_OUTBOX, SOUND, SPEAKER, SYSTEM, SYSTEM_CONTROL, TEXTS_MMS, USB, WEBCAM,
+    bluetooth_address, public_address, relay_entry,
 };
 use link_proto::pairing::Secret;
 use link_proto::{CloseCode, VERSION};
@@ -382,6 +382,7 @@ impl Phone {
             SPEAKER,
             MIC,
             SOUND,
+            WEBCAM,
         ]
         .map(str::to_owned);
         Hello { version: VERSION, name: self.name.clone(), addresses: features.to_vec() }
