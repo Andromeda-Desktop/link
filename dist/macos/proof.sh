@@ -4,8 +4,9 @@
 # paired, with its own catalog loaded. Writes pairing.png and the logs to OUT_DIR. Needs zbarimg.
 #   dist/macos/proof.sh ZIP OUT_DIR
 set -euo pipefail
-zip=$(realpath "${1:?zip}") out=$(realpath -m "${2:?output dir}")
-mkdir -p "$out"
+zip=$(realpath "${1:?zip}")
+mkdir -p "${2:?output dir}"
+out=$(realpath "$2")
 app="/Applications/Andromeda Link.app"
 rm -rf "$app"
 ditto -x -k "$zip" /Applications
