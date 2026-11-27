@@ -1,4 +1,5 @@
 #include "link_app.h"
+#include "link_ui.h"
 
 #include "app/app_window.h"
 #include "i18n/i18n.h"
@@ -38,52 +39,12 @@
 // Parse errors come back as values.
 #define TOML_HEADER_ONLY 1
 #define TOML_EXCEPTIONS 0
-#include "protocols/toml.h"
 #pragma GCC diagnostic pop
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace linkapp {
 
   namespace {
-
-    // Window materials in the order the Appearance picker lists them, with the link.toml value of each.
-    struct MaterialChoice {
-      AppWindow::Material material;
-      const char* key;
-      const char* title;
-    };
-    constexpr std::array kMaterials{
-        MaterialChoice{AppWindow::Material::Solid, "solid", "link.appearance.solid"},
-        MaterialChoice{AppWindow::Material::Glass, "glass", "link.appearance.glass"},
-        MaterialChoice{AppWindow::Material::GlassSidebar, "glass_sidebar", "link.appearance.glass-sidebar"},
-        MaterialChoice{AppWindow::Material::GlassContent, "glass_content", "link.appearance.glass-content"},
-    };
-
-    // A v4l2loopback device exists (link-session's loopbacks() reads the same directory).
-    bool hasLoopbackCamera() {
-      std::error_code ec;
-      return !std::filesystem::is_empty("/sys/devices/virtual/video4linux", ec) && !ec;
-    }
-
-    std::filesystem::path settingsPath() {
-      return std::filesystem::path(g_get_user_config_dir()) / "andromeda" / "link.toml";
-    }
-
-    // Glass when the file, the key or its value is missing or unknown.
-    AppWindow::Material loadMaterial() {
-      const toml::parse_result parsed = toml::parse_file(settingsPath().string());
-      if (!parsed) return AppWindow::Material::Glass;
-      const std::string key = parsed.table()["appearance"]["window"].value_or(std::string());
-      for (const MaterialChoice& choice : kMaterials) {
-        if (key == choice.key) return choice.material;
-      }
-      return AppWindow::Material::Glass;
-    }
-
-    void saveMaterial(AppWindow::Material material) {
-      const auto choice = std::ranges::find(kMaterials, material, &MaterialChoice::material);
-      andromeda::writeFileAsync(settingsPath(), std::format("[appearance]\nwindow = \"{}\"\n", choice->key));
-    }
 
     struct PageInfo {
       Page page;
@@ -95,6 +56,7 @@ namespace linkapp {
     constexpr std::int32_t kAndroidPower = 26; // KeyEvent.KEYCODE_POWER
     constexpr std::int32_t kPairEntry = 1'000'000; // the phone menu's Pair entry; phone entries are their index
     constexpr std::array kPages{
+        PageInfo{Page::Home, "Home", "link.pages.home", "home"},
         PageInfo{Page::Waiting, "Waiting", "link.pages.waiting", "bell"},
         PageInfo{Page::Messages, "Messages", "link.pages.messages", "message"},
         PageInfo{Page::Calls, "Calls", "link.pages.calls", "phone"},
@@ -104,17 +66,6 @@ namespace linkapp {
         PageInfo{Page::Mirror, "Mirror", "link.pages.mirror", "device-mobile"},
         PageInfo{Page::Settings, "Settings", "link.pages.settings", "settings"},
     };
-
-    std::int64_t nowMs() {
-      return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    }
-
-    std::string clock(std::int64_t ms) {
-      const std::time_t t = static_cast<std::time_t>(ms / 1000);
-      std::tm tm{};
-      localtime_r(&t, &tm);
-      return std::format("{:02}:{:02}", tm.tm_hour, tm.tm_min);
-    }
 
     // A list row's time: the clock today, else "Yesterday", a short weekday, or the date.
     std::string when(std::int64_t ms) {
@@ -136,20 +87,6 @@ namespace linkapp {
         }
       }
       return out;
-    }
-
-    Button::ButtonPalette playPalette() {
-      const Button::ButtonStateColors rest{.bg = colorSpecFromRole(ColorRole::Label1), .border = clearColorSpec(),
-                                           .label = colorSpecFromRole(ColorRole::View)};
-      const Button::ButtonStateColors hot{.bg = colorSpecFromRole(ColorRole::Label2), .border = clearColorSpec(),
-                                          .label = colorSpecFromRole(ColorRole::View)};
-      return {.normal = rest, .hover = hot, .pressed = hot, .disabled = rest};
-    }
-
-    std::unique_ptr<Label> text(std::string value, const Tokens::Type& type, ColorRole role, float s, int lines = 1) {
-      return ui::label({.text = std::move(value), .fontSize = type.size * s,
-                        .fontWeight = static_cast<FontWeight>(type.weight), .color = colorSpecFromRole(role),
-                        .maxLines = lines, .ellipsize = TextEllipsize::End});
     }
 
     // Rulebook §9.13: symbol 48 label_3, title_3, paragraph label_2, at most one button.
@@ -847,8 +784,10 @@ namespace linkapp {
   AppWindow& LinkApp::createWindow() {
     AppWindow& window = addWindow({.appId = info().id, .title = i18n::tr("link.pages.waiting"), .width = 1200, .height = 780, .minWidth = 760,
                                    .sidebarWidth = Tokens::componentSidebarWidth,
-                                   .material = m_material = loadMaterial(), .contentCard = true});
+                                   .material = AppWindow::Material::Solid});
     m_window = &window;
+    // The sky reaches the window's top: no header, the sky holds the window buttons.
+    window.setContentCards(true);
     if (m_client == nullptr) {
       m_client = std::make_unique<LinkClient>([this](const std::vector<std::string>& paths) { showInFolder(paths); });
       m_feed = std::make_unique<FeedAdapter>(*m_client, m_scale,
@@ -1188,7 +1127,6 @@ namespace linkapp {
       m_conversationScroll = {};
     }
     m_client->viewThread(cards ? m_thread : std::nullopt);
-    if (cards != m_window->contentCards()) m_window->setContentCards(cards);
   }
 
   void LinkApp::updateCaption() {
@@ -1234,6 +1172,7 @@ namespace linkapp {
       auto row = std::make_unique<StatusRow>(s);
       std::pair<std::string, std::string> line;
       switch (info.page) {
+      case Page::Home: break;
       case Page::Waiting:
         if (!items.empty()) line.first = i18n::trp("link.sidebar.items", static_cast<long>(items.size()));
         else if (m_client && m_client->presence().kind == Presence::Kind::Away) line.first = i18n::tr("link.sidebar.phone-not-connected");
@@ -1313,228 +1252,6 @@ namespace linkapp {
       side->addChild(ui::spacer());
     }
 
-    // PhoneCard (handoff.yaml): phone symbol, name 600, dot + transport + battery.
-    const Presence presence = m_client ? m_client->presence() : Presence{};
-    auto card = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP4 * s, .padding = Tokens::spaceP12 * s,
-                            .fill = colorSpecFromRole(ColorRole::GlassCard), .radius = Style::scaledRadius(Tokens::radiusR12, s)});
-    auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    head->addChild(ui::glyph({.glyph = std::string("device-mobile"), .glyphSize = Tokens::sizeSymbol * s,
-                              .color = colorSpecFromRole(ColorRole::Label1)}));
-    std::string name = presence.phone.name;
-    std::string line;
-    switch (presence.kind) {
-    case Presence::Kind::NoDaemon:
-      name = i18n::tr("link.phone-card.not-running");
-      break;
-    case Presence::Kind::NotPaired:
-      name = i18n::tr("link.phone-card.no-phone");
-      line = i18n::tr("link.phone-card.pair-one");
-      break;
-    case Presence::Kind::Away:
-      line = lastSeenText(presence.phone.lastSeen, nowMs() / 1000);
-      break;
-    case Presence::Kind::Connected:
-    case Presence::Kind::Locked: {
-      line = presence.phone.transport == "bluetooth" ? "Bluetooth" : "Wi-Fi";
-      if (presence.phone.battery >= 0) line += std::format(" · {} %", presence.phone.battery);
-      break;
-    }
-    }
-    auto label = text(name, Tokens::typeHeadline, ColorRole::Label1, s);
-    label->setFlexGrow(1.0F);
-    head->addChild(std::move(label));
-    // Playing media joins the card instead of adding a row: play/pause here, the track in place of the status line.
-    const PhonePlayer* playing = player();
-    if (playing != nullptr) {
-      const float key = Tokens::sizeControlS * s;
-      const std::string id = presence.phone.id;
-      head->addChild(ui::button({.glyph = std::string(playing->playing ? "player-pause" : "player-play"),
-                                 .glyphSize = Tokens::sizeSymbolInline * s, .controlHeight = key, .enabled = playing->takes("play-pause"),
-                                 .customPalette = playPalette(),
-                                 .tooltip = i18n::tr(playing->playing ? "link.player.pause" : "link.player.play"), .padding = 0.0F,
-                                 .radius = key / 2.0F, .width = key, .height = key,
-                                 .onClick = [this, id] { m_client->playerCommand(id, "play-pause"); }}));
-    }
-    if (m_client && !m_client->phones().empty()) {
-      Button* choose = nullptr;
-      head->addChild(ui::button({.out = &choose, .glyph = std::string("selector"), .glyphSize = Tokens::sizeSymbol * s,
-                                 .controlHeight = Tokens::sizeControlS * s,
-                                 .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.phone-card.choose"), .padding = 0.0F,
-                                 .radius = Tokens::sizeControlS * s / 2.0F, .width = Tokens::sizeControlS * s,
-                                 .height = Tokens::sizeControlS * s}));
-      choose->setOnClick([this, choose] {
-        std::vector<ContextMenuControlEntry> entries;
-        const std::vector<Phone>& phones = m_client->phones();
-        const std::string shown = m_client->presence().phone.id;
-        for (std::size_t i = 0; i < phones.size(); ++i) {
-          entries.push_back({.id = static_cast<std::int32_t>(i), .label = phones[i].name, .radio = true,
-                             .toggleState = phones[i].id == shown ? 1 : 0});
-        }
-        float x = 0.0F;
-        float y = 0.0F;
-        entries.push_back({.separator = true});
-        entries.push_back({.id = kPairEntry, .label = i18n::tr("link.phone-card.pair-another")});
-        Node::absolutePosition(choose, x, y);
-        m_window->openContextMenu(std::move(entries), x, y + choose->height(), [this](std::int32_t i) {
-          if (i == kPairEntry) {
-            m_client->startPairing();
-            return;
-          }
-          const std::vector<Phone>& now = m_client->phones();
-          if (i >= 0 && static_cast<std::size_t>(i) < now.size()) choosePhone(now[static_cast<std::size_t>(i)].id);
-        });
-      });
-    }
-    card->addChild(std::move(head));
-    if (playing != nullptr) {
-      card->addChild(playerMini(*playing, s));
-    } else if (!line.empty()) {
-      const bool live = presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked;
-      auto status = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s});
-      if (presence.kind != Presence::Kind::NotPaired) {
-        status->addChild(ui::box({.fill = colorSpecFromRole(live ? ColorRole::Success : ColorRole::Label3),
-                                  .radius = Tokens::spaceP8 * s / 2.0F, .width = Tokens::spaceP8 * s,
-                                  .height = Tokens::spaceP8 * s}));
-      }
-      status->addChild(text(line, Tokens::typeFootnote, ColorRole::Label2, s));
-      card->addChild(std::move(status));
-    }
-    if (presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked ||
-        presence.kind == Presence::Kind::Away) {
-      // RoundKey (handoff.yaml): 32 circle fill_1, on = accent; an away phone keeps the row, dimmed.
-      const float key = Tokens::sizeControlM * s;
-      const bool live = presence.kind != Presence::Kind::Away;
-      const auto round = [&](const char* glyph, const std::string& tip, bool on, std::function<void()> click) {
-        return ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .enabled = live,
-                           .variant = on && live ? ButtonVariant::Primary : ButtonVariant::Tonal, .tooltip = tip,
-                           .radius = key / 2.0F, .width = key, .height = key, .onClick = std::move(click)});
-      };
-      const std::string id = presence.phone.id;
-      const bool dnd = presence.phone.dnd == 1;
-      auto keys = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::SpaceBetween, .paddingV = Tokens::spaceP4 * s});
-      keys->addChild(round("bell", i18n::tr("link.phone-card.ring"), false, [this, id] { m_client->ring(id); }));
-      keys->addChild(round("device-mobile", i18n::tr("link.pages.mirror"), false, [this] { show(Page::Mirror); }));
-      keys->addChild(round("clipboard", i18n::tr("link.phone-card.send-clipboard"), false, [this, id] {
-        if (TextClipboard* clipboard = Input::textClipboard(); clipboard != nullptr) {
-          clipboard->requestClipboardText([this, id](std::optional<std::string> text) {
-            if (text.has_value() && !text->empty()) m_client->shareText(id, *text);
-          });
-        }
-      }));
-      const Phone& phone = presence.phone;
-      const auto& command = m_client->systemCommand();
-      const bool mine = command && command->device == id;
-      const bool hasToggles = phone.wifi >= 0 || phone.bluetooth >= 0 || phone.torch >= 0;
-      // At most five keys a row: with the toggles, the microphone, the sound or the camera, the phone's own settings,
-      // the sound and the camera follow in rows of five below.
-      const bool secondRow = hasToggles || !phone.mic.empty() || !phone.sound.empty() || !phone.camera.empty();
-      std::vector<decltype(round("", "", false, {}))> settings;
-      const bool dndPending = mine && command->phase == LinkClient::SystemCommand::Phase::Pending && command->command == "set-dnd";
-      auto dndKey = round("circle-minus", i18n::tr("link.phone-card.dnd"), dndPending ? command->value == 1 : dnd,
-                          [this, id, dnd] { m_client->setDnd(id, !dnd); });
-      if (dndPending) dndKey->setEnabled(false);
-      if (secondRow) {
-        settings.push_back(std::move(dndKey));
-      } else {
-        keys->addChild(std::move(dndKey));
-      }
-      keys->addChild(round("arrow-up", i18n::tr("link.phone-card.send-files"), false, [this, id] { chooseAndSend(id); }));
-      if (!presence.phone.mic.empty()) {
-        const bool micOn = presence.phone.mic != "ready";
-        keys->addChild(round("microphone", i18n::tr(micOn ? "link.phone-card.mic-stop" : "link.phone-card.mic-start"), micOn,
-                             [this, id, micOn] { m_client->setPhoneAudio(id, LinkClient::PhoneAudio::Mic, !micOn); }));
-      }
-      card->addChild(std::move(keys));
-      if (hasToggles) {
-        // Turning off the radio Link runs on would end the connection: the key stays on and says why, and linkd's
-        // refusal shows inline when pressed.
-        struct Toggle {
-          const char* command;
-          int state;
-          const char *on, *off, *tip, *locked;
-          bool carries;
-        };
-        const std::array<Toggle, 3> toggles{{
-            {"set-wifi", phone.wifi, "wifi", "wifi-off", "link.phone-card.wifi", "link.phone-card.wifi-carries",
-             phone.transport == "wifi" || phone.transport == "nearby"},
-            {"set-bluetooth", phone.bluetooth, "bluetooth", "bluetooth-off", "link.phone-card.bluetooth",
-             "link.phone-card.bluetooth-carries", phone.transport == "bluetooth"},
-            {"set-torch", phone.torch, "bulb", "bulb-off", "link.phone-card.torch", "", false},
-        }};
-        for (const Toggle& toggle : toggles) {
-          const bool pending =
-              mine && command->phase == LinkClient::SystemCommand::Phase::Pending && command->command == toggle.command;
-          // A pending command shows the state it asks for, and takes no second press.
-          const bool on = pending ? command->value == 1 : toggle.state == 1;
-          const bool locked = on && toggle.carries;
-          auto button = round(on ? toggle.on : toggle.off, i18n::tr(locked ? toggle.locked : toggle.tip), on,
-                              [this, id, command = std::string(toggle.command), on] {
-                                m_client->sendSystemCommand(id, command, on ? 0 : 1);
-                              });
-          button->setEnabled(live && toggle.state >= 0 && !pending);
-          settings.push_back(std::move(button));
-        }
-      }
-      if (!phone.sound.empty()) {
-        const bool soundOn = phone.sound != "ready";
-        settings.push_back(round("volume", i18n::tr(soundOn ? "link.phone-card.sound-stop" : "link.phone-card.sound-start"),
-                                 soundOn, [this, id, soundOn] {
-                                   m_client->setPhoneAudio(id, LinkClient::PhoneAudio::Sound, !soundOn);
-                                 }));
-      }
-      if (!phone.camera.empty()) {
-        const bool cameraOn = phone.camera != "ready";
-        settings.push_back(round("camera", i18n::tr(cameraOn ? "link.phone-card.camera-stop" : "link.phone-card.camera-start"),
-                                 cameraOn, [this, id, cameraOn] { m_client->setPhoneCamera(id, !cameraOn); }));
-        if (phone.camera == "on") {
-          settings.push_back(round("camera-rotate", i18n::tr("link.phone-card.camera-switch"), false,
-                                   [this, id] { m_client->switchPhoneCamera(id); }));
-        }
-      }
-      for (std::size_t first = 0; first < settings.size(); first += 5) {
-        auto row = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::SpaceBetween, .paddingV = Tokens::spaceP4 * s});
-        for (std::size_t i = first; i < first + 5; ++i) {
-          if (i < settings.size()) {
-            row->addChild(std::move(settings[i]));
-            continue;
-          }
-          // Empty cells keep the row on the five-column grid of the keys above.
-          auto cell = ui::spacer();
-          cell->setFlexGrow(0.0F);
-          cell->setSize(key, key);
-          row->addChild(std::move(cell));
-        }
-        card->addChild(std::move(row));
-      }
-      if (phone.camera == "on" && !hasLoopbackCamera()) {
-        // link-session writes the webcam into v4l2loopback devices too; without one, apps that read V4L2 only
-        // (Chromium without its PipeWire camera flag) do not list the phone.
-        auto note = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-        note->addChild(ui::glyph({.glyph = "info-circle", .glyphSize = Tokens::sizeSymbol * s,
-                                  .color = colorSpecFromRole(ColorRole::Label2)}));
-        auto why = text(i18n::tr("link.phone-card.camera-no-loopback"), Tokens::typeFootnote, ColorRole::Label2, s, 3);
-        why->setFlexGrow(1.0F);
-        note->addChild(std::move(why));
-        card->addChild(std::move(note));
-      }
-      if (mine && command->phase == LinkClient::SystemCommand::Phase::Failed) {
-        // Rulebook 9.13: an error shows where it happened, with the action that fixes it.
-        auto error = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-        error->addChild(ui::glyph({.glyph = "alert-circle", .glyphSize = Tokens::sizeSymbol * s,
-                                   .color = colorSpecFromRole(ColorRole::DangerText)}));
-        auto reason = text(command->error, Tokens::typeFootnote, ColorRole::Label1, s, 2);
-        reason->setFlexGrow(1.0F);
-        error->addChild(std::move(reason));
-        error->addChild(ui::button({.text = i18n::tr("link.common.try-again"), .fontSize = Tokens::typeFootnote.size * s,
-                                    .variant = ButtonVariant::Ghost,
-                                    .onClick = [this, id, cmd = command->command, value = command->value] {
-                                      m_client->sendSystemCommand(id, cmd, value);
-                                    }}));
-        card->addChild(std::move(error));
-      }
-    }
-    m_phoneCard = card.get();
-    side->addChild(std::move(card));
     return side;
   }
 
@@ -1765,7 +1482,9 @@ namespace linkapp {
     return page;
   }
 
-  std::unique_ptr<Node> LinkApp::content(Renderer& renderer, float width, float height) {
+  std::string LinkApp::pageTitle(Page page) { return i18n::tr(kPages[static_cast<std::size_t>(page)].title); }
+
+  std::unique_ptr<Node> LinkApp::pageBody(Renderer& renderer, float width, float height) {
     m_photoGrid = nullptr;
     m_feedList = nullptr;
     m_conversationList = nullptr;
@@ -3182,26 +2901,6 @@ namespace linkapp {
     auto page = ui::column({.align = FlexAlign::Stretch, .fillWidth = true});
     page->setPadding(0.0F, 0.0F, Tokens::spaceP24 * s, 0.0F);
     // The app's own settings: they need no Link service.
-    const auto appearance = [&] {
-      page->addChild(header(i18n::tr("link.appearance.title")));
-      auto card = group();
-      std::vector<std::string> names;
-      std::size_t selected = 0;
-      for (const MaterialChoice& choice : kMaterials) {
-        if (choice.material == m_material) selected = names.size();
-        names.emplace_back(i18n::tr(choice.title));
-      }
-      row(*card, "app-window", i18n::tr("link.appearance.window"), i18n::tr("link.appearance.window-hint"),
-          ui::select({.options = std::move(names), .selectedIndex = selected, .fontSize = Style::fontSizeBody * s,
-                      .controlHeight = Style::controlHeight * s,
-                      .onSelectionChanged = [this](std::size_t i, std::string_view) {
-                        if (i >= kMaterials.size() || kMaterials[i].material == m_material) return;
-                        m_material = kMaterials[i].material;
-                        m_window->setMaterial(m_material);
-                        saveMaterial(m_material);
-                      }}));
-      page->addChild(std::move(card));
-    };
     const auto finish = [&] {
       auto scroll = ui::scrollView({.state = &m_settingsScroll, .contentScale = s, .viewportPaddingH = Tokens::spaceP24 * s,
                                     .maxContentWidth = Tokens::componentLinkSettingsWidth * s,
@@ -3214,7 +2913,6 @@ namespace linkapp {
       auto card = group();
       row(*card, "plug-connected-x", i18n::tr("link.phone-card.not-running"), i18n::tr("link.settings.start-service"), nullptr);
       page->addChild(std::move(card));
-      appearance();
       return finish();
     }
     page->addChild(header(presence.phone.name));
@@ -3274,7 +2972,6 @@ namespace linkapp {
           m_window->requestRebuild();
         });
     page->addChild(std::move(deskCard));
-    appearance();
 
     auto forget = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     forget->setPadding(Tokens::spaceP24 * s, 0.0F, 0.0F, 0.0F);

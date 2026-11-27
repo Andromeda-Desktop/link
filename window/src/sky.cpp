@@ -1,0 +1,285 @@
+#include "sky.h"
+
+#include "app/app_window.h"
+#include "core/blocking_pool.h"
+#include "design_tokens.h"
+#include "render/animation/motion_service.h"
+#include "render/core/color.h"
+#include "render/scene/galaxy_node.h"
+#include "render/scene/input_area.h"
+#include "ui/builders.h"
+#include "ui/controls/box.h"
+
+#include <algorithm>
+#include <cmath>
+#include <numbers>
+
+namespace linkapp {
+
+  namespace {
+    constexpr float kTwoPi = 2.0F * std::numbers::pi_v<float>;
+    // Cameras of the handoff (mockups/link-desk-v2/handoff.yaml home, band).
+    constexpr GalaxyCamera kHero{.yaw = 0.55F, .pitch = 0.42F, .dist = 3.0F, .sx = 0.12F, .sy = 0.12F};
+    constexpr GalaxyCamera kBand{.yaw = 0.55F, .pitch = 0.3F, .dist = 1.15F, .sx = -0.18F, .sy = 0.3F};
+    // Drag: rad per px; wheel: zoom factor per step; the Hero camera's reach.
+    constexpr float kYawPerPx = 0.006F;
+    constexpr float kPitchPerPx = 0.005F;
+    constexpr float kPitchMin = 0.1F;
+    constexpr float kPitchMax = 1.3F;
+    constexpr float kZoomStep = 0.1F;
+    constexpr float kDistMin = 1.6F;
+    constexpr float kDistMax = 6.0F;
+    // A wheel zoom counts as moving until the wheel rests this long; then the points redraw in full.
+    constexpr float kWheelRestMs = 160.0F;
+    // A star this close above the sky's bottom hides its leader (the sheet covers it).
+    constexpr float kLeaderFloor = 30.0F;
+    // A leader meets its card this far below the card's top at most (the card's first line).
+    constexpr float kLeaderReach = 26.0F;
+
+    float lifeSpin(SkyLife life) {
+      return life == SkyLife::Music ? Tokens::componentLinkSpinMusic : life == SkyLife::Busy ? Tokens::componentLinkSpinBusy : 0.0F;
+    }
+    float lifeGlow(SkyLife life) {
+      return life == SkyLife::Music ? Tokens::componentLinkGlowMusic : life == SkyLife::Busy ? Tokens::componentLinkGlowBusy : 0.0F;
+    }
+    bool motionAllowed() { return MotionService::instance().enabled() && !MotionService::instance().reduced(); }
+
+    std::array<float, 2> offsetIn(const Node* node, const Node* ancestor) {
+      std::array<float, 2> at{};
+      for (const Node* n = node; n != nullptr && n != ancestor; n = n->parent()) {
+        at[0] += n->x() + n->translationX();
+        at[1] += n->y() + n->translationY();
+      }
+      return at;
+    }
+  } // namespace
+
+  // The sky's root: it places the leaders once the cards in front have their layout.
+  class Sky::Layer final : public Node {
+  public:
+    explicit Layer(Sky& sky) : m_sky(sky) {}
+    ~Layer() override {
+      if (m_sky.m_layer != this) return;
+      m_sky.stopLoop();
+      m_sky.m_layer = nullptr;
+      m_sky.m_galaxy = nullptr;
+      m_sky.m_leaders.clear();
+      m_sky.m_anchors.clear();
+    }
+    Node* front = nullptr;
+    Node* buttons = nullptr;
+
+  protected:
+    void doLayout(Renderer& renderer) override {
+      Node::doLayout(renderer);
+      if (buttons != nullptr) {
+        const float edge = Tokens::spaceP12 * m_sky.m_scale;
+        buttons->setPosition(width() - buttons->width() - edge, edge);
+      }
+      m_sky.placeLeaders();
+    }
+
+  private:
+    Sky& m_sky;
+  };
+
+  Sky::Sky(AppWindow& window) : m_window(window) {}
+
+  Sky::~Sky() {
+    stopLoop();
+    if (m_layer != nullptr) m_layer->front = nullptr;
+    m_layer = nullptr;
+  }
+
+  void Sky::startPoints(bool cool) {
+    if (m_building || (m_points != nullptr && m_pointsCool == cool)) return;
+    m_building = true;
+    GalaxyShape shape;
+    if (cool) shape.temp = 1900.0;
+    BlockingPool::instance().run<std::shared_ptr<const GalaxyPoints>>(
+        m_alive, [shape] { return std::make_shared<const GalaxyPoints>(buildGalaxy(shape)); },
+        [this, cool](std::shared_ptr<const GalaxyPoints> points) {
+          m_building = false;
+          m_points = std::move(points);
+          m_pointsCool = cool;
+          if (m_galaxy != nullptr) m_galaxy->setPoints(m_points);
+          // The look may have changed while this one was built.
+          startPoints(m_look.cool);
+        });
+  }
+
+  GalaxyCamera Sky::camera() const {
+    if (m_look.mode == SkyMode::Band) return kBand;
+    GalaxyCamera c = kHero;
+    c.yaw += m_yaw;
+    c.pitch = std::clamp(c.pitch + m_pitch, kPitchMin, kPitchMax);
+    c.dist = std::clamp(c.dist * m_zoom, kDistMin, kDistMax);
+    return c;
+  }
+
+  void Sky::applyCamera() {
+    if (m_galaxy == nullptr) return;
+    m_galaxy->setCamera(camera());
+    placeLeaders();
+  }
+
+  std::unique_ptr<Node> Sky::build(const SkyLook& look, float width, float height, float top, std::unique_ptr<Node> front,
+                                   std::vector<SkyAnchor> anchors) {
+    m_look = look;
+    m_scale = m_window.uiScale();
+    const float s = m_scale;
+    startPoints(look.cool);
+    auto layer = std::make_unique<Layer>(*this);
+    layer->setSize(width, height);
+    m_layer = layer.get();
+
+    auto galaxy = std::make_unique<GalaxyNode>();
+    galaxy->setCacheOwner(this);
+    galaxy->setSize(width, height);
+    galaxy->setPoints(m_points);
+    galaxy->setDim(look.dim);
+    galaxy->setLightSky(look.light ? std::optional(GalaxyLightSky{}) : std::nullopt);
+    galaxy->setCamera(camera());
+    galaxy->setLife({.angle = m_angle, .glow = 1.0F});
+    m_galaxy = static_cast<GalaxyNode*>(layer->addChild(std::move(galaxy)));
+
+    if (look.mode == SkyMode::Hero) {
+      auto area = ui::inputArea({.width = width, .height = std::max(0.0F, height - top)});
+      area->setPosition(0.0F, top);
+      area->setOnPress([this](const InputArea::PointerData& data) {
+        m_dragging = data.pressed;
+        m_dragAt = {data.sceneX, data.sceneY};
+        if (m_galaxy != nullptr) m_galaxy->setMoving(m_dragging);
+      });
+      area->setOnMotion([this](const InputArea::PointerData& data) {
+        if (!m_dragging) return;
+        const float dx = (data.sceneX - m_dragAt[0]) / m_scale;
+        const float dy = (data.sceneY - m_dragAt[1]) / m_scale;
+        m_dragAt = {data.sceneX, data.sceneY};
+        m_yaw -= dx * kYawPerPx;
+        m_pitch = std::clamp(kHero.pitch + m_pitch + dy * kPitchPerPx, kPitchMin, kPitchMax) - kHero.pitch;
+        applyCamera();
+      });
+      area->setOnCancel([this] {
+        m_dragging = false;
+        if (m_galaxy != nullptr) m_galaxy->setMoving(false);
+      });
+      area->setOnAxisHandler([this](const InputArea::PointerData& data) {
+        const float steps = data.scrollSteps();
+        if (steps == 0.0F) return true;
+        m_zoom = std::clamp(m_zoom * std::exp(steps * kZoomStep), kDistMin / kHero.dist, kDistMax / kHero.dist);
+        if (m_galaxy != nullptr) m_galaxy->setMoving(true);
+        applyCamera();
+        AnimationManager& animations = m_window.animations();
+        animations.cancelForOwner(&m_zoom);
+        animations.animateTimer(0.0F, 1.0F, kWheelRestMs, Easing::Linear, [](float) {}, [this] {
+          if (m_galaxy != nullptr && !m_dragging) m_galaxy->setMoving(false);
+        }, &m_zoom);
+        return true;
+      });
+      layer->addChild(std::move(area));
+    }
+
+    m_anchors = std::move(anchors);
+    m_leaders.clear();
+    const Color core = rgbaHex(look.light ? Tokens::componentLinkCoreLightSky : Tokens::componentLinkCore);
+    for (std::size_t i = 0; i < m_anchors.size(); ++i) {
+      Leader leader;
+      Color c = core;
+      c.a = Tokens::componentLinkLeaderAlpha;
+      leader.line = static_cast<Box*>(layer->addChild(ui::box({.fill = fixedColorSpec(c), .height = s})));
+      leader.halo = static_cast<Box*>(layer->addChild(ui::box({.fill = fixedColorSpec(core)})));
+      leader.dot = static_cast<Box*>(layer->addChild(ui::box({.fill = fixedColorSpec(core)})));
+      m_leaders.push_back(leader);
+    }
+
+    if (front != nullptr) {
+      front->setSize(width, height);
+      front->setPosition(0.0F, 0.0F);
+      layer->front = layer->addChild(std::move(front));
+    }
+    layer->buttons = layer->addChild(m_window.buildWindowButtons());
+    if (m_life != SkyLife::Still && m_loop == 0) startLoop();
+    return layer;
+  }
+
+  void Sky::placeLeaders() {
+    if (m_layer == nullptr || m_galaxy == nullptr) return;
+    const float s = m_scale;
+    const float t = m_lifeTime;
+    const bool alive = m_loop != 0;
+    const float floor = m_layer->height() - kLeaderFloor * s;
+    for (std::size_t i = 0; i < m_leaders.size() && i < m_anchors.size(); ++i) {
+      const Leader& leader = m_leaders[i];
+      const SkyAnchor& anchor = m_anchors[i];
+      const auto star = m_galaxy->project(anchor.star);
+      const bool shown = anchor.card != nullptr && star && (*star)[1] <= floor;
+      leader.line->setVisible(shown);
+      leader.halo->setVisible(shown);
+      leader.dot->setVisible(shown);
+      if (!shown) continue;
+      const auto [px, py] = *star;
+      const auto [cx, cy0] = offsetIn(anchor.card, m_layer);
+      const float cy = cy0 + std::min(anchor.card->height() / 2.0F, kLeaderReach * s);
+      const float dx = cx - px;
+      const float dy = cy - py;
+      const float length = std::hypot(dx, dy);
+      leader.line->setSize(length, s);
+      leader.line->setPosition((px + cx - length) / 2.0F, (py + cy - s) / 2.0F);
+      leader.line->setRotation(std::atan2(dy, dx));
+      const float k = alive ? 1.0F + 0.35F * std::sin(t * 3.0F + anchor.star[0] * 7.0F) : 1.0F;
+      const float halo = Tokens::componentLinkLeaderHalo * s * k;
+      leader.halo->setSize(2.0F * halo, 2.0F * halo);
+      leader.halo->setRadius(halo);
+      leader.halo->setPosition(px - halo, py - halo);
+      leader.halo->setOpacity(alive ? 0.22F / k : 0.2F);
+      const float dot = Tokens::componentLinkLeaderDot * s;
+      leader.dot->setSize(2.0F * dot, 2.0F * dot);
+      leader.dot->setRadius(dot);
+      leader.dot->setPosition(px - dot, py - dot);
+    }
+  }
+
+  void Sky::setLife(SkyLife life) {
+    if (!motionAllowed()) life = SkyLife::Still;
+    if (life == m_life) return;
+    m_life = life;
+    if (life == SkyLife::Still) {
+      stopLoop();
+      if (m_galaxy != nullptr) m_galaxy->setLife({.angle = m_angle, .glow = 1.0F});
+      placeLeaders();
+    } else if (m_loop == 0 && m_layer != nullptr) {
+      startLoop();
+    }
+  }
+
+  void Sky::startLoop() {
+    const float period = static_cast<float>(Tokens::componentLinkBreatheMs);
+    m_loop = m_window.animations().animateTimer(
+        0.0F, 1.0F, period, Easing::Linear, [this](float phase) { tick(phase); },
+        [this, period] {
+          m_loop = 0;
+          m_loopStart += period / 1000.0F;
+          if (m_life != SkyLife::Still && m_layer != nullptr) startLoop();
+        },
+        this);
+  }
+
+  void Sky::stopLoop() {
+    if (m_loop == 0) return;
+    m_window.animations().cancel(m_loop);
+    m_loop = 0;
+    m_loopStart = m_lifeTime;
+  }
+
+  void Sky::tick(float phase) {
+    const float time = m_loopStart + phase * static_cast<float>(Tokens::componentLinkBreatheMs) / 1000.0F;
+    m_angle = std::fmod(m_angle + lifeSpin(m_life) * std::max(0.0F, time - m_lifeTime), kTwoPi);
+    m_lifeTime = time;
+    if (m_galaxy == nullptr) return;
+    const float glow = 1.0F + lifeGlow(m_life) * 0.5F * (1.0F - std::cos(kTwoPi * phase));
+    m_galaxy->setLife({.angle = m_angle, .glow = glow});
+    placeLeaders();
+  }
+
+} // namespace linkapp

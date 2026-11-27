@@ -2,10 +2,12 @@
 
 #include "app/desk_app.h"
 #include "app/file_chooser.h"
+#include "core/shown_timer.h"
 #include "core/timer_manager.h"
 #include "render/core/async_texture_cache.h"
 #include "render/core/texture_manager.h"
 #include "link_client.h"
+#include "sky.h"
 #include "ui/controls/scroll_view.h"
 #include "ui/controls/virtual_grid_view.h"
 #include "ui/controls/virtual_list_view.h"
@@ -17,10 +19,12 @@
 #include <string>
 #include <vector>
 
+class Label;
+class ProgressBar;
 class Surface;
 namespace linkapp {
 
-  enum class Page : std::uint8_t { Waiting, Messages, Calls, Photos, Files, Activity, Mirror, Settings };
+  enum class Page : std::uint8_t { Home, Waiting, Messages, Calls, Photos, Files, Activity, Mirror, Settings };
 
   // The Waiting feed as a virtual list: one row per item, built the same way to measure and to show.
   class FeedAdapter final : public VirtualListAdapter {
@@ -230,7 +234,26 @@ namespace linkapp {
     void openPlayer();
     // Moves the open player popover to the model in place; closes it once the player is gone.
     void syncPlayer();
+    // The column right of the sidebar: Home's sky and sheet, or a page's sky band over its sheet.
     [[nodiscard]] std::unique_ptr<Node> content(Renderer& renderer, float width, float height);
+    // The shown page's own content, inside the sheet.
+    [[nodiscard]] std::unique_ptr<Node> pageBody(Renderer& renderer, float width, float height);
+    [[nodiscard]] static std::string pageTitle(Page page);
+    [[nodiscard]] std::unique_ptr<Node> home(Renderer& renderer, float width, float height);
+    [[nodiscard]] std::unique_ptr<Node> homeIdentity(const Presence& presence, float s);
+    // The running cards; each card's star goes into `anchors`.
+    [[nodiscard]] std::unique_ptr<Node> homeLive(const Presence& presence, float width, float s, std::vector<SkyAnchor>& anchors);
+    [[nodiscard]] std::unique_ptr<Flex> homeSheet(Renderer& renderer, const Presence& presence, float width, float height);
+    // The column under the sky and the sheet: the sky's own colour.
+    [[nodiscard]] ColorSpec skyFill() const;
+    [[nodiscard]] std::unique_ptr<Node> bandFront(float width, float height);
+    [[nodiscard]] std::unique_ptr<Flex> sheetPlane(float width, float height, bool grab);
+    [[nodiscard]] SkyLife skyLife() const;
+    [[nodiscard]] SkyLook skyLook(SkyMode mode) const;
+    void stopStream(const std::string& deviceId, std::string_view glyph);
+    // The media card's seek ticks each second while it shows a playing player.
+    void syncLiveTick();
+    void tickLive();
     // Pair a Phone: the QR and code of this app's pairing window.
     [[nodiscard]] std::unique_ptr<Node> pair(Renderer& renderer, float s);
     [[nodiscard]] std::unique_ptr<Node> messages(float width, float height);
@@ -347,8 +370,15 @@ namespace linkapp {
     std::string m_hotspotSheet;   // device id + ssid of the ask the sheet shows; empty while none shows
     std::string m_dial; // the "Name or number" field
     AppWindow* m_window = nullptr;
-    AppWindow::Material m_material = AppWindow::Material::Glass; // the Appearance setting, saved in link.toml
     Node* m_phoneCard = nullptr;      // of the last sidebar build
+    std::unique_ptr<Sky> m_sky;
+    ScrollViewState m_homeScroll;
+    struct LiveView {
+      ProgressBar* seek = nullptr;
+      Label* position = nullptr;
+    };
+    LiveView m_liveView;              // of Home's last build
+    ShownTimer m_liveTick;            // 1 s, only while Home shows a playing player
     struct PlayerView {
       Slider* seek = nullptr;
       Label* position = nullptr;
@@ -367,7 +397,7 @@ namespace linkapp {
     ShownTimer m_playerTick;          // 1 s, only while the popover shows a playing player
     int m_unmutedVolume = 50;         // the media volume Unmute gives back
     std::unique_ptr<desk::FileChooser> m_chooser;
-    Page m_page = Page::Waiting;
+    Page m_page = Page::Home;
     float m_scale = 1.0F;
     Renderer* m_renderer = nullptr;   // the window's, from the last content build
     TextureHandle m_mirrorTexture;    // owned here; the video Image shows it without owning it
