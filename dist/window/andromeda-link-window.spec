@@ -21,7 +21,7 @@ cp -a %{stage}/. %{buildroot}/
 %{_bindir}/andromeda-link-app
 %{_prefix}/lib/andromeda-link/andromeda-link-app
 %{_prefix}/lib/andromeda-link/assets
-%{_datadir}/andromeda/translations/link
+%{_prefix}/lib/andromeda-link/translations
 %{_datadir}/applications/dev.andromeda.Link.desktop
 %{_datadir}/dbus-1/services/dev.andromeda.Link.service
 %{_datadir}/icons/hicolor/*/apps/dev.andromeda.Link.png

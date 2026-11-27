@@ -49,7 +49,7 @@ executable('andromeda-link-app',
 install_symlink('andromeda-link-app', pointing_to: _own_dir / 'andromeda-link-app', install_dir: get_option('bindir'))
 install_subdir(_desk.get_variable(pkgconfig: 'assetsdir'), install_dir: _own_dir / 'assets', strip_directory: true)
 
-install_data('translations/en.json', install_dir: get_option('datadir') / 'andromeda' / 'translations' / 'link')
+install_data('translations/en.json', install_dir: _own_dir / 'translations' / 'link')
 install_data('data/dev.andromeda.Link.desktop', install_dir: get_option('datadir') / 'applications')
 foreach size : ['16', '24', '32', '48', '64', '128', '256', '512']
   install_data('data/icons/hicolor' / size + 'x' + size / 'apps/dev.andromeda.Link.png',
