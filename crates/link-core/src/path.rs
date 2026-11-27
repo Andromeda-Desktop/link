@@ -1180,9 +1180,10 @@ mod tests {
     async fn a_reply_leaves_from_the_address_the_peer_used() -> Result {
         let socket = PathSocket::new(std::net::UdpSocket::bind("0.0.0.0:0")?)?;
         let port = socket.local_addr()?.port();
-        let peer = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
         let used = second_local_address()?;
+        // Windows refuses a send from a loopback-bound socket to a LAN address (WSAENETUNREACH).
+        let peer = std::net::UdpSocket::bind((used, 0))?;
+        peer.set_read_timeout(Some(Duration::from_secs(5)))?;
         peer.send_to(b"hi", (used, port))?;
         let mut buf = [0u8; 16];
         let mut meta = [RecvMeta::default()];
