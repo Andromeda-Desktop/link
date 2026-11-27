@@ -4,7 +4,6 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use anyhow::Context;
@@ -50,7 +49,7 @@ pub fn fingerprint(certificate: &[u8]) -> String {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    let mut file = link_core::sys::private(OpenOptions::new().write(true).create(true).truncate(true)).open(path)?;
     file.write_all(bytes)?;
     file.sync_all().with_context(|| format!("writing {}", path.display()))
 }

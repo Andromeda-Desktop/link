@@ -206,6 +206,7 @@ impl Link {
         }
     }
 
+    #[cfg(unix)]
     /// Offers the files behind the descriptors to a connected device and returns the transfer id at once; the
     /// transfer signals report the rest.
     async fn send_files(&self, device_id: String, files: Vec<(zbus::OwnedFd, String)>) -> Result<String, LinkError> {
@@ -272,6 +273,7 @@ impl Link {
         }
     }
 
+    #[cfg(unix)]
     /// Offers the desktop's new clipboard to connected devices holding the clipboard grant, or keeps it for the next
     /// one. Each type comes with its own bytes; short text is sent inline, anything else only when a device pulls it.
     async fn offer_clipboard(&self, types: Vec<(String, zbus::OwnedFd)>) -> Result<(), LinkError> {
@@ -294,6 +296,7 @@ impl Link {
         self.hub.transfers().offer_clip(peers, clip).await.map_err(|error| LinkError::Rejected(error.to_string()))
     }
 
+    #[cfg(unix)]
     /// Writes a device's offered clip into `sink` (the write end a paste target reads) and returns the byte count.
     async fn pull_clipboard(
         &self,
@@ -590,6 +593,7 @@ impl Link {
         self.browse(&device_id, browse::Request::Delete { path }).await.map(drop)
     }
 
+    #[cfg(unix)]
     /// Asks the phone to mirror its screen and returns the viewer's end of the video, with its size, once the user
     /// allowed it there (up to 60 s). The socket carries the phone's H.264 access units in the stream's framing.
     async fn open_mirror(&self, device_id: String) -> Result<(zbus::OwnedFd, u32, u32), LinkError> {
@@ -597,6 +601,7 @@ impl Link {
         Ok((stream, width, height))
     }
 
+    #[cfg(unix)]
     /// [`Self::open_mirror`] for a viewer that also decodes `codecs` ("hevc", "av1"), best first; returns the codec
     /// the phone chose: one of them, or "h264".
     async fn open_mirror_with(
@@ -668,6 +673,7 @@ impl Link {
         Self::mic_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
     }
 
+    #[cfg(unix)]
     /// Asks the phone for its microphone and returns the socket of its Opus units (48 kHz mono) in `OpenMirror`'s
     /// framing, once the user allowed it on the phone (up to 60 s). Closing it, or `StopMic`, ends the microphone.
     async fn open_mic(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
@@ -696,6 +702,7 @@ impl Link {
         Self::camera_requested(&emitter, &device_id, front).await.map_err(LinkError::ZBus)
     }
 
+    #[cfg(unix)]
     /// Asks the phone for its front or back camera and returns the socket of its video in `OpenMirror`'s framing,
     /// with its size and codec as `OpenMirrorWith` returns them, once the user allowed it on the phone (up to 60 s).
     /// Closing it, or `StopCamera`, ends the camera.
@@ -742,6 +749,7 @@ impl Link {
         Self::phone_sound_requested(&emitter, &device_id).await.map_err(LinkError::ZBus)
     }
 
+    #[cfg(unix)]
     /// Asks the phone for its media sound and returns the socket of its Opus units (48 kHz stereo) in `OpenMirror`'s
     /// framing, once the capture is allowed on the phone (up to 60 s). Closing it, or `StopPhoneSound`, ends it.
     async fn open_phone_sound(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
@@ -758,6 +766,7 @@ impl Link {
     #[zbus(signal)]
     async fn phone_sound_requested(emitter: &SignalEmitter<'_>, device_id: &str) -> zbus::Result<()>;
 
+    #[cfg(unix)]
     /// Plays desktop sound on the phone's speaker: returns the socket that takes Opus units (48 kHz stereo) in
     /// `OpenMirror`'s framing; closing it ends the sound. A new call replaces the phone's last stream.
     async fn open_speaker(&self, device_id: String) -> Result<zbus::OwnedFd, LinkError> {
@@ -1063,6 +1072,7 @@ impl Link {
     #[zbus(signal)]
     async fn remote_control_stopped(emitter: &SignalEmitter<'_>, device_id: &str) -> zbus::Result<()>;
 
+    #[cfg(unix)]
     /// Called by `link-session`: shows the phone `stream`, access units in `OpenMirror`'s framing at width x height,
     /// of `sources[current]`, each a (kind, name) with kind "monitor" or "window". A later call replaces the stream;
     /// closing it ends only the stream.

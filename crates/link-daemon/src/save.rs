@@ -24,9 +24,9 @@ pub fn safe_name(name: &str) -> String {
     if clean.is_empty() { "photo".to_owned() } else { clean.to_owned() }
 }
 
-/// `folder` resolved, when it is an absolute path to an existing directory the daemon's user owns.
+/// `folder` resolved, when it is an absolute path to an existing directory the daemon's user owns. On Windows the
+/// folder's ACL decides whether the save may write there.
 pub fn own_folder(folder: &str) -> Result<PathBuf, &'static str> {
-    use std::os::unix::fs::MetadataExt as _;
     if !Path::new(folder).is_absolute() {
         return Err("the folder is not an absolute path");
     }
@@ -35,14 +35,16 @@ pub fn own_folder(folder: &str) -> Result<PathBuf, &'static str> {
     if !meta.is_dir() {
         return Err("not a folder");
     }
-    if meta.uid() != rustix::process::getuid().as_raw() {
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::uid(&meta) != rustix::process::getuid().as_raw() {
         return Err("the folder belongs to another user");
     }
     Ok(resolved)
 }
 
 /// Tags a file saved from a phone with `user.xdg.origin.url` = `link://<device_id>` and `user.andromeda.origin` = the
-/// phone's name, for file managers; filesystems without user xattrs keep the file untagged.
+/// phone's name, for file managers; filesystems without user xattrs, and Windows, keep the file untagged.
+#[cfg(unix)]
 pub fn mark_origin(path: &Path, device_id: &str, name: &str) {
     use rustix::fs::{XattrFlags, setxattr};
     let url = format!("link://{device_id}");
@@ -53,6 +55,9 @@ pub fn mark_origin(path: &Path, device_id: &str, name: &str) {
         }
     }
 }
+
+#[cfg(windows)]
+pub fn mark_origin(_path: &Path, _device_id: &str, _name: &str) {}
 
 /// Deletes the staging files an earlier run left in `dir` when it died.
 pub fn sweep(dir: &Path) {
@@ -75,8 +80,7 @@ fn hard_link(temp: &Path, target: &Path) -> io::Result<()> {
 
 /// For filesystems without hard links; the kernel takes the name only if it is free.
 fn rename_noreplace(temp: &Path, target: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, temp, CWD, target, RenameFlags::NOREPLACE).map_err(io::Error::from)
+    link_core::sys::rename_noreplace(temp, target)
 }
 
 /// The last resort, for filesystems with neither: a copy into a file that must not exist yet.

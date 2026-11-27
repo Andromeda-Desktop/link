@@ -487,6 +487,7 @@ impl Interface {
         }
     }
 
+    #[cfg(unix)]
     /// `files` are (descriptor, name); returns the send's id for `SendPin` and `SendFinished`.
     async fn send(&self, peer: String, files: Vec<(zbus::OwnedFd, String)>) -> fdo::Result<u64> {
         let files =

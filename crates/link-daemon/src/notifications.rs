@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use link_core::identity::DeviceId;
@@ -125,7 +124,8 @@ impl Mirror {
         let shown = self.live.get(device).map(Vec::as_slice).unwrap_or_default();
         let written = fs::create_dir_all(&self.dir)
             .and_then(|()| {
-                let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+                let mut file =
+                    link_core::sys::private(OpenOptions::new().write(true).create(true).truncate(true)).open(&tmp)?;
                 file.write_all(&serde_json::to_vec(shown)?)?;
                 file.sync_all()
             })

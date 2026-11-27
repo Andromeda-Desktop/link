@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::FileExt;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -136,7 +135,7 @@ async fn upload(
     let mut offset = 0;
     while offset < size {
         let want = usize::try_from(size - offset).map_or(CHUNK, |left| left.min(CHUNK));
-        let read = file.read_at(&mut buf[..want], offset)?;
+        let read = link_core::sys::read_at(file, &mut buf[..want], offset)?;
         if read == 0 {
             bail!("the file shrank while it was sent");
         }
@@ -159,7 +158,7 @@ async fn hash(file: &File, size: u64) -> anyhow::Result<String> {
     let mut buf = vec![0; CHUNK];
     let mut offset = 0;
     while offset < size {
-        let read = file.read_at(&mut buf, offset)?;
+        let read = link_core::sys::read_at(file, &mut buf, offset)?;
         if read == 0 {
             break;
         }
