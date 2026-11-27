@@ -1,0 +1,33 @@
+# Windows gate (TASK-link-windows W0): the crates listed in tools/win-check.sh are cross-checked with clippy and
+# their tests run on Windows. A Linux-only call in one of them fails this workflow.
+name: windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [crates/**, Cargo.toml, Cargo.lock, tools/win-check.sh, .github/workflows/windows.yml]
+  pull_request:
+    paths: [crates/**, Cargo.toml, Cargo.lock, tools/win-check.sh, .github/workflows/windows.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  cross-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm mingw-w64-x86-64-dev
+      - run: rustup target add x86_64-pc-windows-gnullvm && rustup component add clippy
+      - run: tools/win-check.sh
+
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # CRLF checkout would break tools/win-check.sh under bash.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo test --locked $(tools/win-check.sh --list | sed 's/^/-p /')

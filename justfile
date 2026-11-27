@@ -18,6 +18,10 @@ check:
 android-check:
     cd apps/android && ./gradlew ktlintCheck lintDebug
 
+# Windows gate: the crates that already build for Windows, cross-checked here (tools/win-check.sh).
+win-check:
+    tools/win-check.sh
+
 # Every release package into target/dist (see tools/release.sh): `just release`, or `just release deb rpm`.
 release *kinds:
     tools/release.sh {{kinds}}
