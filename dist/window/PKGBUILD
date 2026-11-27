@@ -1,0 +1,18 @@
+# The Link window from a dist/window/build.sh stage (STAGE env). The release workflow sets pkgver.
+pkgname=andromeda-link-window
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='Andromeda Link window'
+arch=(x86_64)
+url='https://github.com/Andromeda-Desktop/link'
+license=(GPL-3.0-or-later)
+depends=("andromeda-link=$pkgver" cairo pango fontconfig freetype2 harfbuzz fribidi librsvg glib2 libxkbcommon wayland
+  libglvnd sdbus-cpp systemd-libs libcups libxcrypt ffmpeg libva qrencode md4c libwebp libjxl)
+provides=(andromeda-link-app)
+conflicts=(andromeda-link-app andromeda-link-app-git)
+replaces=(andromeda-link-app andromeda-link-app-git)
+options=(!strip !debug)
+
+package() {
+  cp -a "${STAGE:?}/." "$pkgdir/"
+}

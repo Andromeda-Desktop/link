@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Link
+Comment=Your phone on this desktop
+Exec=andromeda-link-app
+Icon=dev.andromeda.Link
+Terminal=false
+DBusActivatable=true
+Categories=Network;Utility;

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=dev.andromeda.Link
+Exec=@bindir@/andromeda-link-app --gapplication-service

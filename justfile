@@ -30,3 +30,8 @@ mac-app:
 worktree name:
     git worktree add ../andromeda-link-{{name}} -b {{name}}
     ln -s {{justfile_directory()}}/target ../andromeda-link-{{name}}/target
+
+# The Link window against the libdesk of the desktop checkout around this repo (any commit), installed into
+# target/window/root; build dirs stay in target/window for the next run.
+window desktop="..":
+    LIBDESK_ANY_COMMIT=1 WINDOW_BUILD_DIR=target/window dist/window/build.sh {{desktop}} target/window/root

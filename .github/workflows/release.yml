@@ -1,5 +1,5 @@
 # A tag v* builds every Link package and publishes them as one GitHub release: the Android APK,
-# Ubuntu .debs, Fedora RPMs, and the Flatpak bundle. Secrets: LINK_KEYSTORE_BASE64, LINK_KEYSTORE_PASSWORD, and
+# Ubuntu .debs, Fedora RPMs, Arch packages, and the Link window package for each of them. Secrets: LINK_KEYSTORE_BASE64, LINK_KEYSTORE_PASSWORD, and
 # LINK_KEY_ALIAS for the APK; without them the APK is unsigned.
 name: release
 on:
@@ -89,8 +89,11 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: arch, path: dist/arch/*.pkg.tar.zst }
 
+  window:
+    uses: ./.github/workflows/window.yml
+
   publish:
-    needs: [android, deb, rpm, arch]
+    needs: [android, deb, rpm, arch, window]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

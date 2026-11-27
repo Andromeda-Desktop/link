@@ -1,0 +1,53 @@
+# The Link window (window/) with the static libdesk of the pinned desktop commit (dist/window/libdesk-commit), one
+# package per distro, as artifacts window-<distro>. release.yml calls it for a tag; a push that changes the window or
+# its pin checks it here.
+name: window
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main, window]
+    paths: [window/**, dist/window/**, .github/workflows/window.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  window:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: ubuntu, image: "ubuntu:26.04", git: "apt-get update -qq && apt-get install -y -qq git" }
+          - { distro: debian, image: "debian:testing", git: "apt-get update -qq && apt-get install -y -qq git" }
+          - { distro: fedora, image: "registry.fedoraproject.org/fedora:43", git: "dnf install -y -q git" }
+          - { distro: arch, image: "archlinux:latest", git: "pacman -Sy --noconfirm git" }
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      # Without git, checkout downloads a tarball: no history for the version below.
+      - run: ${{ matrix.git }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - run: dist/window/deps.sh ${{ matrix.distro }}
+      - run: git config --global --add safe.directory "$PWD" && echo "PIN=$(cat dist/window/libdesk-commit)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { repository: Andromeda-Desktop/desktop, ref: "${{ env.PIN }}", path: desktop }
+      - run: dist/window/build.sh desktop stage
+      - run: "! ldd stage/usr/lib/andromeda-link/andromeda-link-app | grep 'not found'"
+      # Same version rule as the deb, rpm and arch jobs: the window depends on andromeda-link of the same version.
+      - run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v=${GITHUB_REF_NAME#v}
+          else v="0~r$(git rev-list --count HEAD).g$(git rev-parse --short HEAD)"; fi
+          mkdir -p out
+          case ${{ matrix.distro }} in
+            ubuntu|debian) dist/window/package-deb.sh stage out "$v" ${{ matrix.distro }} ;;
+            fedora) rpmbuild -bb dist/window/andromeda-link-window.spec --define "stage $PWD/stage" \
+                      --define "linkversion $v" --define "_rpmdir $PWD/out" ;;
+            arch) useradd -m builder && chown -R builder "$PWD"
+                  su builder -c "cd dist/window && sed -i 's/^pkgver=.*/pkgver=${GITHUB_REF_NAME#v}/' PKGBUILD \
+                    && STAGE=$PWD/stage PKGDEST=$PWD/out makepkg --nodeps --noconfirm" ;;
+          esac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: "window-${{ matrix.distro }}", path: "out/**/*.*" }
+
