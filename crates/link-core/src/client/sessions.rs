@@ -1,7 +1,8 @@
+use super::redial::Start;
 use super::{
     CLIP_CLOCK, CLIP_ITEMS, ClientActor, ClientEvent, ClipPeer, CloseCode, DeviceId, Ended, Error, HEARTBEAT, Hop,
-    Instant, LATE_HASH, PairTarget, Peer, Role, Route, SHARE_OUTBOX, SessionHandle, SocketAddr, Via, phone, session,
-    slot,
+    Instant, LATE_HASH, PairTarget, Peer, Role, Route, SHARE_OUTBOX, SessionHandle, SocketAddr, Via, oneshot, phone,
+    session, slot,
 };
 
 impl ClientActor {
@@ -12,26 +13,14 @@ impl ClientActor {
         Ok(peer)
     }
 
-    pub(super) async fn live_session(&mut self, id: &DeviceId) -> Result<SessionHandle, Error> {
+    /// Answers with the live session to `id`, else once the dial to it, running or started now, ends.
+    pub(super) fn session_for(&mut self, id: &DeviceId, reply: oneshot::Sender<Result<SessionHandle, Error>>) {
         if let Some(handle) = self.sessions.get(id).filter(|handle| handle.is_live()) {
-            return Ok(handle.clone());
+            return drop(reply.send(Ok(handle.clone())));
         }
-        self.open(id).await
-    }
-
-    pub(super) async fn open(&mut self, id: &DeviceId) -> Result<SessionHandle, Error> {
-        self.phone.set_present(self.present || self.is_busy(id));
-        match self.phone.connect(id).await {
-            Ok(session) => Ok(self.adopt(session).await),
-            Err(error) => {
-                if matches!(error, Error::Closed(CloseCode::Unpaired)) {
-                    self.retries.remove(id);
-                    self.emit(ClientEvent::Unpaired { id: id.clone() });
-                } else if matches!(error, Error::Closed(CloseCode::Paused)) {
-                    self.emit(ClientEvent::Paused { id: id.clone() });
-                }
-                Err(error)
-            }
+        match self.dial(id, Start::Any) {
+            Some(dial) => dial.waiters.push(reply),
+            None => drop(reply.send(Err(Error::UnknownDevice))),
         }
     }
 

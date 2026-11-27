@@ -3,8 +3,40 @@ use crate::path::{FdLink, LinkKind, StreamLink};
 use super::{
     ClientActor, ClientEvent, CloseCode, DeviceId, Duration, Ended, Error, FIRST_RETRY, Hop, Instant, LinkId,
     MAX_RETRY, NetworkKind, OPEN_TTLS, OwnedFd, PROBE_EVERY, Peer, Reached, Relay, Retry, SessionHandle, Via,
-    close_code_for, punch, reach, slot,
+    close_code_for, oneshot, punch, reach, slot,
 };
+use crate::phone::Opened;
+
+/// How a dial starts.
+pub(super) enum Start {
+    /// IP, else USB, Bluetooth, then the relay.
+    Any,
+    /// Bluetooth only: Wi-Fi just went away.
+    Bluetooth,
+    /// The IP path a probe found for a session on Bluetooth or the relay.
+    Reached(Reached),
+}
+
+/// The path a dial in flight tries, which decides whether its session replaces a live one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Over {
+    /// Every path: a live session stays and the new one closes.
+    Any,
+    /// Bluetooth after Wi-Fi went away: replaces a live session that is not on Bluetooth.
+    Bluetooth,
+    /// A probe's IP path: replaces a live session on Bluetooth or the relay.
+    Probe,
+}
+
+/// A dial in flight to one desktop.
+pub(super) struct Dial {
+    over: Over,
+    task: tokio::task::Id,
+    /// The backoff of the redial that started it or joined it; a failure doubles it.
+    pub(super) redial: Option<Duration>,
+    /// Commands answered with the session, or the error, when it ends.
+    pub(super) waiters: Vec<oneshot::Sender<Result<SessionHandle, Error>>>,
+}
 
 impl ClientActor {
     /// A Bluetooth standby waits for Wi-Fi to go; a USB link takes the session at once.
@@ -125,19 +157,9 @@ impl ClientActor {
         }
         log::info!("{id}: disconnected: {reason}");
         self.emit(ClientEvent::Disconnected { id: id.clone(), reason });
-        if matches!(result, Err(Error::Closed(CloseCode::Unpaired))) {
-            if let Err(error) = self.phone.forget(&id) {
-                log::error!("forgetting {id}: {error}");
-            }
-            self.outbox.forget(id.clone());
-            self.emit(ClientEvent::Unpaired { id });
-        } else {
-            if matches!(result, Err(Error::Closed(CloseCode::Paused))) {
-                self.emit(ClientEvent::Paused { id: id.clone() });
-            }
-            if self.wants(&id) {
-                self.retries.insert(id, Retry { at: Instant::now() + FIRST_RETRY, delay: FIRST_RETRY });
-            }
+        let unpaired = result.as_ref().is_err_and(|error| self.closed_by_desktop(&id, error));
+        if !unpaired && self.wants(&id) {
+            self.retries.insert(id, Retry { at: Instant::now() + FIRST_RETRY, delay: FIRST_RETRY });
         }
     }
 
@@ -147,49 +169,128 @@ impl ClientActor {
             self.retries.iter().filter(|(_, retry)| retry.at <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
             let Some(retry) = self.retries.remove(&id) else { continue };
-            if self.sessions.get(&id).is_some_and(SessionHandle::is_live) || self.redialing.contains(&id) {
+            if self.sessions.get(&id).is_some_and(SessionHandle::is_live) {
                 continue;
             }
-            let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { continue };
-            self.redialing.insert(id.clone());
-            self.phone.set_present(self.present || self.is_busy(&id));
-            let dialer = self.phone.dialer().clone();
-            self.redials.spawn(async move { (id, retry.delay, reach::reach(&dialer, &peer).await) });
+            // A dial already running for a command takes the redial's place.
+            if let Some(dial) = self.dial(&id, Start::Any) {
+                dial.redial = Some(retry.delay);
+            }
         }
     }
 
-    /// A redial's IP path becomes a session on the actor; without one, Bluetooth and the relay are tried as
-    /// [`Self::open`] does.
-    pub(super) async fn redialed(&mut self, id: DeviceId, delay: Duration, reached: Result<Reached, Error>) {
-        self.redialing.remove(&id);
-        if self.sessions.get(&id).is_some_and(SessionHandle::is_live) {
-            return;
+    /// The dial to `id` in flight, started now when none runs; none for a desktop the phone does not know.
+    pub(super) fn dial(&mut self, id: &DeviceId, start: Start) -> Option<&mut Dial> {
+        if !self.dialing.contains_key(id) {
+            let peer = self.phone.desktops().iter().find(|peer| &peer.id == id).cloned()?;
+            self.phone.set_present(self.present || self.is_busy(id));
+            let dialing = self.phone.dialing();
+            let over = match start {
+                Start::Any => Over::Any,
+                Start::Bluetooth => Over::Bluetooth,
+                Start::Reached(_) => Over::Probe,
+            };
+            let task_id = id.clone();
+            let task = self
+                .dials
+                .spawn(async move {
+                    let opened = match start {
+                        Start::Any => dialing.open(&peer).await,
+                        Start::Bluetooth => dialing.connect_bluetooth(&peer).await,
+                        Start::Reached(reached) => dialing.open_reached(&peer, reached).await,
+                    };
+                    (task_id, opened)
+                })
+                .id();
+            self.dialing.insert(id.clone(), Dial { over, task, redial: None, waiters: Vec::new() });
         }
-        let Some(peer) = self.phone.desktops().iter().find(|peer| peer.id == id).cloned() else { return };
-        let result = match reached {
-            Ok(reached) => self.phone.adopt_reached(&peer, reached).await,
-            Err(error) => self.phone.connect_indirect(&peer, error).await,
+        self.dialing.get_mut(id)
+    }
+
+    /// A dial task that panicked: its desktop may dial again.
+    pub(super) fn dial_failed(&mut self, task: tokio::task::Id) {
+        self.dialing.retain(|_, dial| dial.task != task);
+    }
+
+    /// Finishes a dial on the actor: a session, or its error for whoever waits and the next redial.
+    pub(super) async fn dialed(&mut self, id: DeviceId, opened: Result<Opened, Error>) {
+        let Some(Dial { over, redial, waiters, .. }) = self.dialing.remove(&id) else {
+            if let Ok(opened) = opened {
+                opened.close(CloseCode::Done);
+            }
+            return;
         };
-        let error = match result {
-            Ok(session) => return drop(self.adopt(session).await),
-            Err(Error::Closed(CloseCode::Unpaired)) => {
-                if let Err(error) = self.phone.forget(&id) {
+        let known = self.phone.desktops().iter().any(|peer| peer.id == id);
+        let live = self.sessions.get(&id).filter(|handle| handle.is_live()).cloned();
+        let result = match (opened, live) {
+            (Ok(opened), _) if !known => {
+                opened.close(CloseCode::Done);
+                Err(Error::UnknownDevice)
+            }
+            (Ok(opened), Some(handle)) if !self.replaces(over, &id, &handle) => {
+                opened.close(CloseCode::Done);
+                Ok(handle)
+            }
+            (Ok(opened), _) => match self.phone.opened(opened) {
+                Ok(session) => {
+                    if over != Over::Any {
+                        log::info!("{id}: moving the session to {:?} ({:?})", session.via, session.addr);
+                    }
+                    Ok(self.adopt(session).await)
+                }
+                Err(error) => Err(error),
+            },
+            (Err(error), _) => Err(error),
+        };
+        if let Err(error) = &result {
+            let unpaired = known && self.closed_by_desktop(&id, error);
+            if over != Over::Any && !unpaired && (redial.is_some() || !waiters.is_empty()) {
+                log::info!("{id}: {over:?} dial failed: {error}; trying every path for who joined it");
+                if let Some(dial) = self.dial(&id, Start::Any) {
+                    dial.redial = redial;
+                    dial.waiters = waiters;
+                }
+                return;
+            }
+            match redial {
+                Some(delay) if !unpaired && self.wants(&id) => {
+                    let delay = (delay * 2).min(MAX_RETRY);
+                    log::info!("{id}: redial failed: {error}; next in {} s", delay.as_secs());
+                    let retry = self.retries.entry(id.clone()).or_insert(Retry { at: Instant::now() + delay, delay });
+                    retry.delay = retry.delay.max(delay);
+                }
+                _ => log::info!("{id}: {over:?} dial failed: {error}"),
+            }
+        }
+        answer(waiters, result);
+    }
+
+    /// Whether a session the dial `over` opened replaces the live one.
+    fn replaces(&self, over: Over, id: &DeviceId, live: &SessionHandle) -> bool {
+        match over {
+            Over::Any => false,
+            Over::Bluetooth => !live.on_bluetooth(),
+            Over::Probe => live.on_bluetooth() || self.on_relay(id, live),
+        }
+    }
+
+    /// Acts on a desktop's close: `unpaired` forgets the desktop, `paused` tells the app. True when forgotten.
+    fn closed_by_desktop(&mut self, id: &DeviceId, error: &Error) -> bool {
+        match error {
+            Error::Closed(CloseCode::Unpaired) => {
+                if let Err(error) = self.phone.forget(id) {
                     log::error!("forgetting {id}: {error}");
                 }
                 self.outbox.forget(id.clone());
-                self.retries.remove(&id);
-                return self.emit(ClientEvent::Unpaired { id });
+                self.retries.remove(id);
+                self.emit(ClientEvent::Unpaired { id: id.clone() });
+                true
             }
-            Err(error) => error,
-        };
-        if matches!(error, Error::Closed(CloseCode::Paused)) {
-            self.emit(ClientEvent::Paused { id: id.clone() });
-        }
-        if self.wants(&id) {
-            let delay = (delay * 2).min(MAX_RETRY);
-            log::info!("{id}: redial failed: {error}; next in {} s", delay.as_secs());
-            let retry = self.retries.entry(id).or_insert(Retry { at: Instant::now() + delay, delay });
-            retry.delay = retry.delay.max(delay);
+            Error::Closed(CloseCode::Paused) => {
+                self.emit(ClientEvent::Paused { id: id.clone() });
+                false
+            }
+            _ => false,
         }
     }
 
@@ -217,11 +318,11 @@ impl ClientActor {
                 .cloned()
                 .collect();
             for peer in over_wifi {
-                log::info!("{}: Wi-Fi is gone; moving to Bluetooth", peer.id);
-                match self.phone.connect_bluetooth(&peer).await {
-                    Ok(session) => drop(self.adopt(session).await),
-                    Err(error) => log::info!("{}: Bluetooth right after Wi-Fi: {error}", peer.id),
+                if self.dialing.contains_key(&peer.id) {
+                    continue;
                 }
+                log::info!("{}: Wi-Fi is gone; moving to Bluetooth", peer.id);
+                self.dial(&peer.id, Start::Bluetooth);
             }
         } else if now == NetworkKind::Wifi && self.sessions.values().any(SessionHandle::on_bluetooth) {
             self.next_probe = Some(Instant::now());
@@ -309,12 +410,28 @@ impl ClientActor {
             });
             return;
         }
-        match self.phone.adopt_reached(&peer, reached).await {
-            Ok(session) => {
-                log::info!("{id}: moving from {from} to {:?}", session.addr);
-                self.adopt(session).await;
-            }
-            Err(error) => log::info!("{id}: the IP path a probe found failed: {error}"),
+        if self.dialing.contains_key(&id) {
+            crate::wire::Connection::from(reached.dialed.connection).close(CloseCode::Done);
+            return;
         }
+        log::info!("{id}: a new session from {from} to {}", reached.addr);
+        self.dial(&id, Start::Reached(reached));
     }
+}
+
+/// Answers every command that waited on one dial; only the first gets an error that does not copy.
+fn answer(waiters: Vec<oneshot::Sender<Result<SessionHandle, Error>>>, result: Result<SessionHandle, Error>) {
+    let mut waiters = waiters.into_iter();
+    let Some(first) = waiters.next() else { return };
+    for waiter in waiters {
+        drop(waiter.send(match &result {
+            Ok(handle) => Ok(handle.clone()),
+            Err(Error::Closed(code)) => Err(Error::Closed(*code)),
+            Err(Error::UnknownDevice) => Err(Error::UnknownDevice),
+            Err(Error::Stopped) => Err(Error::Stopped),
+            Err(Error::Timeout) => Err(Error::Timeout),
+            Err(_) => Err(Error::Unreachable),
+        }));
+    }
+    drop(first.send(result));
 }

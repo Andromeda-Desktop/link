@@ -5,6 +5,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use link_proto::message::{
     BT_PAIRING, CALLS, CAMERA, CAPABILITIES, CLIP_CLOCK, CLIP_ITEMS, CONTROL, FEATURE, FS_STAT, FS_WRITE, HEARTBEAT,
@@ -66,7 +67,7 @@ pub struct Phone {
     /// Under both dialers, so a session can run over a Bluetooth LE link.
     socket: Arc<PathSocket>,
     /// Links added to `socket`, to give each its own address.
-    links: u16,
+    links: Arc<AtomicU16>,
     bluetooth: Option<Arc<dyn BluetoothOpener>>,
     hotspot: Option<Arc<dyn HotspotProvider>>,
     wifi_direct: Option<Arc<dyn WifiDirectProvider>>,
@@ -96,7 +97,7 @@ impl Phone {
             dialer,
             present_dialer,
             socket,
-            links: 0,
+            links: Arc::default(),
             bluetooth: None,
             hotspot: None,
             wifi_direct: None,
@@ -216,7 +217,7 @@ impl Phone {
                         return Err(Error::PairUnreached { ip, bluetooth: bluetooth.to_string() });
                     }
                 };
-                let dialed = self.dial_link(StreamLink::new(fd, LinkKind::Bluetooth)?, pin).await?;
+                let dialed = self.dialing().dial_link(StreamLink::new(fd, LinkKind::Bluetooth)?, pin).await?;
                 let server = tls::peer_spki(dialed.connection.peer_identity())?;
                 (Connection::from(dialed.connection), server, None, dialed.route, Via::Bluetooth)
             }
@@ -231,7 +232,7 @@ impl Phone {
     /// A pairing dial over the USB cable; none when no desktop's `adb reverse` reaches this phone.
     async fn pair_usb(&mut self, pin: ServerPin) -> Option<Dialed> {
         let link = StreamLink::new(usb_stream().await.ok()?, LinkKind::Usb).ok()?;
-        self.dial_link(link, pin).await.inspect_err(|error| log::info!("pairing: USB: {error}")).ok()
+        self.dialing().dial_link(link, pin).await.inspect_err(|error| log::info!("pairing: USB: {error}")).ok()
     }
 
     /// The one desktop with an open pairing window by mDNS, if any, and an LE scan for desktops that advertise one,
@@ -255,7 +256,10 @@ impl Phone {
     /// Reaches a paired desktop. A desktop that answers `unpaired` is forgotten, as the protocol requires.
     pub async fn connect(&mut self, id: &DeviceId) -> Result<Session, Error> {
         let peer = self.store.peer(id).cloned().ok_or(Error::UnknownDevice)?;
-        let result = self.open_session(&peer).await;
+        let result = match self.dialing().open(&peer).await {
+            Ok(opened) => self.opened(opened),
+            Err(error) => Err(error),
+        };
         if matches!(result, Err(Error::Closed(CloseCode::Unpaired))) {
             self.forget(id)?;
         }
@@ -279,64 +283,35 @@ impl Phone {
         Ok(told)
     }
 
+    /// What a dial needs from this phone now, for a dial that runs off the client actor.
+    pub fn dialing(&self) -> Dialing {
+        Dialing {
+            dialer: self.dialer().clone(),
+            socket: self.socket.clone(),
+            links: self.links.clone(),
+            bluetooth: self.bluetooth.clone(),
+            tap: self.tap.clone(),
+            hello: self.hello(),
+        }
+    }
+
+    /// Finishes a dial: the phone remembers what the desktop said.
+    pub fn opened(&mut self, opened: Opened) -> Result<Session, Error> {
+        let Opened { connection, control, hello, desktop, addr, via, resumed, route, relay } = opened;
+        let desktop = if matches!(via, Via::Hotspot | Via::WifiDirect) {
+            // The phone's own hotspot or group is gone once it stops: neither the address it reached nor the ones the desktop
+            // announces on it are worth dialling later.
+            let addresses = hello.addresses.into_iter().filter(|entry| entry.parse::<SocketAddr>().is_err()).collect();
+            self.remember(&desktop, &Hello { addresses, ..hello }, None)?
+        } else {
+            self.remember(&desktop, &hello, addr)?
+        };
+        Ok(Session { connection, control, desktop, addr, via, resumed, route, relay })
+    }
+
     /// Waits until every connection has sent its close; call before the process exits.
     pub async fn finish(&self) {
         self.dialer.finish().await;
-    }
-
-    /// Over IP when any address answers, else over Bluetooth when the desktop has an adapter and the platform can
-    /// open one, else through the desktop's relay when it has one.
-    async fn open_session(&mut self, peer: &Peer) -> Result<Session, Error> {
-        match reach::reach(self.dialer(), peer).await {
-            Ok(reached) => self.adopt_reached(peer, reached).await,
-            Err(error) => self.connect_indirect(peer, error).await,
-        }
-    }
-
-    /// With no IP path (`ip` tells why): over the USB cable when a desktop's `adb reverse` reaches it, else over Bluetooth when the desktop has an adapter and the platform can open one,
-    /// else through the desktop's relay when it has one.
-    pub async fn connect_indirect(&mut self, peer: &Peer, ip: Error) -> Result<Session, Error> {
-        match self.connect_usb(peer).await {
-            Ok(session) => return Ok(session),
-            Err(usb) => log::debug!("{}: no USB path: {usb}", peer.id),
-        }
-        let mut error = ip;
-        if peer.bluetooth.is_some() && self.bluetooth.is_some() {
-            log::info!("{}: no IP path ({error}); trying Bluetooth", peer.id);
-            match self.connect_bluetooth(peer).await {
-                Ok(session) => return Ok(session),
-                Err(bluetooth) => error = bluetooth,
-            }
-        }
-        let Some(spec) = peer.relay.clone() else { return Err(error) };
-        log::info!("{}: no direct path ({error}); trying the relay {spec}", peer.id);
-        self.connect_relay(peer, &spec).await
-    }
-
-    /// A session through the relay in `spec`, on a relay connection that ends with it.
-    async fn connect_relay(&mut self, peer: &Peer, spec: &str) -> Result<Session, Error> {
-        let (host, key) = relay::parse(spec).ok_or(Error::Unreachable)?;
-        let desktop = relay::tag(&peer.spki()?);
-        let addr = tokio::net::lookup_host(&host).await?.next().ok_or(Error::Unreachable)?;
-        let dialer = self.dialer().tuned(|transport| {
-            transport.initial_mtu(relay::MTU).keep_alive_interval(Some(relay::KEEP_ALIVE));
-        });
-        let outer = dialer.dial(addr, ServerPin::Key(key)).await?.connection;
-        let (relay, _) = Relay::new(outer.clone());
-        let link = relay.link(desktop);
-        let session =
-            self.connect_link(peer, link, Via::Relay).await.map(|session| Session { relay: Some(relay), ..session });
-        let inner = session.as_ref().ok().map(|session| session.connection.quic().clone());
-        tokio::spawn(async move {
-            if let Some(inner) = inner {
-                inner.closed().await;
-                // The inner close goes out as a datagram on `outer` once its link sends it; closing `outer` first
-                // would drop it.
-                tokio::time::sleep(inner.rtt() * 3 + outer.rtt() * 3).await;
-            }
-            Connection::from(outer).close(CloseCode::Done);
-        });
-        session
     }
 
     /// Opens an LE L2CAP channel to `peer` when run, a blocking call for a worker thread.
@@ -345,21 +320,13 @@ impl Phone {
         Some(move || opener.open_l2cap(&address))
     }
 
-    /// A session over the USB cable: refused at once when no desktop's `adb reverse` reaches this phone, and the pinned
-    /// handshake fails when another desktop's does.
-    async fn connect_usb(&mut self, peer: &Peer) -> Result<Session, Error> {
-        let link = StreamLink::new(usb_stream().await?, LinkKind::Usb)?;
-        self.connect_link(peer, link, Via::Usb).await
-    }
-
     /// Proves the USB cable reaches `peer` with a pinned handshake that then closes, and opens a second stream there
     /// for the live session to move onto: 127.0.0.1 may lead to another desktop, which would reset the session.
     pub fn usb_probe(
         &mut self,
         peer: &Peer,
     ) -> Result<impl Future<Output = Result<OwnedFd, Error>> + Send + 'static, Error> {
-        self.links = self.links.wrapping_add(1);
-        let (socket, dialer, addr) = (self.socket.clone(), self.dialer().clone(), link_address(self.links));
+        let (socket, dialer, addr) = (self.socket.clone(), self.dialer().clone(), next_address(&self.links));
         let pin = ServerPin::Key(peer.spki()?.fingerprint());
         Ok(async move {
             let link = socket.add_link(StreamLink::new(usb_stream().await?, LinkKind::Usb)?, addr);
@@ -379,8 +346,7 @@ impl Phone {
 
     /// Adds `link` as a standby link that ends with `connection`; the connection's route can move onto it.
     pub fn add_standby(&mut self, link: impl MessageLink, connection: quinn::Connection) -> Result<LinkId, Error> {
-        self.links = self.links.wrapping_add(1);
-        let link = self.socket.add_link(link, link_address(self.links));
+        let link = self.socket.add_link(link, next_address(&self.links));
         self.socket.tie(link, connection);
         Ok(link)
     }
@@ -388,79 +354,6 @@ impl Phone {
     /// Whether link `id` still runs.
     pub fn has_link(&self, id: LinkId) -> bool {
         self.socket.has_link(id)
-    }
-
-    /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi. QUIC over an LE L2CAP
-    /// channel where the phone and desktop have one, else over RFCOMM.
-    pub async fn connect_bluetooth(&mut self, peer: &Peer) -> Result<Session, Error> {
-        let (Some(address), Some(opener)) = (peer.bluetooth.clone(), self.bluetooth.clone()) else {
-            return Err(Error::Unreachable);
-        };
-        let le = (address.clone(), opener.clone());
-        let l2cap = tokio::task::spawn_blocking(move || le.1.open_l2cap(&le.0)).await.map_err(|_| Error::Stopped)?;
-        let tried = match l2cap {
-            Ok(fd) => self.connect_link(peer, FdLink::new(fd)?, Via::Bluetooth).await,
-            Err(error) => Err(error.into()),
-        };
-        match tried {
-            Ok(session) => return Ok(session),
-            Err(error) => log::info!("{}: no QUIC over Bluetooth LE ({error}); trying RFCOMM", peer.id),
-        }
-        let fd =
-            tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
-        self.connect_link(peer, StreamLink::new(fd, LinkKind::Bluetooth)?, Via::Bluetooth).await
-    }
-
-    /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.
-    async fn dial_link(&mut self, link: impl MessageLink, pin: ServerPin) -> Result<Dialed, Error> {
-        self.links = self.links.wrapping_add(1);
-        let link = self.socket.add_link(link, link_address(self.links));
-        match self.dialer().dial_hop(Hop::Link(link), pin).await {
-            Ok(dialed) => {
-                self.socket.tie(link, dialed.connection.clone());
-                Ok(dialed)
-            }
-            Err(error) => {
-                self.socket.close_link(link);
-                Err(error)
-            }
-        }
-    }
-
-    async fn connect_link(&mut self, peer: &Peer, link: impl MessageLink, via: Via) -> Result<Session, Error> {
-        let Dialed { connection, resumed, route } =
-            self.dial_link(link, ServerPin::Key(peer.spki()?.fingerprint())).await?;
-        let connection = Connection::from(connection);
-        let mut control = Control::open(&connection, self.tap.clone()).await?;
-        let hello = control.hello_as_client(self.hello()).await?;
-        let desktop = self.remember(&peer.spki()?, &hello, None)?;
-        Ok(Session { connection, control, desktop, addr: None, via, resumed, route, relay: None })
-    }
-
-    /// Finishes a session to a desktop reached over IP, by this phone or by a probe running beside it.
-    pub async fn adopt_reached(&mut self, peer: &Peer, reached: Reached) -> Result<Session, Error> {
-        let Dialed { connection, resumed, route } = reached.dialed;
-        let connection = Connection::from(connection);
-        let mut control = Control::open(&connection, self.tap.clone()).await?;
-        let hello = control.hello_as_client(self.hello()).await?;
-        let desktop = if matches!(reached.via, Via::Hotspot | Via::WifiDirect) {
-            // The phone's own hotspot or group is gone once it stops: neither the address it reached nor the ones the desktop
-            // announces on it are worth dialling later.
-            let addresses = hello.addresses.into_iter().filter(|entry| entry.parse::<SocketAddr>().is_err()).collect();
-            self.remember(&peer.spki()?, &Hello { addresses, ..hello }, None)?
-        } else {
-            self.remember(&peer.spki()?, &hello, Some(reached.addr))?
-        };
-        Ok(Session {
-            connection,
-            control,
-            desktop,
-            addr: Some(reached.addr),
-            via: reached.via,
-            resumed,
-            route,
-            relay: None,
-        })
     }
 
     fn hello(&self) -> Hello {
@@ -547,6 +440,160 @@ impl Phone {
         self.store.remove(id);
         self.store.save(&self.store_path)
     }
+}
+
+/// What dialing a desktop needs from the phone, so a dial runs off the client actor; [`Phone::opened`] finishes it.
+#[derive(Clone)]
+pub struct Dialing {
+    dialer: Dialer,
+    socket: Arc<PathSocket>,
+    links: Arc<AtomicU16>,
+    bluetooth: Option<Arc<dyn BluetoothOpener>>,
+    tap: Option<Tap>,
+    hello: Hello,
+}
+
+/// A connection to a desktop after both hellos, before the phone remembers what the desktop said.
+pub struct Opened {
+    connection: Connection,
+    control: Control,
+    hello: Hello,
+    desktop: crate::identity::Spki,
+    addr: Option<SocketAddr>,
+    via: Via,
+    resumed: bool,
+    route: Option<Route>,
+    relay: Option<Relay>,
+}
+
+impl Opened {
+    pub fn close(&self, code: CloseCode) {
+        self.connection.close(code);
+    }
+}
+
+impl Dialing {
+    /// Over IP when any address answers, else over Bluetooth when the desktop has an adapter and the platform can
+    /// open one, else through the desktop's relay when it has one.
+    pub async fn open(&self, peer: &Peer) -> Result<Opened, Error> {
+        match reach::reach(&self.dialer, peer).await {
+            Ok(reached) => self.open_reached(peer, reached).await,
+            Err(error) => self.connect_indirect(peer, error).await,
+        }
+    }
+
+    /// With no IP path (`ip` tells why): over the USB cable when a desktop's `adb reverse` reaches it, else over Bluetooth when the desktop has an adapter and the platform can open one,
+    /// else through the desktop's relay when it has one.
+    pub async fn connect_indirect(&self, peer: &Peer, ip: Error) -> Result<Opened, Error> {
+        match self.connect_usb(peer).await {
+            Ok(session) => return Ok(session),
+            Err(usb) => log::debug!("{}: no USB path: {usb}", peer.id),
+        }
+        let mut error = ip;
+        if peer.bluetooth.is_some() && self.bluetooth.is_some() {
+            log::info!("{}: no IP path ({error}); trying Bluetooth", peer.id);
+            match self.connect_bluetooth(peer).await {
+                Ok(session) => return Ok(session),
+                Err(bluetooth) => error = bluetooth,
+            }
+        }
+        let Some(spec) = peer.relay.clone() else { return Err(error) };
+        log::info!("{}: no direct path ({error}); trying the relay {spec}", peer.id);
+        self.connect_relay(peer, &spec).await
+    }
+
+    /// A session through the relay in `spec`, on a relay connection that ends with it.
+    async fn connect_relay(&self, peer: &Peer, spec: &str) -> Result<Opened, Error> {
+        let (host, key) = relay::parse(spec).ok_or(Error::Unreachable)?;
+        let desktop = relay::tag(&peer.spki()?);
+        let addr = tokio::net::lookup_host(&host).await?.next().ok_or(Error::Unreachable)?;
+        let dialer = self.dialer.tuned(|transport| {
+            transport.initial_mtu(relay::MTU).keep_alive_interval(Some(relay::KEEP_ALIVE));
+        });
+        let outer = dialer.dial(addr, ServerPin::Key(key)).await?.connection;
+        let (relay, _) = Relay::new(outer.clone());
+        let link = relay.link(desktop);
+        let session =
+            self.connect_link(peer, link, Via::Relay).await.map(|session| Opened { relay: Some(relay), ..session });
+        let inner = session.as_ref().ok().map(|session| session.connection.quic().clone());
+        tokio::spawn(async move {
+            if let Some(inner) = inner {
+                inner.closed().await;
+                // The inner close goes out as a datagram on `outer` once its link sends it; closing `outer` first
+                // would drop it.
+                tokio::time::sleep(inner.rtt() * 3 + outer.rtt() * 3).await;
+            }
+            Connection::from(outer).close(CloseCode::Done);
+        });
+        session
+    }
+
+    /// A session over the USB cable: refused at once when no desktop's `adb reverse` reaches this phone, and the pinned
+    /// handshake fails when another desktop's does.
+    async fn connect_usb(&self, peer: &Peer) -> Result<Opened, Error> {
+        let link = StreamLink::new(usb_stream().await?, LinkKind::Usb)?;
+        self.connect_link(peer, link, Via::Usb).await
+    }
+
+    /// A session over Bluetooth now, without trying IP first: the phone just lost Wi-Fi. QUIC over an LE L2CAP
+    /// channel where the phone and desktop have one, else over RFCOMM.
+    pub async fn connect_bluetooth(&self, peer: &Peer) -> Result<Opened, Error> {
+        let (Some(address), Some(opener)) = (peer.bluetooth.clone(), self.bluetooth.clone()) else {
+            return Err(Error::Unreachable);
+        };
+        let le = (address.clone(), opener.clone());
+        let l2cap = tokio::task::spawn_blocking(move || le.1.open_l2cap(&le.0)).await.map_err(|_| Error::Stopped)?;
+        let tried = match l2cap {
+            Ok(fd) => self.connect_link(peer, FdLink::new(fd)?, Via::Bluetooth).await,
+            Err(error) => Err(error.into()),
+        };
+        match tried {
+            Ok(session) => return Ok(session),
+            Err(error) => log::info!("{}: no QUIC over Bluetooth LE ({error}); trying RFCOMM", peer.id),
+        }
+        let fd =
+            tokio::task::spawn_blocking(move || opener.open(&address, false)).await.map_err(|_| Error::Stopped)??;
+        self.connect_link(peer, StreamLink::new(fd, LinkKind::Bluetooth)?, Via::Bluetooth).await
+    }
+
+    /// Dials the desktop pinned to `fingerprint` over `link`, which ends with the connection.
+    pub(crate) async fn dial_link(&self, link: impl MessageLink, pin: ServerPin) -> Result<Dialed, Error> {
+        let link = self.socket.add_link(link, next_address(&self.links));
+        match self.dialer.dial_hop(Hop::Link(link), pin).await {
+            Ok(dialed) => {
+                self.socket.tie(link, dialed.connection.clone());
+                Ok(dialed)
+            }
+            Err(error) => {
+                self.socket.close_link(link);
+                Err(error)
+            }
+        }
+    }
+
+    async fn connect_link(&self, peer: &Peer, link: impl MessageLink, via: Via) -> Result<Opened, Error> {
+        let Dialed { connection, resumed, route } =
+            self.dial_link(link, ServerPin::Key(peer.spki()?.fingerprint())).await?;
+        let connection = Connection::from(connection);
+        let mut control = Control::open(&connection, self.tap.clone()).await?;
+        let hello = control.hello_as_client(self.hello.clone()).await?;
+        Ok(Opened { connection, control, hello, desktop: peer.spki()?, addr: None, via, resumed, route, relay: None })
+    }
+
+    /// Finishes a dial to a desktop reached over IP, by this phone or by a probe running beside it.
+    pub async fn open_reached(&self, peer: &Peer, reached: Reached) -> Result<Opened, Error> {
+        let Dialed { connection, resumed, route } = reached.dialed;
+        let connection = Connection::from(connection);
+        let mut control = Control::open(&connection, self.tap.clone()).await?;
+        let hello = control.hello_as_client(self.hello.clone()).await?;
+        let (addr, via) = (Some(reached.addr), reached.via);
+        Ok(Opened { connection, control, hello, desktop: peer.spki()?, addr, via, resumed, route, relay: None })
+    }
+}
+
+/// The address of the next link added to the phone's socket.
+fn next_address(links: &AtomicU16) -> SocketAddr {
+    link_address(links.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
 }
 
 impl Session {

@@ -270,9 +270,9 @@ pub struct ClientActor {
     relayed: HashMap<DeviceId, Relay>,
     /// Probe rounds so far; the NAT-opening packets' TTL cycles through [`OPEN_TTLS`] by round.
     probe_round: usize,
-    /// Redials looking for an IP path, off the actor: a desktop that does not answer takes seconds to give up on.
-    redials: JoinSet<(DeviceId, Duration, Result<Reached, Error>)>,
-    redialing: HashSet<DeviceId>,
+    /// Dials off the actor, at most one per desktop: a desktop that does not answer takes seconds to give up on.
+    dials: JoinSet<(DeviceId, Result<phone::Opened, Error>)>,
+    dialing: HashMap<DeviceId, redial::Dial>,
     /// The phone's group or hotspot, for one desktop at a time.
     slot: Slot,
     /// Desktops whose live session runs over the phone's hotspot.
@@ -344,8 +344,8 @@ pub fn client(phone: Phone, inbox: Inbox) -> (Client, ClientActor, mpsc::Unbound
         probing: HashMap::new(),
         relayed: HashMap::new(),
         probe_round: 0,
-        redials: JoinSet::new(),
-        redialing: HashSet::new(),
+        dials: JoinSet::new(),
+        dialing: HashMap::new(),
         slot: Slot::Idle,
         on_hotspot: HashSet::new(),
         starting: JoinSet::new(),
@@ -411,12 +411,11 @@ impl ClientActor {
                     Ok(_) => {}
                     Err(join) => log::warn!("network start task: {join}"),
                 },
-                Some(joined) = self.redials.join_next() => match joined {
-                    Ok((id, delay, reached)) => self.redialed(id, delay, reached).await,
+                Some(joined) = self.dials.join_next() => match joined {
+                    Ok((id, opened)) => self.dialed(id, opened).await,
                     Err(join) => {
-                        // A failed task does not say whose it was; clearing lets every phone redial again.
-                        log::warn!("redial task: {join}");
-                        self.redialing.clear();
+                        log::warn!("dial task: {join}");
+                        self.dial_failed(join.id());
                     }
                 },
                 Some(Ok((id, stable_id))) = self.usb_ends.join_next() => self.usb_ended(id, stable_id).await,
@@ -435,10 +434,7 @@ impl ClientActor {
                 let result = self.pair(target).await;
                 drop(reply.send(result));
             }
-            Command::Session { id, reply } => {
-                let result = self.live_session(&id).await;
-                drop(reply.send(result));
-            }
+            Command::Session { id, reply } => self.session_for(&id, reply),
             Command::Live { id, reply } => {
                 drop(reply.send(self.sessions.get(&id).filter(|handle| handle.is_live()).cloned()));
             }
@@ -1044,6 +1040,92 @@ mod tests {
             actor.relay(SessionEvent::Message { from: id.clone(), message: request.clone() }).await;
             assert!(emitted().is_empty(), "{request:?} passed a switch that is off");
         }
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// Blocks every Bluetooth open until the test releases it, and counts the opens per address.
+    struct StuckBluetooth {
+        opens: std::sync::Mutex<HashMap<String, usize>>,
+        started: mpsc::UnboundedSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::bluetooth::BluetoothOpener for StuckBluetooth {
+        fn open(&self, address: &str, _pair: bool) -> std::io::Result<OwnedFd> {
+            self.open_l2cap(address)
+        }
+
+        fn open_l2cap(&self, address: &str) -> std::io::Result<OwnedFd> {
+            if let Ok(mut opens) = self.opens.lock() {
+                *opens.entry(address.to_owned()).or_default() += 1;
+            }
+            self.started.send(()).unwrap_or_default();
+            if let Ok(release) = self.release.lock() {
+                // A closed channel releases too.
+                release.recv().unwrap_or_default();
+            }
+            Err(std::io::ErrorKind::TimedOut.into())
+        }
+    }
+
+    /// While dials to two desktops hang in Bluetooth, commands for a third answer at once; two commands for one
+    /// hanging desktop share one dial and both get its result, and the other desktop's dial runs on its own.
+    #[tokio::test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    async fn a_hanging_dial_blocks_no_other_command() {
+        let dir = std::env::temp_dir().join(format!("link-client-dial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let key = || crate::identity::Identity::generate().expect("key");
+        let (a, b, c) = (key(), key(), key());
+        let mut store = crate::store::Store::default();
+        store.upsert(Peer::new(a.spki(), "a".to_owned()));
+        for (far, address) in [(&b, "AA:BB:CC:DD:EE:0B"), (&c, "AA:BB:CC:DD:EE:0C")] {
+            let mut peer = Peer::new(far.spki(), "far".to_owned());
+            peer.bluetooth = Some(address.to_owned());
+            store.upsert(peer);
+        }
+        store.save(&dir.join("store.json")).expect("store");
+        let mut phone = Phone::new(key(), dir.join("store.json"), "phone".to_owned(), None).expect("phone");
+        let (started, mut opened) = mpsc::unbounded_channel();
+        let (release, stuck) = std::sync::mpsc::channel();
+        let bluetooth = Arc::new(StuckBluetooth {
+            opens: std::sync::Mutex::default(),
+            started,
+            release: std::sync::Mutex::new(stuck),
+        });
+        phone.set_bluetooth(bluetooth.clone());
+        let (client, actor, _events) = client(phone, Inbox::new(dir.clone(), &dir).expect("inbox"));
+        tokio::spawn(actor.run());
+        let dials: Vec<_> = [b.device_id(), b.device_id(), c.device_id()]
+            .into_iter()
+            .map(|id| {
+                let client = client.clone();
+                tokio::spawn(async move { client.connect(id).await })
+            })
+            .collect();
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(30), opened.recv())
+                .await
+                .expect("the two desktops did not both dial at once")
+                .expect("open");
+        }
+        let quick = Duration::from_secs(1);
+        tokio::time::timeout(quick, client.set_sharing(a.device_id(), Feature::Screen, false))
+            .await
+            .expect("set_sharing waited for another desktop's dial")
+            .expect("set_sharing");
+        tokio::time::timeout(quick, client.desktops()).await.expect("desktops waited").expect("desktops");
+        // One dial per desktop opens LE, then RFCOMM.
+        for _ in 0..4 {
+            release.send(()).expect("release");
+        }
+        for dial in dials {
+            let result = tokio::time::timeout(Duration::from_secs(30), dial).await.expect("dial ended").expect("join");
+            assert!(result.is_err(), "a dial to an unreachable desktop succeeded");
+        }
+        let opens = bluetooth.opens.lock().expect("opens").clone();
+        assert_eq!(opens.get("AA:BB:CC:DD:EE:0B"), Some(&2), "two commands for one desktop: {opens:?}");
+        assert_eq!(opens.get("AA:BB:CC:DD:EE:0C"), Some(&2), "the other desktop: {opens:?}");
         drop(std::fs::remove_dir_all(&dir));
     }
 
