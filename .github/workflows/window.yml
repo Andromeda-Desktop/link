@@ -133,18 +133,33 @@ jobs:
           echo "zip: $(du -h out/Andromeda-Link-macos-arm64.zip | cut -f1)"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: window-macos, path: out/Andromeda-Link-macos-arm64.zip }
+      # The fake phone for macos-proof's E2E run.
+      - run: cargo build --release --locked -p link-phone
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: link-phone-macos, path: target/release/andromeda-link-phone }
 
   # A Mac that never built anything installs only the zip: the window loads the agents and shows a pairing QR code.
   macos-proof:
     needs: macos
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: window-macos, path: pkg }
-      - run: brew install zbar
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: link-phone-macos, path: phone }
+      # Homebrew's python refuses a global pip install (PEP 668).
+      - run: |
+          brew install zbar ffmpeg
+          python3 -m venv /tmp/py && /tmp/py/bin/pip install -q jeepney==0.9.0
       - run: dist/macos/proof.sh pkg/Andromeda-Link-macos-arm64.zip proof
+      # The phone pairs by the URI the window's QR code showed, with the agents proof.sh started.
+      - run: |
+          chmod +x phone/andromeda-link-phone
+          OUT=proof/e2e PYTHON=/tmp/py/bin/python tests/e2e/link_macos.sh phone/andromeda-link-phone "$(cat proof/uri.txt)"
+      - if: always()
+        run: cp ~/Library/Logs/"Andromeda Link"/*.log proof/ || true
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: proof-macos, path: proof }
