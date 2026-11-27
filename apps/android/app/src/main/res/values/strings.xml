@@ -156,6 +156,7 @@
     <string name="webcam_not_now">Not now</string>
     <string name="webcam_running">Webcam for %1$s</string>
     <string name="webcam_stop">Stop</string>
+    <string name="webcam_switch">Switch camera</string>
     <string name="feature_calls">Calls</string>
     <string name="feature_messages">Contacts and texts</string>
     <string name="screen_control_off">Turn on control from the desktop</string>

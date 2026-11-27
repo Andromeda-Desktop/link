@@ -38,6 +38,7 @@ import org.andromeda.link.R
 import org.andromeda.link.capture.CaptureRequests
 import org.andromeda.link.capture.desktopName
 import org.andromeda.link.core.domain.CameraCommand
+import org.andromeda.link.core.domain.MirrorStream
 import org.andromeda.link.notifications.Channels
 import org.andromeda.link.notifications.NotificationId
 import org.andromeda.link.screen.MirrorRate
@@ -69,6 +70,8 @@ class CameraService :
         data class Streaming(
             override val desktop: String,
             val encoder: VideoEncoder,
+            val stream: MirrorStream,
+            val size: Size,
         ) : State
 
         data object Stopped : State
@@ -79,6 +82,11 @@ class CameraService :
 
     /** Follows how the phone is held while a camera is bound, so CameraX reports the turn that makes it upright. */
     private var turning: OrientationEventListener? = null
+
+    /** The bound camera, so a switch rebinds [preview] to the other one; main thread only. */
+    private var provider: ProcessCameraProvider? = null
+    private var preview: Preview? = null
+    private var front = false
 
     /** The only writer of [state] and [instance]; returns the state it left, or null for an invalid move. */
     @Synchronized
@@ -112,6 +120,10 @@ class CameraService :
     ): Int {
         if (intent?.action == ACTION_STOP) {
             finish(tellDesktop = true, reason = null)
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_SWITCH) {
+            switchTo(!front)
             return START_NOT_STICKY
         }
         val desktop = intent?.getStringExtra(CaptureRequests.EXTRA_DESKTOP)
@@ -170,34 +182,90 @@ class CameraService :
                         .build(),
                 ).setTargetFrameRate(Range(fps, fps))
                 .build()
-        preview.setSurfaceProvider(mainExecutor) { request -> scope.launch { stream(request, fps) } }
+        // A switch while streaming hands the new camera the same encoder, so the desktop's stream goes on.
+        preview.setSurfaceProvider(mainExecutor) { request ->
+            if (state is State.Streaming) reuse(request) else scope.launch { stream(request, fps) }
+        }
+        this.provider = provider
+        this.preview = preview
         turning =
             object : OrientationEventListener(this) {
                 override fun onOrientationChanged(degrees: Int) {
                     if (degrees == ORIENTATION_UNKNOWN) return
-                    preview.targetRotation =
+                    val rotation =
                         when (degrees) {
                             in 45 until 135 -> Surface.ROTATION_270
                             in 135 until 225 -> Surface.ROTATION_180
                             in 225 until 315 -> Surface.ROTATION_90
                             else -> Surface.ROTATION_0
                         }
+                    if (rotation != preview.targetRotation) {
+                        Log.i(TAG, "phone held at $degrees degrees: target rotation $rotation")
+                        preview.targetRotation = rotation
+                    }
                 }
             }.apply { enable() }
+        if (!bindCamera(front)) {
+            finish(tellDesktop = true, reason = "the phone has no ${if (front) "front" else "back"} camera")
+        }
+    }
+
+    /** Binds [preview] to the [front] or back camera; false when the phone has none. */
+    private fun bindCamera(front: Boolean): Boolean {
+        val provider = provider ?: return false
+        val preview = preview ?: return false
         val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
         val camera =
             try {
                 provider.bindToLifecycle(this, selector, preview)
             } catch (error: Exception) {
                 Log.w(TAG, "no ${if (front) "front" else "back"} camera: ${error.message}")
-                finish(tellDesktop = true, reason = "the phone has no ${if (front) "front" else "back"} camera")
-                return
+                return false
             }
+        this.front = front
         camera.cameraInfo.cameraState.observe(this) { state ->
             state.error?.let {
                 Log.w(TAG, "camera error ${it.code} (${state.type})")
                 finish(tellDesktop = true, reason = "the camera is in use or failed (${it.code})")
             }
+        }
+        return true
+    }
+
+    /** Moves a running stream to the [front] or back camera; the stream, its encoder and the desktop's node stay. */
+    private fun switchTo(front: Boolean) {
+        val streaming = state as? State.Streaming ?: return
+        if (front == this.front) return
+        Log.i(TAG, "${streaming.desktop}: switching to the ${if (front) "front" else "back"} camera")
+        preview?.let { provider?.unbind(it) }
+        if (!bindCamera(front) && !bindCamera(!front)) {
+            finish(tellDesktop = true, reason = "the phone's camera failed")
+        }
+    }
+
+    /** The surface request of a camera switched to while streaming: the running encoder takes it at the same size. */
+    private fun reuse(request: SurfaceRequest) {
+        val streaming = state as? State.Streaming
+        if (streaming == null || request.resolution != streaming.size) {
+            Log.w(TAG, "the ${if (front) "front" else "back"} camera gives ${request.resolution}, not ${streaming?.size}")
+            request.willNotProvideSurface()
+            if (streaming != null) main.post { switchTo(!front) }
+            return
+        }
+        request.provideSurface(streaming.encoder.surface, mainExecutor) { if (state !is State.Streaming) streaming.encoder.release() }
+        watchTurns(request, streaming.desktop, streaming.stream)
+        streaming.encoder.keyframe()
+    }
+
+    /** Each unit carries the turn CameraX reports for [request]'s camera. */
+    private fun watchTurns(
+        request: SurfaceRequest,
+        desktop: String,
+        stream: MirrorStream,
+    ) {
+        request.setTransformationInfoListener(mainExecutor) {
+            Log.i(TAG, "$desktop: picture turns ${it.rotationDegrees} degrees")
+            stream.quarterTurns = it.rotationDegrees / 90 % 4
         }
     }
 
@@ -231,16 +299,17 @@ class CameraService :
                 main.post { finish(tellDesktop = true, reason = "the phone has no $mime encoder for ${width}x$height") }
                 return
             }
-        if (move(State.Streaming(desktop, encoder)) == null) {
+        if (move(State.Streaming(desktop, encoder, stream, Size(width, height))) == null) {
             request.willNotProvideSurface()
             encoder.release()
             withContext(NonCancellable) { stream.finish() }
             return
         }
         // The camera lets go of the surface only after it stops drawing; the encoder goes then, not before.
-        request.provideSurface(encoder.surface, mainExecutor) { encoder.release() }
+        // The camera lets go of the surface only after it stops drawing; a switch hands it on, so only the end releases.
+        request.provideSurface(encoder.surface, mainExecutor) { if (state !is State.Streaming) encoder.release() }
         // The encoder takes the sensor's picture as it is; the desktop turns it upright by the turns each unit carries.
-        request.setTransformationInfoListener(mainExecutor) { stream.quarterTurns = it.rotationDegrees / 90 % 4 }
+        watchTurns(request, desktop, stream)
         Log.i(TAG, "$desktop: webcam on at ${width}x$height $fps fps in $mime")
         val end =
             try {
@@ -261,6 +330,8 @@ class CameraService :
         val from = move(State.Stopped) ?: return
         turning?.disable()
         turning = null
+        provider = null
+        preview = null
         // CameraX unbinds a destroyed owner's use cases and closes the camera.
         registry.currentState = Lifecycle.State.DESTROYED
         val desktop = from.desktop
@@ -289,6 +360,15 @@ class CameraService :
                     this,
                     0,
                     Intent(this, CameraService::class.java).setAction(ACTION_STOP),
+                    PendingIntent.FLAG_IMMUTABLE,
+                ),
+            ).addAction(
+                0,
+                getString(R.string.webcam_switch),
+                PendingIntent.getService(
+                    this,
+                    1,
+                    Intent(this, CameraService::class.java).setAction(ACTION_SWITCH),
                     PendingIntent.FLAG_IMMUTABLE,
                 ),
             ).build()
@@ -326,6 +406,16 @@ class CameraService :
             main.post { instance?.takeIf { it.state.desktop == desktop }?.finish(tellDesktop = false, reason = null) }
         }
 
+        /** Moves [desktop]'s running stream to the [front] or back camera; false when none runs for it. */
+        fun switch(
+            desktop: String,
+            front: Boolean,
+        ): Boolean {
+            val service = instance?.takeIf { it.state is State.Streaming && it.state.desktop == desktop } ?: return false
+            main.post { service.switchTo(front) }
+            return true
+        }
+
         fun keyframe(desktop: String) {
             main.post {
                 val streaming = instance?.state as? State.Streaming
@@ -336,6 +426,7 @@ class CameraService :
         // Not "CameraService": Android's own camera service logs under that tag.
         private const val TAG = "LinkWebcam"
         private const val ACTION_STOP = "org.andromeda.link.webcam.STOP"
+        private const val ACTION_SWITCH = "org.andromeda.link.webcam.SWITCH"
         private const val EXTRA_FRONT = "front"
         private const val EXTRA_WIDTH = "width"
         private const val EXTRA_HEIGHT = "height"

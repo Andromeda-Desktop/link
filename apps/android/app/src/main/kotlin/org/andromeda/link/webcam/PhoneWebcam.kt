@@ -45,6 +45,8 @@ class PhoneWebcam(
         when (command) {
             is CameraCommand.Requested -> {
                 Log.i(TAG, "${command.desktopId} asks for the ${if (command.front) "front" else "back"} camera")
+                // A desktop already streaming asks for the other camera: the user agreed once, so it just switches.
+                if (CameraService.switch(command.desktopId, command.front)) return
                 requests.request(command.desktopId) { asked -> CameraStartActivity.intent(context, command, asked) }
             }
             is CameraCommand.Stopped -> {
