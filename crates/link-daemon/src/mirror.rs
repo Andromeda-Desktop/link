@@ -22,7 +22,6 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// What a webcam request asks for; the phone picks its camera's nearest size.
 const CAMERA_WIDTH: u32 = 1280;
 const CAMERA_HEIGHT: u32 = 720;
-const CAMERA_FPS: u32 = 30;
 
 /// How often a phone that takes `mirror-lag` hears how late its video arrives.
 const LAG_REPORT: Duration = Duration::from_millis(500);
@@ -111,7 +110,7 @@ impl Capture {
                 facing,
                 width: CAMERA_WIDTH,
                 height: CAMERA_HEIGHT,
-                fps: CAMERA_FPS,
+                fps: link_api::CAMERA_FPS,
                 codecs,
             }),
         }

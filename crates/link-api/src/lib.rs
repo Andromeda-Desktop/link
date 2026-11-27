@@ -9,6 +9,8 @@ pub const SERVICE: &str = "org.andromeda.Link1";
 pub const PATH: &str = "/org/andromeda/Link1";
 /// Names a Unix socket that carries the API in place of the session bus.
 pub const SOCKET_ENV: &str = "ANDROMEDA_LINK_SOCKET";
+/// The frame rate `OpenCamera` asks the phone for; a camera reader needs a fixed rate to agree on a format.
+pub const CAMERA_FPS: u32 = 30;
 
 include!(concat!(env!("OUT_DIR"), "/link1.rs"));
 

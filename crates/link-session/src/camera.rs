@@ -54,14 +54,47 @@ async fn serve(link: &Link, id: &str, front: bool) -> anyhow::Result<()> {
         .filter(|codec| *codec == Codec::H264 || offered.contains(&name_of_codec.as_str()))
         .with_context(|| format!("the phone chose codec {name_of_codec:?}, which was not offered"))?;
     let decoder = codec.live_decoder().with_context(|| format!("no decoder for {codec:?}"))?;
-    let socket = std::os::unix::net::UnixStream::from(std::os::fd::OwnedFd::from(fd));
-    let (pipeline, src) = pipeline(codec.caps_and_parser(), decoder, &format!("{name} camera"), id, &loopbacks())?;
-    pipeline.set_state(gst::State::Playing)?;
-    log::info!("{id}: \"{name} camera\" is on at {width}x{height} in {codec:?}");
-    let ended = tokio::task::spawn_blocking(move || feed(socket, &src)).await?;
-    pipeline.set_state(gst::State::Null)?;
-    log::info!("{id}: \"{name} camera\" is off{}", ended.err().map(|error| format!(": {error:#}")).unwrap_or_default());
+    let mut socket = std::os::unix::net::UnixStream::from(std::os::fd::OwnedFd::from(fd));
+    // The phone's H.264 carries no frame rate; without one the node offers 0/1, which Chromium's reader refuses.
+    let (caps, parser) = codec.caps_and_parser().split_once(" ! ").context("caps without a parser")?;
+    let caps = format!("{caps},framerate={}/1 ! {parser}", link_api::CAMERA_FPS);
+    let description = format!("{name} camera");
+    log::info!("{id}: \"{description}\" is on at {width}x{height} in {codec:?}");
+    let mut wait_keyframe = false;
+    let ended = loop {
+        let (pipeline, src) = pipeline(&caps, decoder, &description, id, &loopbacks())?;
+        pipeline.set_state(gst::State::Playing)?;
+        let bus = pipeline.bus().context("no bus")?;
+        let (back, fed) = tokio::task::spawn_blocking(move || {
+            let fed = feed(&mut socket, &src, &bus, wait_keyframe);
+            (socket, fed)
+        })
+        .await?;
+        socket = back;
+        pipeline.set_state(gst::State::Null)?;
+        match fed {
+            // A reader that cannot agree on a format fails the PipeWire sink: the node comes back for the next one.
+            Fed::Broken { pushed: true, error } => {
+                log::info!("{id}: \"{description}\" restarts after: {error:#}");
+                if let Err(error) = link.proxy.camera_keyframe(id).await {
+                    log::info!("{id}: no camera keyframe: {error}");
+                }
+                wait_keyframe = true;
+            }
+            Fed::Broken { error, .. } => break Err(error),
+            Fed::Ended(ended) => break ended,
+        }
+    };
+    log::info!("{id}: \"{description}\" is off{}", ended.err().map(|error| format!(": {error:#}")).unwrap_or_default());
     Ok(())
+}
+
+/// How [`feed`] stopped.
+enum Fed {
+    /// The stream ended on purpose, or its socket failed.
+    Ended(anyhow::Result<()>),
+    /// The pipeline failed; `pushed` is true when it took units before.
+    Broken { pushed: bool, error: anyhow::Error },
 }
 
 /// The decode pipeline: system-memory frames into the `PipeWire` node and each loopback device. Leaky queues keep a
@@ -110,13 +143,26 @@ fn loopbacks() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Pushes the phone's units into the decoder until the stream ends on purpose (`END`) or the socket closes.
-fn feed(mut socket: std::os::unix::net::UnixStream, src: &gst_app::AppSrc) -> anyhow::Result<()> {
+/// Pushes the phone's units into the decoder, from a keyframe when `wait_keyframe`, until the stream ends on purpose
+/// (`END`), the socket closes, or the pipeline posts an error.
+fn feed(
+    socket: &mut std::os::unix::net::UnixStream,
+    src: &gst_app::AppSrc,
+    bus: &gst::Bus,
+    mut wait_keyframe: bool,
+) -> Fed {
     let mut first = None;
-    while let Some(unit) = read_unit(&mut socket)? {
-        if unit.flags & END != 0 {
-            break;
+    let mut pushed = false;
+    loop {
+        let unit = match read_unit(socket) {
+            Ok(Some(unit)) if unit.flags & END == 0 => unit,
+            Ok(_) => return Fed::Ended(Ok(())),
+            Err(error) => return Fed::Ended(Err(error.into())),
+        };
+        if wait_keyframe && unit.flags & KEYFRAME == 0 {
+            continue;
         }
+        wait_keyframe = false;
         let base = *first.get_or_insert(unit.pts_us);
         let mut buffer = gst::Buffer::from_mut_slice(unit.data);
         if let Some(buffer) = buffer.get_mut() {
@@ -125,7 +171,14 @@ fn feed(mut socket: std::os::unix::net::UnixStream, src: &gst_app::AppSrc) -> an
                 buffer.set_flags(gst::BufferFlags::DELTA_UNIT);
             }
         }
-        src.push_buffer(buffer).context("the decoder stopped")?;
+        if let Some(message) = bus.pop_filtered(&[gst::MessageType::Error])
+            && let gst::MessageView::Error(error) = message.view()
+        {
+            return Fed::Broken { pushed, error: anyhow::anyhow!("{}", error.error()) };
+        }
+        if let Err(error) = src.push_buffer(buffer) {
+            return Fed::Broken { pushed, error: anyhow::anyhow!("the decoder stopped: {error}") };
+        }
+        pushed = true;
     }
-    Ok(())
 }
