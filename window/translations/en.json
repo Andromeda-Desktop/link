@@ -346,15 +346,8 @@
     "waiting": "Waiting for the phone…"
   },
   "player": {
-    "artist-on-app": "{artist}, on {app}",
-    "mute": "Mute",
-    "muted": "Muted",
     "next": "Next",
-    "on-app": "On {app}",
-    "pause": "Pause",
-    "play": "Play",
-    "previous": "Previous",
-    "unmute": "Unmute"
+    "previous": "Previous"
   },
   "settings": {
     "auto-accept": "Save offered files without asking",

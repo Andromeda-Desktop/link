@@ -229,11 +229,6 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Node> sidebar(float width);
     // The lead player of the shown phone while it is connected; null otherwise.
     [[nodiscard]] const PhonePlayer* player() const;
-    [[nodiscard]] std::unique_ptr<Node> playerMini(const PhonePlayer& p, float s);
-    [[nodiscard]] std::unique_ptr<Node> playerPopover(float s);
-    void openPlayer();
-    // Moves the open player popover to the model in place; closes it once the player is gone.
-    void syncPlayer();
     // The column right of the sidebar: Home's sky and sheet, or a page's sky band over its sheet.
     [[nodiscard]] std::unique_ptr<Node> content(Renderer& renderer, float width, float height);
     // The shown page's own content, inside the sheet.
@@ -370,7 +365,6 @@ namespace linkapp {
     std::string m_hotspotSheet;   // device id + ssid of the ask the sheet shows; empty while none shows
     std::string m_dial; // the "Name or number" field
     AppWindow* m_window = nullptr;
-    Node* m_phoneCard = nullptr;      // of the last sidebar build
     std::unique_ptr<Sky> m_sky;
     ScrollViewState m_homeScroll;
     struct LiveView {
@@ -379,23 +373,12 @@ namespace linkapp {
     };
     LiveView m_liveView;              // of Home's last build
     ShownTimer m_liveTick;            // 1 s, only while Home shows a playing player
-    struct PlayerView {
-      Slider* seek = nullptr;
-      Label* position = nullptr;
-      Button* play = nullptr;
-      Button* mute = nullptr;
-      Slider* volume = nullptr;
-      Label* level = nullptr;
-    };
-    PlayerView m_playerView;          // of the player popover's last build; used only while it is open
     std::optional<std::string> m_viewing; // phone path of the photo the viewer shows
     std::optional<std::size_t> m_photoScrollTo; // grid row the next Photos build brings into view
     std::size_t m_searchCaret = 0;    // the search field's caret, for the field the next build makes
     std::map<std::string, std::string> m_viewSaved; // phone path to its saved copy, from the viewer's Save
     std::pair<int, int> m_viewImage;  // the shown photo's decoded size, 0 until it decodes
     AsyncTextureCache m_viewCache;    // the viewer's full-size decode, off the UI thread
-    ShownTimer m_playerTick;          // 1 s, only while the popover shows a playing player
-    int m_unmutedVolume = 50;         // the media volume Unmute gives back
     std::unique_ptr<desk::FileChooser> m_chooser;
     Page m_page = Page::Home;
     float m_scale = 1.0F;
