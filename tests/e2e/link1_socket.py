@@ -11,13 +11,15 @@ Needs jeepney.
 """
 import json
 import os
+import socket
 import sys
 import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 from jeepney import DBusAddress, HeaderFields, MessageType, Properties, new_method_call
-from jeepney.io.blocking import DBusConnection, prep_socket
+from jeepney.auth import BEGIN, Authenticator
+from jeepney.io.blocking import DBusConnection
 from jeepney.io.common import MessageFilters
 from jeepney.wrappers import unwrap_msg
 from jeepney.fds import FileDescriptor
@@ -42,7 +44,21 @@ def socket_path():
 
 
 def connect():
-    return PeerConnection(prep_socket(socket_path(), enable_fds=True))
+    # jeepney's prep_socket sends SCM_CREDS wherever Python defines it; macOS rejects that with EINVAL.
+    sock = socket.socket(socket.AF_UNIX)
+    sock.settimeout(5)
+    sock.connect(socket_path())
+    sock.send(b"\0")
+    auth = Authenticator(enable_fds=True, inc_null_byte=False)
+    for request in auth:
+        sock.sendall(request)
+        reply = sock.recv(1024)
+        if not reply:
+            raise ConnectionResetError("linkd closed the socket in the handshake")
+        auth.feed(reply)
+    sock.sendall(BEGIN)
+    sock.settimeout(None)
+    return PeerConnection(sock)
 
 
 def in_signature(method):

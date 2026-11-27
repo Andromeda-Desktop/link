@@ -96,9 +96,16 @@ impl Listener {
     async fn accept(&mut self) -> Option<Builder<'static>> {
         let (stream, _) =
             self.listener.accept().await.inspect_err(|error| log::warn!("accepting an API client: {error}")).ok()?;
-        if !stream.peer_cred().is_ok_and(|cred| cred.uid() == self.uid) {
-            log::warn!("refused an API client of another user");
-            return None;
+        match stream.peer_cred() {
+            Ok(cred) if cred.uid() == self.uid => {}
+            Ok(cred) => {
+                log::warn!("refused an API client of user {}", cred.uid());
+                return None;
+            }
+            Err(error) => {
+                log::warn!("refused an API client without credentials: {error}");
+                return None;
+            }
         }
         let stream = stream.into_std().inspect_err(|error| log::warn!("accepting an API client: {error}")).ok()?;
         Some(Builder::unix_stream(stream))
