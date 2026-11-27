@@ -2,12 +2,16 @@
 //! through the session's notification server, the clipboard both ways, the phone as touchpad and keyboard, and the
 //! output volume, each through a backend the session offers. See "Stage 0" in `docs/link-v2.md`.
 
-#[cfg_attr(target_os = "macos", path = "macos/awake.rs")]
+#[cfg(target_os = "linux")]
 mod audio_nodes;
+#[cfg_attr(target_os = "macos", path = "macos/awake.rs")]
+#[cfg_attr(windows, path = "windows/awake.rs")]
 mod awake;
 #[cfg(target_os = "linux")]
 mod camera;
+#[cfg(unix)]
 mod clipboard;
+#[cfg(unix)]
 mod input;
 mod link;
 #[cfg(target_os = "macos")]
@@ -18,16 +22,24 @@ mod mic;
 mod notify;
 #[cfg(target_os = "linux")]
 mod portal;
+#[cfg(target_os = "linux")]
 mod prefetch;
+#[cfg(unix)]
 mod ring;
 #[cfg(target_os = "linux")]
 mod screen;
 #[cfg(target_os = "linux")]
 mod speaker;
 #[cfg_attr(target_os = "macos", path = "macos/system.rs")]
+#[cfg_attr(windows, path = "windows/system.rs")]
 mod system;
 #[cfg_attr(target_os = "macos", path = "macos/volume.rs")]
+#[cfg_attr(windows, path = "windows/volume.rs")]
 mod volume;
+// Not `windows`: that name would shadow the `windows` crate.
+#[cfg(windows)]
+#[path = "windows/mod.rs"]
+mod win;
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
@@ -59,6 +71,7 @@ fn on_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
 }
 
+#[cfg(unix)]
 async fn next_clipboard(clipboard: &mut Option<clipboard::Backend>) -> anyhow::Result<clipboard::Event> {
     match clipboard {
         Some(clipboard) => clipboard.next().await,
@@ -66,6 +79,7 @@ async fn next_clipboard(clipboard: &mut Option<clipboard::Backend>) -> anyhow::R
     }
 }
 
+#[cfg(unix)]
 async fn pump_input(input: &mut Option<input::Backend>) -> anyhow::Result<()> {
     match input {
         Some(input) => input.pump().await,
@@ -121,11 +135,12 @@ async fn report_status(link: &link::Link, volume: Option<&volume::Volume>, syste
 
 /// Gives a new selection to the daemon, which sends it to phones now or on connect, or serves a paste of `remote`,
 /// the phone clip the selection holds as (device id, clip id). A phone clip's own selection never comes back here.
+#[cfg(unix)]
 fn on_clipboard(
     link: &link::Link,
     event: clipboard::Event,
     remote: Option<(String, u64)>,
-    prefetch: Option<prefetch::Prefetch>,
+    #[cfg(target_os = "linux")] prefetch: Option<prefetch::Prefetch>,
 ) {
     match event {
         clipboard::Event::Local { types } => {
@@ -136,13 +151,21 @@ fn on_clipboard(
         clipboard::Event::Paste { mime, sink, done } => {
             let link = link.clone();
             tokio::spawn(async move {
-                let pulled = match (remote, prefetch) {
-                    (Some(remote), Some(prefetch)) => match prefetch.serve(&remote, &mime, sink).await {
-                        Ok(written) => written,
-                        Err(sink) => link.pull_clipboard(&remote.0, remote.1, &mime, sink).await,
-                    },
-                    (Some((device, id)), None) => link.pull_clipboard(&device, id, &mime, sink).await,
-                    (None, _) => false,
+                let pulled = match remote {
+                    Some(remote) => {
+                        #[cfg(target_os = "linux")]
+                        let served = match prefetch {
+                            Some(prefetch) => prefetch.serve(&remote, &mime, sink).await,
+                            None => Err(sink),
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let served: Result<bool, std::os::fd::OwnedFd> = Err(sink);
+                        match served {
+                            Ok(written) => written,
+                            Err(sink) => link.pull_clipboard(&remote.0, remote.1, &mime, sink).await,
+                        }
+                    }
+                    None => false,
                 };
                 if let Some(done) = done {
                     let _ = done.send(pulled);
@@ -189,6 +212,15 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(macos::permissions());
     }
     macos::run().await
+}
+
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn"))
+        .format_timestamp(None)
+        .init();
+    win::run().await
 }
 
 #[cfg(target_os = "linux")]

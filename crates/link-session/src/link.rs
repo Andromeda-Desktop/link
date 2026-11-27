@@ -1,6 +1,8 @@
 //! The calls `link-session` makes to `andromeda-linkd` over `org.andromeda.Link1`.
 
+#[cfg(unix)]
 use std::io::{Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::fd::AsFd;
 
 use link_api::Link1Proxy;
@@ -15,11 +17,13 @@ impl Link {
         Ok(Self { proxy: Link1Proxy::new(bus).await? })
     }
 
+    #[cfg_attr(windows, expect(dead_code, reason = "Windows toasts come with W6"))]
     pub async fn notification_action(&self, device: &str, id: &str, action: &str, reply: &str) {
         log_failure("NotificationAction", self.proxy.notification_action(device, id, action, reply).await);
     }
 
     /// Each type's bytes go in an anonymous file, under every name it is offered as.
+    #[cfg(unix)]
     pub async fn offer_clipboard(&self, types: Vec<(Vec<String>, Vec<u8>)>) {
         let offer = async {
             let mut files = Vec::with_capacity(types.len());
@@ -43,11 +47,13 @@ impl Link {
     }
 
     /// Whether the phone's bytes reached `sink`.
+    #[cfg(unix)]
     pub async fn pull_clipboard(&self, device: &str, id: u64, mime: &str, sink: std::os::fd::OwnedFd) -> bool {
         let result = self.proxy.pull_clipboard(device, id, mime, sink.as_fd().into()).await;
         result.inspect_err(|error| log::warn!("PullClipboard: {error}")).is_ok()
     }
 
+    #[cfg_attr(windows, expect(dead_code, reason = "Windows toasts come with W6"))]
     pub async fn notification_dismiss(&self, device: &str, id: &str) {
         log_failure("NotificationDismiss", self.proxy.notification_dismiss(device, id).await);
     }
@@ -80,7 +86,7 @@ impl Link {
         log_failure("SystemResult", self.proxy.system_result(device, serial, error.unwrap_or_default()).await);
     }
 
-    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS offers no remote control"))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only Linux offers remote control"))]
     pub async fn stop_remote_control(&self, device: &str, reason: &str) {
         log_failure("StopRemoteControl", self.proxy.stop_remote_control(device, reason).await);
     }

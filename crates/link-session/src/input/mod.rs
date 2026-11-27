@@ -70,14 +70,11 @@ impl Backend {
     }
 
     /// Whether [`Action::Shortcut`] works: the backend can hold modifiers.
+    #[cfg(target_os = "linux")]
     pub const fn shortcuts(&self) -> bool {
         match self {
-            #[cfg(target_os = "linux")]
             Self::Wayland(_) | Self::Ei(_) => true,
-            #[cfg(target_os = "linux")]
             Self::X11(_) => false,
-            #[cfg(target_os = "macos")]
-            Self::Mac(_) => false,
         }
     }
 
@@ -148,6 +145,7 @@ pub enum Action {
     Key(u32),
     Text(String),
     /// A key pressed while the modifiers are held, as `super+t`.
+    #[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS takes no shortcuts"))]
     Shortcut(Vec<Modifier>, u32),
 }
 
