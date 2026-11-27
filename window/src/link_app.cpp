@@ -1046,6 +1046,7 @@ namespace linkapp {
                                   drop->waiting.push_back(std::move(reply));
                                 }
                               },
+                          .fileName = std::filesystem::path(path).filename().string(),
                           .actions = DropCopy | DropMove});
   }
 
