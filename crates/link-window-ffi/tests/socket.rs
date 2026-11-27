@@ -57,6 +57,10 @@ impl Daemon {
         format!("echo {text}")
     }
 
+    fn pair(&self, text: String) -> (String, u32) {
+        (text, 7)
+    }
+
     fn fail(&self) -> zbus::fdo::Result<()> {
         Err(zbus::fdo::Error::AccessDenied("nope".into()))
     }
@@ -206,6 +210,13 @@ fn link1_over_the_socket() {
 
     client.call(2, "Echo", "s", &string_body("hi"), &[], 0, 0);
     assert_eq!(decode_string(&client.reply(2)), "echo hi");
+
+    // A body of several values has the bare signature, never one wrapped as a struct.
+    client.call(12, "Pair", "s", &string_body("two"), &[], 0, 0);
+    let pair = client.reply(12);
+    assert_eq!(pair.signature, "su");
+    let data = Data::new(&pair.body[..], Context::new(Endian::Little, 0));
+    assert_eq!(data.deserialize::<(String, u32)>().unwrap().0, ("two".to_owned(), 7));
 
     client.call(3, "Fail", "", &[], &[], 0, 0);
     let failed = client.next();

@@ -30,6 +30,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
       - run: dist/window/deps.sh ${{ matrix.distro }}
+      # The window links crates/link-window-ffi (Link1 through link-api), built by cargo from window/meson.build.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable }
       - run: git config --global --add safe.directory "$PWD" && echo "PIN=$(cat dist/window/libdesk-commit)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { repository: Andromeda-Desktop/desktop, ref: "${{ env.PIN }}", path: desktop }

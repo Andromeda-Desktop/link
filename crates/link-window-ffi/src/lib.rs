@@ -156,7 +156,7 @@ fn send_reply(poster: &Poster, pending: Pending, msg: &Message) {
     match msg.message_type() {
         Type::MethodReturn if pending.error_only => {}
         Type::MethodReturn => {
-            let signature = body.signature().to_string();
+            let signature = body.signature().to_string_no_parens();
             poster.post(
                 LinkKind::Reply,
                 &Event {
@@ -280,7 +280,7 @@ fn dispatch(msg: &Message, pending: &mut HashMap<NonZeroU32, Pending>, poster: &
                 return;
             }
             let body = msg.body();
-            let signature = body.signature().to_string();
+            let signature = body.signature().to_string_no_parens();
             poster.post(
                 LinkKind::Signal,
                 &Event {

@@ -9,7 +9,7 @@ case ${1:?distro} in
   ubuntu|debian)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends git meson ninja-build g++ pkgconf python3 ca-certificates dpkg-dev dbus \
+    apt-get install -y -qq --no-install-recommends git meson ninja-build g++ pkgconf python3 ca-certificates curl dpkg-dev dbus \
       libfreetype-dev libfontconfig-dev libcairo2-dev libpango1.0-dev libharfbuzz-dev libfribidi-dev librsvg2-dev \
       libxkbcommon-dev libglib2.0-dev nlohmann-json3-dev zlib1g-dev libwayland-dev wayland-protocols libegl-dev \
       libgles-dev libsdbus-c++-dev libsystemd-dev libcups2-dev libcrypt-dev libqrencode-dev libavcodec-dev \

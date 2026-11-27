@@ -2,8 +2,7 @@
 
 #include "core/log.h"
 #include "i18n/i18n.h"
-#include "dbus/session_bus.h"
-#include "dbus/reply_log.h"
+#include "link_bus.h"
 #include "protocols/async_file_writer.h"
 
 #include <cctype>
@@ -20,7 +19,6 @@
 #include <fstream>
 #include <map>
 #include <optional>
-#include <sdbus-c++/sdbus-c++.h>
 #include <unistd.h>
 
 namespace linkapp {
@@ -28,8 +26,6 @@ namespace linkapp {
   namespace {
 
     constexpr Logger kLog("link");
-    const sdbus::ServiceName kBusName{"org.andromeda.Link1"};
-    const sdbus::ObjectPath kObjectPath{"/org/andromeda/Link1"};
     constexpr auto kInterface = "org.andromeda.Link1";
     constexpr auto kQuickShare = "org.andromeda.Link1.QuickShare";
 
@@ -38,14 +34,14 @@ namespace linkapp {
     }
 
     template <typename T>
-    T value(const std::map<std::string, sdbus::Variant>& map, const std::string& key, T fallback) {
+    T value(const std::map<std::string, bus::Variant>& map, const std::string& key, T fallback) {
       const auto it = map.find(key);
       if (it == map.end() || !it->second.containsValueOfType<T>()) return fallback;
       return it->second.get<T>();
     }
 
     template <typename T>
-    T property(const std::map<std::string, sdbus::Variant>& props, const std::string& key) {
+    T property(const std::map<std::string, bus::Variant>& props, const std::string& key) {
       const auto it = props.find(key);
       if (it == props.end() || !it->second.containsValueOfType<T>()) return T{};
       return it->second.get<T>();
@@ -70,7 +66,8 @@ namespace linkapp {
     constexpr std::int64_t kSnapshotMaxAgeMs = 24LL * 3600 * 1000;
   } // namespace
 
-  LinkClient::LinkClient(SessionBus& bus) : m_bus(bus) {
+  LinkClient::LinkClient(std::function<void(const std::vector<std::string>&)> showInFolder)
+      : m_showInFolder(std::move(showInFolder)) {
     std::getline(std::ifstream(selectedFile()), m_selected);
     std::ifstream cached(snapshotFile(), std::ios::binary);
     if (auto snapshot = decodeSnapshot(std::string(std::istreambuf_iterator<char>(cached), {}))) {
@@ -82,16 +79,14 @@ namespace linkapp {
         if (item.atMs >= oldest) m_feed.upsert(std::move(item));
       }
     }
-    m_proxy = sdbus::createProxy(m_bus.connection(), kBusName, kObjectPath);
     // Link1 starting or stopping after this app: ask again, so presence leaves NoDaemon or enters it.
-    m_busWatch = NameOwnerWatch::changes(m_bus.connection(), kBusName,
-        [this](const std::string&, const std::string&, const std::string&) {
-          refresh();
-          refreshNearby();
-        });
+    m_proxy = std::make_unique<bus::Link>([this](bool) {
+      refresh();
+      refreshNearby();
+    });
     m_proxy->uponSignal("PropertiesChanged")
         .onInterface("org.freedesktop.DBus.Properties")
-        .call([this](const std::string& interfaceName, const std::map<std::string, sdbus::Variant>&,
+        .call([this](const std::string& interfaceName, const std::map<std::string, bus::Variant>&,
                      const std::vector<std::string>&) {
           if (interfaceName == kInterface) refresh();
           if (interfaceName == kQuickShare) refreshNearby();
@@ -108,7 +103,7 @@ namespace linkapp {
         .onInterface(kInterface)
         .call([this](const std::string& device, const std::string& id, const std::string& app, const std::string& title,
                      const std::string& text, const std::vector<std::uint8_t>&,
-                     const std::vector<sdbus::Struct<std::string, std::string, bool>>& actions, bool,
+                     const std::vector<bus::Struct<std::string, std::string, bool>>& actions, bool,
                      const std::vector<std::string>& replies) {
           FeedItem item{.kind = FeedItem::Kind::Notification, .key = "n:" + id, .deviceId = device,
                         .who = app.empty() ? title : app + " · " + title, .body = text, .atMs = nowMs(),
@@ -132,7 +127,7 @@ namespace linkapp {
     m_proxy->uponSignal("ScreenShape")
         .onInterface(kInterface)
         .call([this](const std::string& device, const std::vector<std::uint16_t>& corners,
-                     const std::vector<sdbus::Struct<std::uint16_t, std::uint16_t, std::uint16_t, std::uint16_t>>&) {
+                     const std::vector<bus::Struct<std::uint16_t, std::uint16_t, std::uint16_t, std::uint16_t>>&) {
           if (device != m_mirrorDevice) return;
           const std::uint16_t radius = corners.empty() ? 0 : std::ranges::max(corners);
           if (radius != std::exchange(m_mirrorCorner, radius)) changed();
@@ -153,7 +148,7 @@ namespace linkapp {
     m_proxy->uponSignal("TransferOffered")
         .onInterface(kInterface)
         .call([this](const std::string& transfer, const std::string& device,
-                     const std::vector<sdbus::Struct<std::string, std::uint64_t>>& files) {
+                     const std::vector<bus::Struct<std::string, std::uint64_t>>& files) {
           FeedItem item{.kind = FeedItem::Kind::Offer, .key = "o:" + transfer, .deviceId = device, .atMs = nowMs()};
           for (const auto& f : files) {
             item.files.emplace_back(f.get<0>(), f.get<1>());
@@ -189,11 +184,15 @@ namespace linkapp {
             return;
           }
           std::array<int, 2> fds{};
-          if (::pipe2(fds.data(), O_CLOEXEC | O_NONBLOCK) != 0) return;
-          auto source = std::make_shared<sdbus::UnixFd>(fds[0], sdbus::adopt_fd);
+          if (::pipe(fds.data()) != 0) return;
+          for (const int fd : fds) {
+            ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+            ::fcntl(fd, F_SETFL, O_NONBLOCK);
+          }
+          auto source = std::make_shared<bus::UnixFd>(fds[0], bus::adopt_fd);
           m_proxy->callMethodAsync("PullClipboard").onInterface(kInterface)
-              .withArguments(device, id, mimes.front(), sdbus::UnixFd{fds[1], sdbus::adopt_fd})
-              .uponReplyInvoke([this, source, device, id](std::optional<sdbus::Error> error, std::uint64_t bytes) {
+              .withArguments(device, id, mimes.front(), bus::UnixFd{fds[1], bus::adopt_fd})
+              .uponReplyInvoke([this, source, device, id](std::optional<bus::Error> error, std::uint64_t bytes) {
                 if (error) {
                   kLog.warn("PullClipboard: {}", error->getMessage());
                   return;
@@ -228,7 +227,7 @@ namespace linkapp {
         .onInterface("org.freedesktop.DBus.Properties")
         .withArguments(std::string{kInterface})
         .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](
-                             std::optional<sdbus::Error> error, std::map<std::string, sdbus::Variant> props) {
+                             std::optional<bus::Error> error, std::map<std::string, bus::Variant> props) {
           if (alive.expired() || serial <= m_applied) return;
           m_applied = serial;
           m_daemon = !error.has_value();
@@ -242,18 +241,18 @@ namespace linkapp {
           const bool pairing = property<bool>(props, "Pairing");
           if (m_pairing && !pairing) (void)pairStep(m_pair, {.kind = PairEvent::Kind::Closed});
           m_pairing = pairing;
-          const auto info = property<std::map<std::string, std::map<std::string, sdbus::Variant>>>(props, "DeviceInfo");
+          const auto info = property<std::map<std::string, std::map<std::string, bus::Variant>>>(props, "DeviceInfo");
           const auto status =
-              property<std::map<std::string, sdbus::Struct<std::uint32_t, bool, std::string, std::int32_t>>>(props, "DeviceStatus");
+              property<std::map<std::string, bus::Struct<std::uint32_t, bool, std::string, std::int32_t>>>(props, "DeviceStatus");
           const auto controls =
-              property<std::map<std::string, sdbus::Struct<std::int32_t, std::string, std::int32_t, std::int32_t>>>(props, "DeviceControls");
+              property<std::map<std::string, bus::Struct<std::int32_t, std::string, std::int32_t, std::int32_t>>>(props, "DeviceControls");
           const auto toggles =
-              property<std::map<std::string, sdbus::Struct<std::int32_t, std::int32_t, std::int32_t>>>(props, "DeviceToggles");
+              property<std::map<std::string, bus::Struct<std::int32_t, std::int32_t, std::int32_t>>>(props, "DeviceToggles");
           const auto paused = property<std::vector<std::string>>(props, "Paused");
-          using Player = sdbus::Struct<std::string, std::string, std::string, std::string, std::string, bool, std::uint64_t,
+          using Player = bus::Struct<std::string, std::string, std::string, std::string, std::string, bool, std::uint64_t,
                                        std::uint64_t, std::int32_t, std::int64_t, std::vector<std::string>>;
           const auto players = property<std::map<std::string, Player>>(props, "PhonePlayers");
-          for (const auto& d : property<std::vector<sdbus::Struct<std::string, std::string, bool>>>(props, "Devices")) {
+          for (const auto& d : property<std::vector<bus::Struct<std::string, std::string, bool>>>(props, "Devices")) {
             Phone phone{.id = d.get<0>(), .name = d.get<1>(), .connected = d.get<2>()};
             if (const auto it = info.find(phone.id); it != info.end()) {
               phone.transport = value<std::string>(it->second, "transport", "");
@@ -291,7 +290,7 @@ namespace linkapp {
           }
           // Missed calls of the last day; the Calls page holds the rest.
           const std::int64_t since = nowMs() - 24LL * 3600 * 1000;
-          using Call = sdbus::Struct<std::string, std::string, std::uint64_t, std::uint32_t, std::string>;
+          using Call = bus::Struct<std::string, std::string, std::uint64_t, std::uint32_t, std::string>;
           for (const auto& [device, calls] : property<std::map<std::string, std::vector<Call>>>(props, "Calls")) {
             for (const Call& call : calls) {
               const auto at = static_cast<std::int64_t>(call.get<2>());
@@ -305,8 +304,8 @@ namespace linkapp {
           }
           // Texts and Contacts of the phone presence() shows; Link1 keeps its newest 256 texts.
           const std::string phone = presence().phone.id;
-          using Part = sdbus::Struct<std::uint64_t, std::string>;
-          using Sms = sdbus::Struct<std::uint64_t, std::uint64_t, std::string, std::string, std::uint64_t, std::uint8_t,
+          using Part = bus::Struct<std::uint64_t, std::string>;
+          using Sms = bus::Struct<std::uint64_t, std::uint64_t, std::string, std::string, std::uint64_t, std::uint8_t,
                                     std::vector<Part>>;
           const auto texts = property<std::map<std::string, std::vector<Sms>>>(props, "Texts");
           std::vector<Text> list;
@@ -324,7 +323,7 @@ namespace linkapp {
               list.push_back(std::move(text));
             }
           }
-          using Person = sdbus::Struct<std::string, std::vector<std::string>>;
+          using Person = bus::Struct<std::string, std::vector<std::string>>;
           const auto contacts = property<std::map<std::string, std::vector<Person>>>(props, "Contacts");
           std::vector<Contact> people;
           if (const auto it = contacts.find(phone); it != contacts.end()) {
@@ -364,7 +363,7 @@ namespace linkapp {
           m_desktopSettings.notificationsWhileLocked = property<bool>(props, "NotificationsWhileLocked");
           m_desktopSettings.localSendVisible = property<bool>(props, "LocalSendVisible");
           m_desktopSettings.commands.clear();
-          for (const auto& [name, line] : property<std::vector<sdbus::Struct<std::string, std::string>>>(props, "Commands"))
+          for (const auto& [name, line] : property<std::vector<bus::Struct<std::string, std::string>>>(props, "Commands"))
             m_desktopSettings.commands.push_back({.name = name, .line = line});
           m_messages.setContacts(people);
           m_messages.setTexts(phone, std::move(list));
@@ -383,7 +382,7 @@ namespace linkapp {
         .onInterface("org.freedesktop.DBus.Properties")
         .withArguments(std::string{kQuickShare})
         .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](
-                             std::optional<sdbus::Error> error, std::map<std::string, sdbus::Variant> props) {
+                             std::optional<bus::Error> error, std::map<std::string, bus::Variant> props) {
           if (alive.expired() || serial <= m_nearbyApplied || error) return;
           m_nearbyApplied = serial;
           m_desktopSettings.nearbyVisible = property<bool>(props, "Visible");
@@ -397,17 +396,17 @@ namespace linkapp {
     const std::string device = std::exchange(m_hotspotAsk, std::nullopt)->deviceId;
     if (always) setGrant(device, "nearby", true);
     m_proxy->callMethodAsync("AnswerHotspot").onInterface(kInterface).withArguments(device, allow)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("AnswerHotspot: {}", error->getMessage());
         });
     changed();
   }
 
   void LinkClient::setCommands(const std::vector<Command>& commands, std::function<void(std::optional<std::string>)> done) {
-    std::vector<sdbus::Struct<std::string, std::string>> list;
+    std::vector<bus::Struct<std::string, std::string>> list;
     for (const Command& c : commands) list.emplace_back(c.name, c.line);
     m_proxy->callMethodAsync("SetCommands").onInterface(kInterface).withArguments(list)
-        .uponReplyInvoke([done = std::move(done)](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([done = std::move(done)](std::optional<bus::Error> error) {
           if (error) kLog.warn("SetCommands: {}", error->getMessage());
           done(error ? std::optional<std::string>(error->getMessage()) : std::nullopt);
         });
@@ -415,43 +414,43 @@ namespace linkapp {
 
   void LinkClient::setGrant(const std::string& deviceId, const std::string& feature, bool granted) {
     m_proxy->callMethodAsync("SetGrant").onInterface(kInterface).withArguments(deviceId, feature, granted)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SetGrant: {}", error->getMessage());
         });
   }
 
   void LinkClient::setAutoAccept(const std::string& deviceId, bool on) {
     m_proxy->callMethodAsync("SetAutoAccept").onInterface(kInterface).withArguments(deviceId, on)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SetAutoAccept: {}", error->getMessage());
         });
   }
 
   void LinkClient::setNotificationsWhileLocked(bool on) {
     m_proxy->callMethodAsync("SetNotificationsWhileLocked").onInterface(kInterface).withArguments(on)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SetNotificationsWhileLocked: {}", error->getMessage());
         });
   }
 
   void LinkClient::setLocalSendVisible(bool on) {
     m_proxy->callMethodAsync("SetLocalSendVisible").onInterface(kInterface).withArguments(on)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SetLocalSendVisible: {}", error->getMessage());
         });
   }
 
   void LinkClient::setNearbyVisible(bool on) {
     m_proxy->callMethodAsync("Set").onInterface("org.freedesktop.DBus.Properties")
-        .withArguments(std::string{kQuickShare}, std::string("Visible"), sdbus::Variant(on))
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .withArguments(std::string{kQuickShare}, std::string("Visible"), bus::Variant(on))
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("QuickShare Visible: {}", error->getMessage());
         });
   }
 
   void LinkClient::unpair(const std::string& deviceId) {
     m_proxy->callMethodAsync("Unpair").onInterface(kInterface).withArguments(deviceId)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Unpair: {}", error->getMessage());
         });
   }
@@ -476,7 +475,7 @@ namespace linkapp {
     const Thread* thread = out ? m_messages.thread(out->thread) : nullptr;
     if (thread == nullptr) return;
     m_proxy->callMethodAsync("SendText").onInterface(kInterface).withArguments(out->phone, thread->address, out->body)
-        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error) {
           if (alive.expired() || !error) return;
           kLog.warn("SendText: {}", error->getMessage());
           if (m_messages.sendFailed(serial)) changed();
@@ -486,7 +485,7 @@ namespace linkapp {
   void LinkClient::reply(const FeedItem& item, const std::string& text) {
     if (item.kind == FeedItem::Kind::Text) {
       m_proxy->callMethodAsync("SendText").onInterface(kInterface).withArguments(item.deviceId, item.who, text)
-          .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+          .uponReplyInvoke([](std::optional<bus::Error> error) {
             if (error) kLog.warn("SendText: {}", error->getMessage());
           });
     } else {
@@ -494,7 +493,7 @@ namespace linkapp {
       if (reply == item.actions.end()) return;
       m_proxy->callMethodAsync("NotificationAction").onInterface(kInterface)
           .withArguments(item.deviceId, item.key.substr(2), reply->id, text)
-          .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+          .uponReplyInvoke([](std::optional<bus::Error> error) {
             if (error) kLog.warn("NotificationAction: {}", error->getMessage());
           });
     }
@@ -508,7 +507,7 @@ namespace linkapp {
     }
     m_proxy->callMethodAsync("NotificationAction").onInterface(kInterface)
         .withArguments(item.deviceId, item.key.substr(2), actionId, std::string{})
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("NotificationAction: {}", error->getMessage());
         });
   }
@@ -516,7 +515,7 @@ namespace linkapp {
   void LinkClient::dismiss(const FeedItem& item) {
     if (item.kind == FeedItem::Kind::Notification) {
       m_proxy->callMethodAsync("NotificationDismiss").onInterface(kInterface).withArguments(item.deviceId, item.key.substr(2))
-          .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+          .uponReplyInvoke([](std::optional<bus::Error> error) {
             if (error) kLog.warn("NotificationDismiss: {}", error->getMessage());
           });
     }
@@ -531,7 +530,7 @@ namespace linkapp {
 
   void LinkClient::acceptTransfer(const std::string& id) {
     m_proxy->callMethodAsync("AcceptTransfer").onInterface(kInterface).withArguments(id)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("AcceptTransfer: {}", error->getMessage());
         });
   }
@@ -539,7 +538,7 @@ namespace linkapp {
   // TransferFinished "declined" removes the Activity entry; the Waiting item leaves now.
   void LinkClient::declineTransfer(const std::string& id) {
     m_proxy->callMethodAsync("DeclineTransfer").onInterface(kInterface).withArguments(id)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("DeclineTransfer: {}", error->getMessage());
         });
     if (m_feed.remove("o:" + id)) changed();
@@ -547,7 +546,7 @@ namespace linkapp {
 
   void LinkClient::cancelTransfer(const std::string& id) {
     m_proxy->callMethodAsync("CancelTransfer").onInterface(kInterface).withArguments(id)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("CancelTransfer: {}", error->getMessage());
         });
   }
@@ -558,26 +557,7 @@ namespace linkapp {
   }
 
   void LinkClient::showInFolder(const std::vector<std::string>& paths) {
-    std::vector<std::string> uris;
-    for (const std::string& path : paths) {
-      std::string uri = "file://";
-      for (const unsigned char c : path) {
-        if (std::isalnum(c) != 0 || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') {
-          uri += static_cast<char>(c);
-        } else {
-          uri += std::format("%{:02X}", c);
-        }
-      }
-      uris.push_back(std::move(uri));
-    }
-    if (!m_fileManager) {
-      m_fileManager = sdbus::createProxy(m_bus.connection(), sdbus::ServiceName{"org.freedesktop.FileManager1"},
-                                         sdbus::ObjectPath{"/org/freedesktop/FileManager1"});
-    }
-    m_fileManager->callMethodAsync("ShowItems").onInterface("org.freedesktop.FileManager1").withArguments(uris, std::string())
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
-          if (error) kLog.warn("ShowItems: {}", error->getMessage());
-        });
+    if (m_showInFolder) m_showInFolder(paths);
   }
 
   void LinkClient::loadPhotos() {
@@ -604,11 +584,11 @@ namespace linkapp {
 
   void LinkClient::askPhotos(const Photos::Ask& ask) {
     static constexpr std::array<const char*, 3> kMedia{"all", "photos", "videos"};
-    using Row = sdbus::Struct<std::string, std::string, std::uint64_t, bool, std::uint32_t>;
+    using Row = bus::Struct<std::string, std::string, std::uint64_t, bool, std::uint32_t>;
     m_proxy->callMethodAsync("PhotosPage")
         .onInterface(kInterface)
         .withArguments(m_photos.device(), ask.offset, Photos::kCount, std::string(kMedia[static_cast<std::size_t>(ask.media)]))
-        .uponReplyInvoke([this, ask, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error,
+        .uponReplyInvoke([this, ask, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error,
                                                                             std::uint32_t total, std::vector<Row> list) {
           if (alive.expired()) return;
           if (error) {
@@ -676,7 +656,7 @@ namespace linkapp {
       m_proxy->callMethodAsync("SavePhoto")
           .onInterface(kInterface)
           .withArguments(m_photos.device(), path)
-          .uponReplyInvoke([this, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error, std::string) {
+          .uponReplyInvoke([this, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error, std::string) {
             if (alive.expired()) return;
             if (error) kLog.warn("SavePhoto: {}", error->getMessage());
             m_photos.saveAnswered(!error);
@@ -691,7 +671,7 @@ namespace linkapp {
     m_proxy->callMethodAsync("SavePhotoTo")
         .onInterface(kInterface)
         .withArguments(m_photos.device(), path, folder)
-        .uponReplyInvoke([done = std::move(done)](std::optional<sdbus::Error> error, std::string saved) {
+        .uponReplyInvoke([done = std::move(done)](std::optional<bus::Error> error, std::string saved) {
           if (error) kLog.warn("SavePhotoTo: {}", error->getMessage());
           done(error ? std::string() : saved);
         });
@@ -720,7 +700,7 @@ namespace linkapp {
     }
     m_thumbUse.push_front(key);
     m_thumbs.emplace(key, Thumb{.png = {}, .use = m_thumbUse.begin()});
-    ask().uponReplyInvoke([this, key, ticket = m_thumbTicket, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error,
+    ask().uponReplyInvoke([this, key, ticket = m_thumbTicket, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error,
                                                                              std::vector<std::uint8_t> png) {
           if (alive.expired() || !m_thumbEpoch.current(ticket)) return;
           const auto entry = m_thumbs.find(key);
@@ -753,7 +733,7 @@ namespace linkapp {
         .onInterface(kInterface)
         .withArguments(device, path)
         .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](
-                             std::optional<sdbus::Error> error, std::vector<sdbus::Struct<std::string, bool, std::uint64_t, std::uint64_t>> list) {
+                             std::optional<bus::Error> error, std::vector<bus::Struct<std::string, bool, std::uint64_t, std::uint64_t>> list) {
           if (alive.expired()) return;
           if (error) {
             const std::string why = error->getName().ends_with(".Refused") ? error->getMessage() : std::string();
@@ -778,7 +758,7 @@ namespace linkapp {
 
   namespace {
     // A failed DeleteFile or WriteFile as one line for the Files page (reasons: Link1.xml ListFiles).
-    std::string fileError(const sdbus::Error& error, const std::string& name, bool exists) {
+    std::string fileError(const bus::Error& error, const std::string& name, bool exists) {
       const std::string why = error.getName().ends_with(".Refused") ? error.getMessage() : std::string();
       if (why == "not-allowed") return i18n::tr("link.client.files-off");
       if (why == "denied" && exists) return i18n::tr("link.client.exists", "name", name);
@@ -795,7 +775,7 @@ namespace linkapp {
     if (device.empty()) return;
     const std::string name = phonePath.substr(phonePath.find_last_of('/') + 1);
     m_proxy->callMethodAsync("DeleteFile").onInterface(kInterface).withArguments(device, phonePath)
-        .uponReplyInvoke([this, name, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([this, name, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error) {
           if (alive.expired()) return;
           if (error) {
             kLog.warn("DeleteFile: {}", error->getMessage());
@@ -863,7 +843,7 @@ namespace linkapp {
     m_proxy->callMethodAsync("WriteFile")
         .onInterface(kInterface)
         .withArguments(upload->device, phonePath, upload->offset, data)
-        .uponReplyInvoke([this, upload, size, last, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error,
+        .uponReplyInvoke([this, upload, size, last, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error,
                                                                                            std::uint64_t) {
           if (alive.expired()) return;
           if (upload != m_upload) {
@@ -871,7 +851,9 @@ namespace linkapp {
             if (!error && upload->offset == 0 && !last) {
               m_proxy->callMethodAsync("DeleteFile").onInterface(kInterface)
                   .withArguments(upload->device, upload->files[upload->index].second)
-                  .uponReplyInvoke(logReply(kLog, "DeleteFile", ReplyFailure::Debug));
+                  .uponReplyInvoke([](std::optional<bus::Error> deleteError) {
+                    if (deleteError) kLog.debug("DeleteFile failed: {}", deleteError->getMessage());
+                  });
             }
             return;
           }
@@ -899,7 +881,7 @@ namespace linkapp {
     if (error && upload->index < upload->files.size() && upload->offset > 0) {
       m_proxy->callMethodAsync("DeleteFile").onInterface(kInterface)
           .withArguments(upload->device, upload->files[upload->index].second)
-          .uponReplyInvoke([](std::optional<sdbus::Error> failed) {
+          .uponReplyInvoke([](std::optional<bus::Error> failed) {
             if (failed) kLog.warn("DeleteFile partial: {}", failed->getMessage());
           });
     }
@@ -989,7 +971,7 @@ namespace linkapp {
     m_proxy->callMethodAsync("ReadFile")
         .onInterface(kInterface)
         .withArguments(download->device, download->phonePath, download->got, kChunk)
-        .uponReplyInvoke([this, download, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error,
+        .uponReplyInvoke([this, download, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error,
                                                                                  std::vector<std::uint8_t> data) {
           if (alive.expired()) return;
           const auto drop = [](Download& d) {
@@ -1049,7 +1031,7 @@ namespace linkapp {
 
   // `withCodecs` asks for OpenMirrorWith; a linkd without it (UnknownMethod) gets OpenMirror, which is always H.264.
   void LinkClient::openMirror(const std::string& device, std::uint64_t session, bool withCodecs) {
-    const auto opened = [this, session](sdbus::UnixFd fd, std::uint32_t width, std::uint32_t height, const std::string& name) {
+    const auto opened = [this, session](bus::UnixFd fd, std::uint32_t width, std::uint32_t height, const std::string& name) {
       const std::vector<std::string>& listed = mirrorCodecs();
       const std::optional<MirrorCodec> codec = mirrorCodecFrom(name);
       if (!codec || (*codec != MirrorCodec::H264 && std::ranges::find(listed, name) == listed.end())) {
@@ -1082,7 +1064,7 @@ namespace linkapp {
           });
       changed();
     };
-    const auto failed = [this, session, device, withCodecs](const sdbus::Error& error) {
+    const auto failed = [this, session, device, withCodecs](const bus::Error& error) {
       if (withCodecs && error.getName() == "org.freedesktop.DBus.Error.UnknownMethod") {
         openMirror(device, session, false);
         return;
@@ -1099,7 +1081,7 @@ namespace linkapp {
           .onInterface(kInterface)
           .withArguments(device, mirrorCodecs())
           .withTimeout(std::chrono::seconds(70))
-          .uponReplyInvoke([opened, failed, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error, sdbus::UnixFd fd,
+          .uponReplyInvoke([opened, failed, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error, bus::UnixFd fd,
                                                                                   std::uint32_t width, std::uint32_t height,
                                                                                   std::string codec) {
             if (alive.expired()) return;
@@ -1112,7 +1094,7 @@ namespace linkapp {
         .onInterface(kInterface)
         .withArguments(device)
         .withTimeout(std::chrono::seconds(70))
-        .uponReplyInvoke([opened, failed, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error, sdbus::UnixFd fd,
+        .uponReplyInvoke([opened, failed, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error, bus::UnixFd fd,
                                                                                 std::uint32_t width, std::uint32_t height) {
           if (alive.expired()) return;
           if (error) failed(*error);
@@ -1131,31 +1113,31 @@ namespace linkapp {
     if (m_mirror.kind != Mirror::Kind::Showing) return;
     m_proxy->callMethodAsync("MirrorInput")
         .onInterface(kInterface)
-        .withArguments(m_mirrorDevice, action, std::map<std::string, sdbus::Variant>{})
-        .uponReplyInvoke([action](std::optional<sdbus::Error> error) {
+        .withArguments(m_mirrorDevice, action, std::map<std::string, bus::Variant>{})
+        .uponReplyInvoke([action](std::optional<bus::Error> error) {
           if (error) kLog.warn("MirrorInput {}: {}", action, error->getMessage());
         });
   }
 
-  void LinkClient::mirrorInput(const std::string& action, std::map<std::string, sdbus::Variant> args) {
+  void LinkClient::mirrorInput(const std::string& action, std::map<std::string, bus::Variant> args) {
     if (m_mirror.kind != Mirror::Kind::Showing) return;
     m_proxy->callMethodAsync("MirrorInput")
         .onInterface(kInterface)
         .withArguments(m_mirrorDevice, action, args)
-        .uponReplyInvoke([action](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([action](std::optional<bus::Error> error) {
           if (error) kLog.warn("MirrorInput {}: {}", action, error->getMessage());
         });
   }
 
-  void LinkClient::mirrorText(const std::string& text) { mirrorInput("text", {{"text", sdbus::Variant(text)}}); }
+  void LinkClient::mirrorText(const std::string& text) { mirrorInput("text", {{"text", bus::Variant(text)}}); }
 
   void LinkClient::mirrorKeyEvent(std::int32_t code, std::int32_t meta, bool down) {
-    mirrorInput(down ? "key-down" : "key-up", {{"code", sdbus::Variant(code)}, {"meta", sdbus::Variant(meta)}});
+    mirrorInput(down ? "key-down" : "key-up", {{"code", bus::Variant(code)}, {"meta", bus::Variant(meta)}});
   }
 
   void LinkClient::mirrorWheel(std::int32_t x, std::int32_t y, std::int32_t dx, std::int32_t dy) {
-    mirrorInput("wheel", {{"x", sdbus::Variant(x)}, {"y", sdbus::Variant(y)}, {"x2", sdbus::Variant(dx)},
-                          {"y2", sdbus::Variant(dy)}});
+    mirrorInput("wheel", {{"x", bus::Variant(x)}, {"y", bus::Variant(y)}, {"x2", bus::Variant(dx)},
+                          {"y2", bus::Variant(dy)}});
   }
 
   void LinkClient::setMirrorScreenOff(bool off) {
@@ -1171,8 +1153,8 @@ namespace linkapp {
       m_proxy->callMethodAsync("MirrorInput")
           .onInterface(kInterface)
           .withArguments(m_mirrorDevice, std::string(action),
-                         std::map<std::string, sdbus::Variant>{{"code", sdbus::Variant(code)}, {"meta", sdbus::Variant(std::int32_t{0})}})
-          .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+                         std::map<std::string, bus::Variant>{{"code", bus::Variant(code)}, {"meta", bus::Variant(std::int32_t{0})}})
+          .uponReplyInvoke([](std::optional<bus::Error> error) {
             if (error) kLog.warn("MirrorInput key: {}", error->getMessage());
           });
     }
@@ -1182,8 +1164,8 @@ namespace linkapp {
     if (m_mirror.kind != Mirror::Kind::Showing) return;
     m_proxy->callMethodAsync("MirrorInput")
         .onInterface(kInterface)
-        .withArguments(m_mirrorDevice, action, std::map<std::string, sdbus::Variant>{{"x", sdbus::Variant(x)}, {"y", sdbus::Variant(y)}})
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .withArguments(m_mirrorDevice, action, std::map<std::string, bus::Variant>{{"x", bus::Variant(x)}, {"y", bus::Variant(y)}})
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("MirrorInput touch: {}", error->getMessage());
         });
   }
@@ -1197,7 +1179,7 @@ namespace linkapp {
     const LatestRequest::Ticket ticket = m_pairRequest.begin();
     m_proxy->callMethodAsync("StartPairing")
         .onInterface(kInterface)
-        .uponReplyInvoke([this, ticket, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error,
+        .uponReplyInvoke([this, ticket, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error,
                                                                                std::string code, std::string uri) {
           if (alive.expired() || !m_pairRequest.current(ticket)) return;
           if (error) {
@@ -1215,7 +1197,7 @@ namespace linkapp {
     if (!pairStep(m_pair, {.kind = PairEvent::Kind::Cancel})) return;
     m_pairRequest.cancel();
     if (open) {
-      m_proxy->callMethodAsync("CancelPairing").onInterface(kInterface).uponReplyInvoke([](std::optional<sdbus::Error> error) {
+      m_proxy->callMethodAsync("CancelPairing").onInterface(kInterface).uponReplyInvoke([](std::optional<bus::Error> error) {
         if (error) kLog.warn("CancelPairing: {}", error->getMessage());
       });
     }
@@ -1224,7 +1206,7 @@ namespace linkapp {
 
   void LinkClient::connect(const std::string& deviceId) {
     m_proxy->callMethodAsync("Connect").onInterface(kInterface).withArguments(deviceId)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Connect: {}", error->getMessage());
         });
   }
@@ -1233,14 +1215,14 @@ namespace linkapp {
     const char* method =
         audio == PhoneAudio::Mic ? (on ? "StartMic" : "StopMic") : (on ? "StartPhoneSound" : "StopPhoneSound");
     m_proxy->callMethodAsync(method).onInterface(kInterface).withArguments(deviceId)
-        .uponReplyInvoke([method](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([method](std::optional<bus::Error> error) {
           if (error) kLog.warn("{}: {}", method, error->getMessage());
         });
   }
 
   void LinkClient::setPhoneCamera(const std::string& deviceId, bool on) {
     auto call = m_proxy->callMethodAsync(on ? "StartCamera" : "StopCamera").onInterface(kInterface);
-    const auto reply = [on](std::optional<sdbus::Error> error) {
+    const auto reply = [on](std::optional<bus::Error> error) {
       if (error) kLog.warn("{}: {}", on ? "StartCamera" : "StopCamera", error->getMessage());
     };
     if (on) {
@@ -1252,21 +1234,21 @@ namespace linkapp {
 
   void LinkClient::switchPhoneCamera(const std::string& deviceId) {
     m_proxy->callMethodAsync("SwitchCamera").onInterface(kInterface).withArguments(deviceId)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SwitchCamera: {}", error->getMessage());
         });
   }
 
   void LinkClient::dial(const std::string& deviceId, const std::string& number) {
     m_proxy->callMethodAsync("Dial").onInterface(kInterface).withArguments(deviceId, number)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Dial: {}", error->getMessage());
         });
   }
 
   void LinkClient::ring(const std::string& deviceId) {
     m_proxy->callMethodAsync("Ring").onInterface(kInterface).withArguments(deviceId, true)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Ring: {}", error->getMessage());
         });
   }
@@ -1281,7 +1263,7 @@ namespace linkapp {
 
   void LinkClient::sendTo(const std::string& number, const std::string& body) {
     m_proxy->callMethodAsync("SendText").onInterface(kInterface).withArguments(presence().phone.id, number, body)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SendText: {}", error->getMessage());
         });
   }
@@ -1291,24 +1273,24 @@ namespace linkapp {
                       std::ranges::none_of(text, [](unsigned char c) { return std::isspace(c) != 0; });
     m_proxy->callMethodAsync("Share").onInterface(kInterface)
         .withArguments(deviceId, std::string(link ? "link" : "text"), text)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Share: {}", error->getMessage());
         });
   }
 
   void LinkClient::sendFiles(const std::string& deviceId, const std::vector<std::filesystem::path>& paths) {
-    std::vector<sdbus::Struct<sdbus::UnixFd, std::string>> files;
+    std::vector<bus::Struct<bus::UnixFd, std::string>> files;
     for (const auto& path : paths) {
       const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY);
       if (fd < 0) {
         kLog.warn("SendFiles: open {}: {}", path.string(), std::strerror(errno));
         continue;
       }
-      files.emplace_back(sdbus::UnixFd{fd, sdbus::adopt_fd}, path.filename().string());
+      files.emplace_back(bus::UnixFd{fd, bus::adopt_fd}, path.filename().string());
     }
     if (files.empty()) return;
     m_proxy->callMethodAsync("SendFiles").onInterface(kInterface).withArguments(deviceId, files)
-        .uponReplyInvoke([](std::optional<sdbus::Error> error, std::string /*transfer*/) {
+        .uponReplyInvoke([](std::optional<bus::Error> error, std::string /*transfer*/) {
           if (error) kLog.warn("SendFiles: {}", error->getMessage());
         });
   }
@@ -1320,7 +1302,7 @@ namespace linkapp {
     m_command = SystemCommand{.device = deviceId, .command = command, .value = value, .serial = serial};
     changed();
     m_proxy->callMethodAsync("SendSystemCommand").onInterface(kInterface).withArguments(deviceId, command, value)
-        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error) {
           // A newer command replaced this one.
           if (alive.expired() || !m_command || m_command->serial != serial ||
               m_command->phase != SystemCommand::Phase::Pending) {
@@ -1349,7 +1331,7 @@ namespace linkapp {
 
   void LinkClient::playerCommand(const std::string& deviceId, const std::string& command, std::uint64_t value) {
     m_proxy->callMethodAsync("PhonePlayerCommand").onInterface(kInterface).withArguments(deviceId, command, value)
-        .uponReplyInvoke([command](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([command](std::optional<bus::Error> error) {
           if (error) kLog.warn("PhonePlayerCommand {}: {}", command, error->getMessage());
         });
   }
@@ -1357,7 +1339,7 @@ namespace linkapp {
   void LinkClient::setMediaVolume(const std::string& deviceId, int percent) {
     m_proxy->callMethodAsync("SendSystemCommand").onInterface(kInterface)
         .withArguments(deviceId, std::string("set-media-volume"), static_cast<std::uint32_t>(std::clamp(percent, 0, 100)))
-        .uponReplyInvoke([](std::optional<sdbus::Error> error) {
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("SendSystemCommand set-media-volume: {}", error->getMessage());
         });
   }
@@ -1400,7 +1382,7 @@ namespace linkapp {
     m_proxy->callMethodAsync("SavePhoto")
         .onInterface(kInterface)
         .withArguments(m_photos.device(), phonePath)
-        .uponReplyInvoke([done = std::move(done)](std::optional<sdbus::Error> error, std::string saved) {
+        .uponReplyInvoke([done = std::move(done)](std::optional<bus::Error> error, std::string saved) {
           if (error) kLog.warn("SavePhoto: {}", error->getMessage());
           done(error ? std::string() : saved);
         });
@@ -1416,7 +1398,7 @@ namespace linkapp {
         .onInterface(kInterface)
         .withTimeout(std::chrono::minutes(6))
         .withArguments(device)
-        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<sdbus::Error> error, std::string) {
+        .uponReplyInvoke([this, serial, alive = std::weak_ptr<bool>(m_alive)](std::optional<bus::Error> error, std::string) {
           if (alive.expired() || m_takingPhoto != serial) return;
           if (error) kLog.warn("TakePhoto: {}", error->getMessage());
           m_takingPhoto.reset();

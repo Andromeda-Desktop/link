@@ -2,7 +2,6 @@
 
 #include "link_model.h"
 #include "mirror_decoder.h"
-#include "dbus/name_owner_watch.h"
 #include "core/latest_request.h"
 
 #include <cstdint>
@@ -15,10 +14,8 @@
 #include <string>
 #include <vector>
 
-class SessionBus;
-
-namespace sdbus {
-  class IProxy;
+namespace linkapp::bus {
+  class Link;
   class Variant;
 }
 
@@ -28,7 +25,8 @@ namespace linkapp {
   // async and replies land on the app loop; a reply older than one already applied is dropped.
   class LinkClient {
   public:
-    explicit LinkClient(SessionBus& bus);
+    // showInFolder: the desktop shows files in its file manager (DeskApp::showInFolder).
+    explicit LinkClient(std::function<void(const std::vector<std::string>&)> showInFolder);
     ~LinkClient();
     LinkClient(const LinkClient&) = delete;
     LinkClient& operator=(const LinkClient&) = delete;
@@ -193,10 +191,8 @@ namespace linkapp {
     void send(std::uint64_t serial);
     void changed();
 
-    SessionBus& m_bus;
-    std::unique_ptr<sdbus::IProxy> m_proxy;
-    std::unique_ptr<sdbus::IProxy> m_fileManager;
-    NameOwnerWatch m_busWatch;
+    std::function<void(const std::vector<std::string>&)> m_showInFolder;
+    std::unique_ptr<bus::Link> m_proxy;
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     std::function<void()> m_changed;
     struct Upload;
@@ -205,7 +201,7 @@ namespace linkapp {
     void writeChunk(const std::shared_ptr<Upload>& upload);
     void finishUpload(const std::shared_ptr<Upload>& upload, std::optional<std::string> error);
     // One MirrorInput call (Link1.xml MirrorInput) while the mirror shows.
-    void mirrorInput(const std::string& action, std::map<std::string, sdbus::Variant> args);
+    void mirrorInput(const std::string& action, std::map<std::string, bus::Variant> args);
     std::function<void(const std::string&)> m_paired;
     LatestRequest m_pairRequest; // StartPairing calls; a reply applies only to the latest
     std::uint64_t m_sent = 0;    // serial of the newest refresh asked

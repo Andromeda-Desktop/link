@@ -1,0 +1,1 @@
+option('cargo_target', type: 'string', value: '', description: 'Rust target triple of link-window-ffi; empty: the host')

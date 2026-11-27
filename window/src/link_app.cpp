@@ -848,8 +848,8 @@ namespace linkapp {
                                    .sidebarWidth = Tokens::componentSidebarWidth,
                                    .material = m_material = loadMaterial(), .contentCard = true});
     m_window = &window;
-    if (m_client == nullptr && bus() != nullptr) {
-      m_client = std::make_unique<LinkClient>(*bus());
+    if (m_client == nullptr) {
+      m_client = std::make_unique<LinkClient>([this](const std::vector<std::string>& paths) { showInFolder(paths); });
       m_feed = std::make_unique<FeedAdapter>(*m_client, m_scale,
                                              FeedAdapter::Hooks{.textTo =
                                                                     [this](const std::string& number) {
