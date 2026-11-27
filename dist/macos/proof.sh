@@ -21,6 +21,7 @@ wait_for() {
   for i in $(seq 120); do "$@" > /dev/null 2>&1 && return 0; sleep 0.5; done
   echo "proof.sh: $what" >&2
   screencapture -x "$out/failure.png" || true
+  sample andromeda-linkd 2 -file "$out/linkd-sample.txt" > /dev/null 2>&1 || true
   cp "$logs"/*.log "$out/" 2> /dev/null || true
   tail -n 30 "$out"/*.log >&2 || true
   exit 1
