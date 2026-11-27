@@ -8,19 +8,16 @@ import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.hardware.display.VirtualDisplayConfig
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.Display
+import android.view.Surface
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -33,7 +30,6 @@ import kotlinx.coroutines.launch
 import org.andromeda.link.LinkApplication
 import org.andromeda.link.R
 import org.andromeda.link.core.domain.MirrorStream
-import org.andromeda.link.core.domain.VideoCodec
 import org.andromeda.link.notifications.Channels
 import org.andromeda.link.notifications.NotificationId
 import org.lsposed.hiddenapibypass.HiddenApiBypass
@@ -53,8 +49,7 @@ class ScreenCapture : Service() {
     private var display: VirtualDisplay? = null
 
     @Volatile
-    private var codec: MediaCodec? = null
-    private var surface: android.view.Surface? = null
+    private var encoder: VideoEncoder? = null
 
     /** The largest short side the link carries now; see [shortSide]. */
     @Volatile
@@ -152,14 +147,14 @@ class ScreenCapture : Service() {
         val (width, height) = videoSize()
         val repository = (application as LinkApplication).container.repository
         val stream =
-            repository.startMirror(desktop, width, height, hardwareEncoders(width, height)).getOrElse {
+            repository.startMirror(desktop, width, height, VideoEncoder.hardwareCodecs(width, height)).getOrElse {
                 return finish(tellDesktop = false, reason = null)
             }
         this.stream = stream
         val mime = stream.codec?.mime ?: MediaFormat.MIMETYPE_VIDEO_AVC
         Log.i(TAG, "mirroring in $mime")
-        var codec = encoder(mime, width, height) ?: return
-        display = mirrorDisplay(projection, width, height)
+        var encoder = encoder(mime, width, height) ?: return
+        display = mirrorDisplay(projection, width, height, encoder.surface)
         sendShape(desktop)
         val audio = MirrorAudio(this, projection)
         this.audio = audio
@@ -169,64 +164,58 @@ class ScreenCapture : Service() {
         this.rate = rate
         // A rotation ends the encoder's stream; a new encoder at the turned size goes on in the same stream, its
         // codec configuration in front of its first keyframe as always.
-        while (drain(codec, stream, rate) && !stopping) {
+        while (true) {
+            val end = encoder.drain(stream, rate, { stopping }, ::stepSize)
+            if (end == VideoEncoder.End.Failed) main.post { finish(tellDesktop = false, reason = null) }
+            if (end == VideoEncoder.End.Codec) main.post { finish(tellDesktop = true, reason = "the phone's $mime encoder failed") }
+            if (end != VideoEncoder.End.Input || stopping) break
             val (turnedWidth, turnedHeight) = videoSize()
-            runCatching { codec.stop() }
-            runCatching { codec.release() }
-            codec = encoder(mime, turnedWidth, turnedHeight) ?: return
+            encoder.release()
+            encoder = encoder(mime, turnedWidth, turnedHeight) ?: return
             display?.resize(turnedWidth, turnedHeight, resources.displayMetrics.densityDpi)
-            display?.surface = surface
+            display?.surface = encoder.surface
             resizing = false
             Log.i(TAG, "resized: ${turnedWidth}x$turnedHeight")
             sendShape(desktop)
             // A turn or size step during the rebuild was ignored; catch up with it now.
             if (videoSize() != size) {
                 resizing = true
-                runCatching { codec.signalEndOfInputStream() }
+                encoder.endInput()
             }
         }
     }
 
     /**
-     * The codecs besides H.264 this phone has a hardware encoder for at [width] by [height] in either orientation: a
-     * software encoder adds tens of ms a frame, worse than H.264's larger frames.
+     * Encoders such as the OnePlus 12's ignore a lower bitrate, so a smaller picture is what sends less. Up only with a
+     * third to spare, so a bitrate near a threshold does not flip the size back and forth.
      */
-    private fun hardwareEncoders(
-        width: Int,
-        height: Int,
-    ): List<VideoCodec> {
-        val encoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { it.isEncoder && it.isHardwareAccelerated }
-        return VideoCodec.entries.filter { codec ->
-            encoders.any { info ->
-                info.supportedTypes.any { it.equals(codec.mime, ignoreCase = true) } &&
-                    info.getCapabilitiesForType(codec.mime).videoCapabilities.let {
-                        it.isSizeSupported(width, height) && it.isSizeSupported(height, width)
-                    }
-            }
+    private fun stepSize(bitrate: Int) {
+        val side = shortSide(bitrate).let { if (it > shortSide) maxOf(shortSide, shortSide(bitrate * 2 / 3)) else it }
+        if (side != shortSide && !resizing) {
+            shortSide = side
+            resizing = true
+            encoder?.endInput()
         }
     }
 
-    /** A started [mime] encoder for [width] by [height] whose input is [surface]; null after telling the desktop why not. */
+    /** A started [mime] encoder for [width] by [height]; null after telling the desktop why not. */
     private fun encoder(
         mime: String,
         width: Int,
         height: Int,
-    ): MediaCodec? {
-        val codec =
+    ): VideoEncoder? {
+        val encoder =
             try {
-                MediaCodec.createEncoderByType(mime).apply {
-                    configure(videoFormat(this, mime, width, height), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                }
+                // At the smallest size the link is slowest: half the frames, dropped before the encoder.
+                VideoEncoder.start(mime, width, height, FPS, MAX_BITRATE, halfRate = minOf(width, height) <= MIN_SHORT_SIDE)
             } catch (error: Exception) {
                 Log.w(TAG, "no $mime encoder: ${error.message}")
                 main.post { finish(tellDesktop = true, reason = "the phone has no $mime encoder for ${width}x$height") }
                 return null
             }
-        surface = codec.createInputSurface()
-        codec.start()
-        this.codec = codec
+        this.encoder = encoder
         size = width to height
-        return codec
+        return encoder
     }
 
     private val rotation =
@@ -234,49 +223,13 @@ class ScreenCapture : Service() {
             override fun onDisplayChanged(displayId: Int) {
                 if (displayId != android.view.Display.DEFAULT_DISPLAY || resizing || videoSize() == size) return
                 resizing = true
-                runCatching { codec?.signalEndOfInputStream() }
+                encoder?.endInput()
             }
 
             override fun onDisplayAdded(displayId: Int) = Unit
 
             override fun onDisplayRemoved(displayId: Int) = Unit
         }
-
-    private fun videoFormat(
-        codec: MediaCodec,
-        mime: String,
-        width: Int,
-        height: Int,
-    ) = MediaFormat.createVideoFormat(mime, width, height).apply {
-        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-        setInteger(MediaFormat.KEY_BIT_RATE, MAX_BITRATE)
-        setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-        // At the smallest size the link is slowest: half the frames, dropped before the encoder.
-        if (minOf(width, height) <= MIN_SHORT_SIDE) setFloat("max-fps-to-encoder", (FPS / 2).toFloat())
-        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, KEYFRAME_EVERY_S)
-        setInteger(MediaFormat.KEY_PRIORITY, 0)
-        setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
-        setInteger(MediaFormat.KEY_LATENCY, 1)
-        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-        // A still screen sends nothing otherwise, and the desktop would wait on a frame the encoder holds back.
-        setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, REPEAT_AFTER_US)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-        // Qualcomm encoders take their low-latency mode only by this vendor key; others ignore it.
-        setInteger("vendor.qti-ext-enc-low-latency.enable", 1)
-        val capabilities = codec.codecInfo.getCapabilitiesForType(mime)
-        // Constrained Baseline cannot reorder frames; the desktop relies on that to show each frame as it is decoded.
-        // HEVC Main has no such profile: KEY_MAX_B_FRAMES 0 keeps it in order.
-        val profile =
-            when (mime) {
-                MediaFormat.MIMETYPE_VIDEO_AVC -> MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
-                else -> MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
-            }
-        if (capabilities.profileLevels.any { it.profile == profile }) setInteger(MediaFormat.KEY_PROFILE, profile)
-        val modes = capabilities.encoderCapabilities
-        if (modes.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)) {
-            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-        }
-    }
 
     /**
      * The display the encoder records. MediaProjection's public call makes it at 60 Hz, so a 120 Hz screen mirrored at
@@ -286,6 +239,7 @@ class ScreenCapture : Service() {
         projection: MediaProjection,
         width: Int,
         height: Int,
+        surface: Surface,
     ): VirtualDisplay? {
         val dpi = resources.displayMetrics.densityDpi
         val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
@@ -317,73 +271,6 @@ class ScreenCapture : Service() {
         return projection.createVirtualDisplay("Link mirror", width, height, dpi, flags, surface, null, null)
     }
 
-    /** Sends the encoder's output until it ends; true when it ended for a rotation. */
-    private suspend fun drain(
-        codec: MediaCodec,
-        stream: MirrorStream,
-        rate: MirrorRate,
-    ): Boolean {
-        val info = MediaCodec.BufferInfo()
-        var config: ByteArray? = null
-        while (!stopping) {
-            val index =
-                try {
-                    codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
-                } catch (_: IllegalStateException) {
-                    break
-                }
-            if (index < 0) continue
-            val bytes = ByteArray(info.size)
-            codec.getOutputBuffer(index)?.apply {
-                position(info.offset)
-                get(bytes)
-            }
-            codec.releaseOutputBuffer(index, false)
-            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return true
-            if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                config = bytes
-                continue
-            }
-            val keyframe = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-            if (rate.shouldSkip(keyframe)) continue
-            val prefix = config.takeIf { keyframe }
-            val unit = if (prefix != null) prefix + bytes else bytes
-            if (stream.send(info.presentationTimeUs, keyframe, prefix != null, unit).isFailure) {
-                main.post { finish(tellDesktop = false, reason = null) }
-                break
-            }
-            val wasSkipping = rate.skipping
-            rate.sent(info.presentationTimeUs, System.nanoTime() / 1000, keyframe)?.let { bitrate ->
-                Log.i(TAG, "bitrate ${bitrate / 1000} kbit/s")
-                setBitrate(codec, bitrate)
-                // Encoders such as the OnePlus 12's ignore a lower bitrate, so a smaller picture is what sends less.
-                // Up only with a third to spare, so a bitrate near a threshold does not flip the size back and forth.
-                val side = shortSide(bitrate).let { if (it > shortSide) maxOf(shortSide, shortSide(bitrate * 2 / 3)) else it }
-                if (side != shortSide && !resizing) {
-                    shortSide = side
-                    resizing = true
-                    runCatching { codec.signalEndOfInputStream() }
-                }
-            }
-            if (rate.skipping && !wasSkipping) {
-                Log.i(TAG, "far behind: skipping to the next keyframe")
-                this.keyframe()
-            }
-        }
-        return false
-    }
-
-    private fun setBitrate(
-        codec: MediaCodec,
-        bitrate: Int,
-    ) {
-        try {
-            codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitrate) })
-        } catch (error: IllegalStateException) {
-            Log.i(TAG, "bitrate: ${error.message}")
-        }
-    }
-
     /** The short side for a [bitrate]: full size on a fast link, smaller ones when the link is behind. */
     private fun shortSide(bitrate: Int) =
         when {
@@ -393,7 +280,10 @@ class ScreenCapture : Service() {
             else -> MIN_SHORT_SIDE
         }
 
-    /** The screen scaled to at most [shortSide] on its short side, in multiples of 16 as encoders want. */
+    /**
+     * The screen scaled to at most [shortSide] on its short side, in multiples of 16 as encoders want, and down to a size
+     * the H.264 encoder takes: every desktop accepts H.264, and other codecs are offered only at this size.
+     */
     private fun videoSize(): Pair<Int, Int> {
         val (width, height) =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -401,9 +291,12 @@ class ScreenCapture : Service() {
             } else {
                 resources.displayMetrics.let { it.widthPixels to it.heightPixels }
             }
-        val scale = minOf(1.0, shortSide.toDouble() / minOf(width, height))
+        var scale = minOf(1.0, shortSide.toDouble() / minOf(width, height))
 
         fun fit(side: Int) = (side * scale).toInt() / ALIGN * ALIGN
+        while (fit(minOf(width, height)) > MIN_SHORT_SIDE && !VideoEncoder.takes(MediaFormat.MIMETYPE_VIDEO_AVC, fit(width), fit(height))) {
+            scale *= ENCODER_STEP
+        }
         return fit(width) to fit(height)
     }
 
@@ -416,11 +309,7 @@ class ScreenCapture : Service() {
     }
 
     private fun keyframe() {
-        try {
-            codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
-        } catch (error: IllegalStateException) {
-            Log.i(TAG, "keyframe: ${error.message}")
-        }
+        encoder?.keyframe()
     }
 
     private fun finish(
@@ -435,8 +324,7 @@ class ScreenCapture : Service() {
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(rotation)
         audio?.stop()
         display?.release()
-        runCatching { codec?.stop() }
-        runCatching { codec?.release() }
+        encoder?.release()
         projection?.stop()
         val (desktop, stream, mode) = Triple(desktop, stream, mode)
         val repository = (application as LinkApplication).container.repository
@@ -553,12 +441,10 @@ class ScreenCapture : Service() {
         private const val FULL_SIZE_BITRATE = 6_000_000
         private const val MID_SIZE_BITRATE = 2_500_000
         private const val ALIGN = 16
+        private const val ENCODER_STEP = 0.95
         private const val MAX_BITRATE = 24_000_000
         private const val MIN_BITRATE = 1_000_000
         private const val FPS = 60
-        private const val REPEAT_AFTER_US = 100_000L
-        private const val KEYFRAME_EVERY_S = 2
-        private const val DEQUEUE_TIMEOUT_US = 20_000L
     }
 }
 

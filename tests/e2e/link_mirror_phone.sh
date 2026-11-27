@@ -64,7 +64,7 @@ start_mirror() {
 on_usb() { prop DeviceInfo | grep -q "'transport': <'usb'>"; }
 [[ -z ${MIRROR_USB:-} ]] || wait_for 10 "the session never moved onto usb" on_usb
 adb logcat -c
-"$ADB" -s "$SERIAL" logcat -v epoch ScreenCapture:I ScreenInput:D ScreenMirror:I MirrorAudio:I LinkFixture:I '*:S' > "$OUT/logcat.txt" &
+"$ADB" -s "$SERIAL" logcat -v epoch ScreenCapture:I VideoEncoder:I ScreenInput:D ScreenMirror:I MirrorAudio:I LinkFixture:I '*:S' > "$OUT/logcat.txt" &
 adb shell am start -W -n org.andromeda.link.fixture/.MirrorProbeActivity > /dev/null
 sleep 1
 start_mirror --luma "$OUT/luma.tsv" --count 1000000
