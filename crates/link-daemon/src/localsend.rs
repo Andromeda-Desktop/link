@@ -94,6 +94,8 @@ struct Session {
     id: TransferId,
     /// The LocalSend session id.
     key: String,
+    /// The sender as `mark_origin` takes it: url and alias.
+    origin: (String, String),
     files: BTreeMap<String, InFile>,
     pending: Option<(oneshot::Sender<Answer>, Instant)>,
     last_progress: Option<Instant>,
@@ -306,9 +308,11 @@ impl LocalSend {
         let total = files.values().map(|file| file.size).fold(0, u64::saturating_add);
         // LocalSend senders show no certificate: the offer is from a known peer only if it comes from the address
         // that proved that peer's key.
-        let device = match self.peers.get(&info.fingerprint) {
-            Some((_, address)) if *address == from => format!("{PREFIX}{}", info.fingerprint),
-            _ => format!("{UNVERIFIED}{from}/{}", info.alias),
+        let (device, url) = match self.peers.get(&info.fingerprint) {
+            Some((_, address)) if *address == from => {
+                (format!("{PREFIX}{}", info.fingerprint), format!("localsend://{}", info.fingerprint))
+            }
+            _ => (format!("{UNVERIFIED}{from}/{}", info.alias), format!("localsend://{from}")),
         };
         let space = self.inbox.space().map_or(0, |space| space.free);
         if total > space {
@@ -321,7 +325,9 @@ impl LocalSend {
         let offered = files.values().map(|file| (file.name.clone(), file.size)).collect();
         log::info!("LocalSend: {:?} offers {} files", info.alias, files.len());
         let deadline = Instant::now() + CONSENT_TIMEOUT;
-        self.session = Some(Session { id, key: token(), files, pending: Some((reply, deadline)), last_progress: None });
+        let origin = (url, info.alias);
+        self.session =
+            Some(Session { id, key: token(), origin, files, pending: Some((reply, deadline)), last_progress: None });
         self.signal(Signal::Offered { id, device, files: offered });
     }
 
@@ -439,7 +445,10 @@ impl LocalSend {
         for file in session.files.values().filter(|file| file.path.is_none() && !file.part.as_os_str().is_empty()) {
             inbox::remove_quietly(&file.part);
         }
-        let paths = session.files.into_values().filter_map(|file| file.path).collect();
+        let paths: Vec<PathBuf> = session.files.into_values().filter_map(|file| file.path).collect();
+        for path in &paths {
+            crate::save::mark_origin(path, &session.origin.0, &session.origin.1);
+        }
         log::info!("LocalSend: session {} ended {}", session.key, status.as_str());
         self.signal(Signal::Finished { id: session.id, status, paths });
     }

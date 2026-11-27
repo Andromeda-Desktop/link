@@ -255,6 +255,11 @@ impl HubHandle {
         self.tell(Command::SetLocalSend { visible }).await;
     }
 
+    #[cfg(windows)]
+    pub async fn set_lan(&self, state: crate::lan::LanState) {
+        self.tell(Command::SetLan { state }).await;
+    }
+
     pub async fn set_notify_locked(&self, on: bool) {
         self.tell(Command::SetNotifyLocked { on }).await;
     }

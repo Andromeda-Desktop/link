@@ -21,6 +21,7 @@ mod ifaddrs;
 mod iwd;
 #[cfg(target_os = "linux")]
 mod l2cap;
+mod lan;
 mod listener;
 mod local;
 mod localsend;
@@ -43,6 +44,8 @@ mod supervisor;
 mod usb;
 #[cfg_attr(any(target_os = "macos", windows), path = "wifi_direct_none.rs")]
 mod wifi_direct;
+#[cfg(windows)]
+mod win_net;
 
 use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -87,6 +90,7 @@ async fn doctor() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "startup wires every backend in order")]
 async fn run() -> anyhow::Result<()> {
     let paths = paths::Paths::create()?;
     #[cfg(windows)]
@@ -123,6 +127,8 @@ async fn run() -> anyhow::Result<()> {
     let mdns = link_core::discovery::responder().inspect_err(|error| log::warn!("mdns: {error}")).ok();
     let (mut hub, handle, snapshots, events) =
         hub::Hub::new(identity.spki().clone(), store, paths, desktop_media, transfers, puncher, mdns.clone());
+    #[cfg(windows)]
+    win_net::start(handle.clone(), mdns.clone(), port);
     let bluetooth = bluetooth::Bluetooth::start().await;
     #[cfg(target_os = "linux")]
     l2cap::start(server.socket.clone(), bluetooth.on_radio()).await;

@@ -152,6 +152,8 @@ pub struct Snapshot {
     pub capabilities: Vec<String>,
     /// Device id to its lead player, the D-Bus `PhonePlayers` property.
     pub players: Vec<(String, crate::media::PhonePlayer)>,
+    /// The D-Bus `LanState` property.
+    pub lan: crate::lan::LanState,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +359,10 @@ enum Command {
     SetLocalSend {
         visible: bool,
     },
+    #[cfg_attr(not(windows), expect(dead_code, reason = "only the Windows firewall doctor reports"))]
+    SetLan {
+        state: crate::lan::LanState,
+    },
     SetNotifyLocked {
         on: bool,
     },
@@ -495,6 +501,7 @@ pub struct Hub {
     paths: Paths,
     /// Present only while someone could be looking: a paired device or an open pairing window.
     advertiser: Option<Advertiser>,
+    lan: crate::lan::LanState,
     /// The process's one mDNS responder; absent when it failed to start.
     mdns: Option<ServiceDaemon>,
     window: Option<Window>,
@@ -656,6 +663,7 @@ impl Hub {
             store,
             paths,
             advertiser: None,
+            lan: crate::lan::LanState::Unknown,
             mdns,
             window: None,
             windows_opened: 0,
@@ -921,6 +929,10 @@ impl Hub {
                 self.save();
                 self.publish();
                 self.localsend.set_visible(visible).await;
+            }
+            Command::SetLan { state } => {
+                self.lan = state;
+                self.publish();
             }
             Command::SetNotifyLocked { on } => {
                 self.store.notify_locked = on;
@@ -1853,6 +1865,7 @@ impl Hub {
                 commands,
                 capabilities,
                 players: self.media.players(),
+                lan: self.lan,
             };
             let changed = *current != next;
             *current = next;

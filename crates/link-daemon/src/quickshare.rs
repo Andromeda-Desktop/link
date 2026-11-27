@@ -90,6 +90,8 @@ pub struct QuickShare {
     offers_tx: mpsc::Sender<(u64, Offer, oneshot::Sender<bool>)>,
     offers: mpsc::Receiver<(u64, Offer, oneshot::Sender<bool>)>,
     pending: HashMap<u64, oneshot::Sender<bool>>,
+    /// Per open connection, the sender as `mark_origin` takes it: url, and the name its offer gave.
+    origins: HashMap<u64, (String, String)>,
     connections: JoinSet<(u64, link_quickshare::Result<Outcome>)>,
     discovery: Option<Discovery>,
     /// Who wants discovery, and until when; discovery runs while this is not empty.
@@ -125,6 +127,7 @@ impl QuickShare {
             offers_tx,
             offers,
             pending: HashMap::new(),
+            origins: HashMap::new(),
             connections: JoinSet::new(),
             discovery: None,
             owners: HashMap::new(),
@@ -177,6 +180,9 @@ impl QuickShare {
                 },
                 Some((id, offer, decide)) = self.offers.recv() => {
                     self.pending.insert(id, decide);
+                    if let Some((_, name)) = self.origins.get_mut(&id) {
+                        name.clone_from(&offer.sender);
+                    }
                     self.emit(Event::Offer { id, offer }).await;
                 }
                 Some(joined) = self.connections.join_next() => match joined {
@@ -312,6 +318,7 @@ impl QuickShare {
         let id = self.next_id;
         self.next_id += 1;
         log::info!("quick share: connection {id} from {remote}");
+        self.origins.insert(id, (format!("quickshare://{}", remote.ip()), String::new()));
         let offers = self.offers_tx.clone();
         let dir = self.downloads.clone();
         self.connections.spawn(async move {
@@ -328,8 +335,12 @@ impl QuickShare {
 
     async fn finished(&mut self, id: u64, outcome: link_quickshare::Result<Outcome>) {
         self.pending.remove(&id);
+        let origin = self.origins.remove(&id).unwrap_or_default();
         let event = match outcome {
             Ok(Outcome::Received { files, texts }) => {
+                for file in &files {
+                    crate::save::mark_origin(file, &origin.0, &origin.1);
+                }
                 Event::Finished { id, status: "received", files, texts, error: String::new() }
             }
             Ok(Outcome::Declined) => empty(id, "declined", String::new()),

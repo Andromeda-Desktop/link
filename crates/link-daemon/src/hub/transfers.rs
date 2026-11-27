@@ -38,8 +38,9 @@ impl Hub {
             TransferEvent::Finished { id, peer, incoming, status, files } => {
                 if incoming {
                     let name = self.store.peer(&peer).map_or("", |known| known.name.as_str());
+                    let url = format!("link://{peer}");
                     for file in &files {
-                        crate::save::mark_origin(&file.path, peer.as_str(), name);
+                        crate::save::mark_origin(&file.path, &url, name);
                     }
                 }
                 Signal::Finished { id, status, paths: files.into_iter().map(|file| file.path).collect() }

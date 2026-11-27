@@ -42,13 +42,13 @@ pub fn own_folder(folder: &str) -> Result<PathBuf, &'static str> {
     }
 }
 
-/// Tags a file saved from a phone with `user.xdg.origin.url` = `link://<device_id>` and `user.andromeda.origin` = the
-/// phone's name, for file managers; filesystems without user xattrs, and Windows, keep the file untagged.
+/// Tags a received file with where it came from: `url` (`link://<device_id>`, `localsend://<fingerprint or address>`,
+/// `quickshare://<address>`) and the sender's `name`, as `user.xdg.origin.url` and `user.andromeda.origin` for file
+/// managers. Filesystems without user xattrs keep the file untagged.
 #[cfg(unix)]
-pub fn mark_origin(path: &Path, device_id: &str, name: &str) {
+pub fn mark_origin(path: &Path, url: &str, name: &str) {
     use rustix::fs::{XattrFlags, setxattr};
-    let url = format!("link://{device_id}");
-    for (key, value) in [("user.xdg.origin.url", url.as_str()), ("user.andromeda.origin", name)] {
+    for (key, value) in [("user.xdg.origin.url", url), ("user.andromeda.origin", name)] {
         match setxattr(path, key, value.as_bytes(), XattrFlags::empty()) {
             Ok(()) | Err(rustix::io::Errno::NOTSUP) => {}
             Err(error) => log::info!("tagging {} with {key}: {error}", path.display()),
@@ -56,8 +56,16 @@ pub fn mark_origin(path: &Path, device_id: &str, name: &str) {
     }
 }
 
+/// Windows: the Mark of the Web for the Internet zone with `url` as `HostUrl`, so `SmartScreen` and Office's Protected View
+/// treat the file as downloaded. Volumes without alternate data streams (FAT) keep it unmarked.
 #[cfg(windows)]
-pub fn mark_origin(_path: &Path, _device_id: &str, _name: &str) {}
+pub fn mark_origin(path: &Path, url: &str, _name: &str) {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    if let Err(error) = fs::write(&stream, format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n")) {
+        log::info!("marking {} as downloaded: {error}", path.display());
+    }
+}
 
 /// Deletes the staging files an earlier run left in `dir` when it died.
 pub fn sweep(dir: &Path) {
@@ -165,6 +173,27 @@ mod tests {
         assert_eq!(safe_name(" . . "), "photo");
         assert_eq!(safe_name("a\nb\u{7}.jpg"), "ab.jpg");
         assert_eq!(safe_name(&"é".repeat(200)).len(), MAX_NAME);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "a failed step fails the test")]
+    fn a_received_file_says_where_it_came_from() {
+        let dir = scratch("origin");
+        let file = save(&dir, b"x", &PUBLISH).expect("save");
+        mark_origin(&file, "link://abc", "Pixel");
+        #[cfg(unix)]
+        let found = {
+            let mut buf = [0u8; 64];
+            let n = rustix::fs::getxattr(&file, "user.xdg.origin.url", &mut buf).expect("origin xattr");
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        };
+        #[cfg(windows)]
+        let found = fs::read_to_string(format!("{}:Zone.Identifier", file.display())).expect("mark of the web");
+        drop(fs::remove_dir_all(&dir));
+        #[cfg(unix)]
+        assert_eq!(found, "link://abc");
+        #[cfg(windows)]
+        assert!(found.contains("ZoneId=3") && found.contains("HostUrl=link://abc"), "{found}");
     }
 
     fn scratch(tag: &str) -> PathBuf {

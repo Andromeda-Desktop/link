@@ -119,7 +119,7 @@ impl Link {
         let id = device_id.to_owned();
         let saved = tokio::task::spawn_blocking(move || {
             let saved = staged.publish(&name)?;
-            crate::save::mark_origin(&saved, &id, phone.as_deref().unwrap_or_default());
+            crate::save::mark_origin(&saved, &format!("link://{id}"), phone.as_deref().unwrap_or_default());
             Ok(saved)
         })
         .await
@@ -362,6 +362,11 @@ impl Link {
     #[zbus(property)]
     fn keep_awake(&self) -> bool {
         self.snapshots.borrow().keep_awake
+    }
+
+    #[zbus(property)]
+    fn lan_state(&self) -> String {
+        self.snapshots.borrow().lan.as_str().to_owned()
     }
 
     /// LocalSend devices on the LAN, `(localsend:<fingerprint>, alias)`, while the backend is on.
@@ -1459,6 +1464,9 @@ pub async fn forward(
                 }
                 if next.localsend != last.localsend {
                     link.get().await.local_send_visible_changed(emitter).await?;
+                }
+                if next.lan != last.lan {
+                    link.get().await.lan_state_changed(emitter).await?;
                 }
                 if next.keep_awake != last.keep_awake {
                     link.get().await.keep_awake_changed(emitter).await?;
