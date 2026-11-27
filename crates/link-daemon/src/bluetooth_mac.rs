@@ -328,7 +328,7 @@ unsafe extern "C-unwind" fn readable(_descriptor: *mut CFFileDescriptor, _flags:
 }
 
 /// Two congestion windows of a link, so the pump always has the next window to hand the radio.
-#[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap, reason = "constants far below 2^31")]
+#[expect(clippy::cast_possible_truncation, reason = "a constant far below 2^31")]
 const PIPE_BUFFER: libc::c_int = (2 * link_core::path::LINK_WINDOW) as libc::c_int;
 
 fn hold_windows(ours: &UnixStream, theirs: &UnixStream) -> std::io::Result<()> {
