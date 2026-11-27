@@ -283,6 +283,11 @@ enum Command {
     },
     CancelPairing,
     UsbCables(usize),
+    Bluetooth {
+        address: String,
+        open: watch::Sender<Option<Instant>>,
+        beacon: watch::Sender<bool>,
+    },
     Unpair {
         id: DeviceId,
         reply: oneshot::Sender<bool>,
@@ -819,6 +824,7 @@ impl Hub {
             Command::StartPairing { reply } => drop(reply.send(self.start_pairing())),
             Command::CancelPairing => self.close_window(),
             Command::UsbCables(cables) => self.usb_cables(cables).await,
+            Command::Bluetooth { address, open, beacon } => self.set_bluetooth(address, open, beacon),
             Command::ConfirmBtPairing { passkey, reply } => {
                 let confirmed =
                     self.bt_pairing.take().is_some_and(|(code, until)| code == passkey && Instant::now() < until);

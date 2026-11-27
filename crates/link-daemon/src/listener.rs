@@ -1,7 +1,7 @@
 //! Accepts QUIC and Bluetooth connections and runs each one as a pairing attempt or a session, as the hub admits it.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use link_core::control::Control;
 use link_core::identity::Spki;
@@ -22,7 +22,7 @@ use link_core::session::session as start_session;
 use link_core::transport::{CONNECT_TIMEOUT, PathServer};
 use link_core::wire::Connection;
 use link_core::{Error, close_code_for, net, tls};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 
 use crate::bluetooth::Bluetooth;
@@ -31,9 +31,17 @@ use crate::hub::{Admission, Attempt, HubHandle};
 
 pub struct Listener {
     server: Arc<PathServer>,
-    /// Held whole: the RFCOMM profile lives as long as its system bus connection inside.
-    bluetooth: Bluetooth,
+    bluetooth: BluetoothState,
     context: Arc<Context>,
+}
+
+enum BluetoothState {
+    /// The adapter registers; macOS asks the user first, which can take minutes.
+    Starting(oneshot::Receiver<Bluetooth>),
+    /// Held whole: the RFCOMM profile lives as long as its system bus connection inside.
+    Ready(Bluetooth),
+    /// The start task ended without a result.
+    Gone,
 }
 
 /// Handshakes and sessions at once, over QUIC and Bluetooth: far above the phones one desktop pairs.
@@ -46,7 +54,8 @@ struct Context {
     own: Spki,
     name: String,
     port: u16,
-    bluetooth: Option<String>,
+    /// Set once the adapter serves Link.
+    bluetooth: OnceLock<String>,
     relay: Option<String>,
     /// This desktop's address as its relay sees it.
     relay_seen: watch::Receiver<Option<SocketAddr>>,
@@ -55,7 +64,7 @@ struct Context {
 impl Listener {
     pub fn new(
         server: Arc<PathServer>,
-        bluetooth: Bluetooth,
+        bluetooth: oneshot::Receiver<Bluetooth>,
         relay: Option<String>,
         relay_seen: watch::Receiver<Option<SocketAddr>>,
         hub: HubHandle,
@@ -63,9 +72,8 @@ impl Listener {
         name: String,
     ) -> Self {
         let port = server.endpoint.local_addr().map_or(0, |addr| addr.port());
-        let context =
-            Arc::new(Context { hub, own, name, port, bluetooth: bluetooth.address.clone(), relay, relay_seen });
-        Self { server, bluetooth, context }
+        let context = Arc::new(Context { hub, own, name, port, bluetooth: OnceLock::new(), relay, relay_seen });
+        Self { server, bluetooth: BluetoothState::Starting(bluetooth), context }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -84,7 +92,7 @@ impl Listener {
                     }
                 }
                 // An RFCOMM link: its QUIC connection arrives on the endpoint like any other.
-                Some(connection) = self.bluetooth.incoming.recv() => self.add_bluetooth(connection),
+                Some(connection) = next_bluetooth(&mut self.bluetooth, &self.context) => self.add_bluetooth(connection),
                 Some(joined) = connections.join_next() => {
                     if let Err(join) = joined {
                         log::error!("connection task: {join}");
@@ -92,6 +100,25 @@ impl Listener {
                 }
             }
         }
+    }
+}
+
+/// The next RFCOMM connection; it takes the adapter first when it is still starting.
+async fn next_bluetooth(state: &mut BluetoothState, context: &Context) -> Option<crate::bluetooth::Connection> {
+    if let BluetoothState::Starting(ready) = state {
+        *state = match ready.await {
+            Ok(bluetooth) => {
+                if let Some(address) = &bluetooth.address {
+                    drop(context.bluetooth.set(address.clone()));
+                }
+                BluetoothState::Ready(bluetooth)
+            }
+            Err(_) => BluetoothState::Gone,
+        };
+    }
+    match state {
+        BluetoothState::Ready(bluetooth) => bluetooth.incoming.recv().await,
+        BluetoothState::Starting(_) | BluetoothState::Gone => std::future::pending().await,
     }
 }
 
@@ -211,10 +238,10 @@ async fn serve(
 impl Context {
     fn hello(&self) -> Hello {
         let mut addresses: Vec<String> = net::local_addresses(self.port).iter().map(ToString::to_string).collect();
-        addresses.extend(self.bluetooth.iter().map(|address| format!("{BLUETOOTH_SCHEME}{address}")));
+        addresses.extend(self.bluetooth.get().iter().map(|address| format!("{BLUETOOTH_SCHEME}{address}")));
         addresses.extend(self.relay.iter().map(|spec| format!("{RELAY_SCHEME}{spec}")));
         addresses.extend(self.relay_seen.borrow().map(|seen| format!("{PUBLIC_SCHEME}{seen}")));
-        if self.bluetooth.is_some() {
+        if self.bluetooth.get().is_some() {
             addresses.push(BT_PAIRING.to_owned());
         }
         if cfg!(target_os = "linux") {

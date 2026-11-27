@@ -3,6 +3,7 @@ use super::{
     RemoteStream, Route, SYSTEM_TIMEOUT, Sent, SessionHandle, Share, Source, Spki, StoredCommand, SystemCommand,
     TransferHandle, TransferId, browse, oneshot,
 };
+use super::{Instant, watch};
 
 impl HubHandle {
     async fn request<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
@@ -31,6 +32,17 @@ impl HubHandle {
     #[cfg_attr(windows, expect(dead_code, reason = "only the USB path uses it"))]
     pub async fn usb_cables(&self, cables: usize) {
         self.tell(Command::UsbCables(cables)).await;
+    }
+
+    /// The adapter serves Link: `open` admits unpaired devices during a pairing window, `beacon` advertises it.
+    /// It may come after the hub runs: macOS asks the user before the first Bluetooth use.
+    pub async fn set_bluetooth(
+        &self,
+        address: String,
+        open: watch::Sender<Option<Instant>>,
+        beacon: watch::Sender<bool>,
+    ) {
+        self.tell(Command::Bluetooth { address, open, beacon }).await;
     }
 
     /// Whether a phone with a session just reported `passkey` for the Bluetooth pairing under way; it counts once.
