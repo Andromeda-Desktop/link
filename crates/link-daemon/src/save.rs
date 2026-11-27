@@ -35,11 +35,11 @@ pub fn own_folder(folder: &str) -> Result<PathBuf, &'static str> {
     if !meta.is_dir() {
         return Err("not a folder");
     }
-    #[cfg(unix)]
-    if std::os::unix::fs::MetadataExt::uid(&meta) != rustix::process::getuid().as_raw() {
-        return Err("the folder belongs to another user");
+    match link_core::sys::owned_by_current_user(&resolved) {
+        Ok(true) => Ok(resolved),
+        Ok(false) => Err("the folder belongs to another user"),
+        Err(_) => Err("the folder's owner cannot be read"),
     }
-    Ok(resolved)
 }
 
 /// Tags a file saved from a phone with `user.xdg.origin.url` = `link://<device_id>` and `user.andromeda.origin` = the
@@ -226,7 +226,12 @@ mod tests {
         assert_eq!(file, Err("not a folder"));
         assert_eq!(missing, Err("the folder does not exist"));
         assert_eq!(own_folder("relative"), Err("the folder is not an absolute path"));
-        assert_eq!(own_folder("/"), Err("the folder belongs to another user"));
+        #[cfg(unix)]
+        let foreign = "/".to_owned();
+        // TrustedInstaller owns it.
+        #[cfg(windows)]
+        let foreign = format!("{}\\System32", std::env::var("SystemRoot").expect("SystemRoot"));
+        assert_eq!(own_folder(&foreign), Err("the folder belongs to another user"));
     }
 
     #[test]

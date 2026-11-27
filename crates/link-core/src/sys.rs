@@ -117,6 +117,19 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether this process's user owns `path`. On Windows the Administrators group also counts for a member of it: a
+/// process the user elevated creates objects owned by that group, and a member can take ownership anyway.
+pub fn owned_by_current_user(path: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        Ok(std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(path)?) == rustix::process::getuid().as_raw())
+    }
+    #[cfg(windows)]
+    {
+        windows::owned_by_current_user(path)
+    }
+}
+
 /// A folder of the user's profile that the user may move elsewhere.
 #[cfg(windows)]
 #[derive(Clone, Copy)]
@@ -140,16 +153,20 @@ mod windows {
     use std::path::{Path, PathBuf};
     use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, HANDLE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        SetNamedSecurityInfoW,
     };
     use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR,
+        ACL, DACL_SECURITY_INFORMATION, EqualSid, GetSecurityDescriptorDacl, GetTokenInformation, IsWellKnownSid,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenUser,
+        WinBuiltinAdministratorsSid,
     };
     use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, MOVEFILE_WRITE_THROUGH, MoveFileExW};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows_sys::Win32::UI::Shell::{
         FOLDERID_Downloads, FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
     };
@@ -211,6 +228,83 @@ mod windows {
             return Err(io::Error::from_raw_os_error(status.cast_signed()));
         }
         Ok(())
+    }
+
+    pub fn owned_by_current_user(path: &Path) -> io::Result<bool> {
+        let path = wide(path);
+        let (mut owner, mut descriptor): (PSID, PSECURITY_DESCRIPTOR) = (null_mut(), null_mut());
+        // SAFETY: `path` is NUL-terminated; on success `owner` points into `descriptor`, a LocalAlloc block freed below.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &raw mut owner,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &raw mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status.cast_signed()));
+        }
+        let result = owner_is_user(owner);
+        // SAFETY: `descriptor` came from GetNamedSecurityInfoW and `owner` is not used after this.
+        unsafe { LocalFree(descriptor) };
+        result
+    }
+
+    fn owner_is_user(owner: PSID) -> io::Result<bool> {
+        let mut token: HANDLE = null_mut();
+        // SAFETY: the pseudo handle needs no closing; `token` is written on success and closed below.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let result = token_owns(token, owner);
+        // SAFETY: `token` is open and not used after this.
+        unsafe { CloseHandle(token) };
+        result
+    }
+
+    fn token_owns(token: HANDLE, owner: PSID) -> io::Result<bool> {
+        let user = token_information(token, TokenUser)?;
+        // SAFETY: TokenUser fills the 8-byte aligned buffer with a TOKEN_USER whose SID lies inside it.
+        let user = unsafe { &*user.as_ptr().cast::<TOKEN_USER>() };
+        // SAFETY: both SIDs are valid for the call.
+        if unsafe { EqualSid(owner, user.User.Sid) } != 0 {
+            return Ok(true);
+        }
+        // SAFETY: `owner` is a valid SID.
+        if unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) } == 0 {
+            return Ok(false);
+        }
+        let groups = token_information(token, TokenGroups)?;
+        // SAFETY: TokenGroups fills the buffer with a TOKEN_GROUPS followed by its `GroupCount` entries.
+        let groups: &[SID_AND_ATTRIBUTES] = unsafe {
+            let header = &*groups.as_ptr().cast::<TOKEN_GROUPS>();
+            std::slice::from_raw_parts(header.Groups.as_ptr(), header.GroupCount as usize)
+        };
+        // A member whose token is filtered (UAC) holds the group for deny only; it is a member all the same.
+        // SAFETY: each entry's SID points into the buffer.
+        Ok(groups.iter().any(|group| unsafe { IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) } != 0))
+    }
+
+    /// `class`'s information for `token`, in a buffer aligned for the structures it holds.
+    fn token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
+        let mut needed = 0;
+        // SAFETY: a null buffer of length 0 asks only for the size.
+        let sized = unsafe { GetTokenInformation(token, class, null_mut(), 0, &raw mut needed) };
+        let error = io::Error::last_os_error();
+        if sized != 0 || error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
+            return Err(error);
+        }
+        let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+        // SAFETY: `buffer` holds at least `needed` bytes for the call.
+        if unsafe { GetTokenInformation(token, class, buffer.as_mut_ptr().cast(), needed, &raw mut needed) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(buffer)
     }
 
     pub fn known_folder(folder: KnownFolder) -> io::Result<PathBuf> {
