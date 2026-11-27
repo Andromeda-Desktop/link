@@ -300,10 +300,15 @@ mod tests {
         let dir = scratch("private")?.join("state");
         create_private_dir(&dir)?;
         let listed = std::process::Command::new("icacls").arg(&dir).output()?;
-        let acl = String::from_utf8_lossy(&listed.stdout).into_owned();
-        assert!(listed.status.success(), "icacls failed: {acl}");
-        assert!(acl.contains("OWNER RIGHTS") && acl.contains("NT AUTHORITY\\SYSTEM"), "missing an entry: {acl}");
-        assert!(!acl.contains("(I)") && !acl.contains("Administrators") && !acl.contains("Users"), "too wide: {acl}");
+        let output = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(listed.status.success(), "icacls failed: {output}");
+        // The path itself can hold "Users" (C:\Users\...), so only the entries after it count.
+        let acl = output.replace(&*dir.to_string_lossy(), "");
+        assert!(acl.contains("OWNER RIGHTS") && acl.contains("NT AUTHORITY\\SYSTEM"), "missing an entry: {output}");
+        assert!(
+            !acl.contains("(I)") && !acl.contains("Administrators") && !acl.contains("Users"),
+            "too wide: {output}"
+        );
         std::fs::remove_dir_all(dir.parent().unwrap_or(&dir))?;
         Ok(())
     }
