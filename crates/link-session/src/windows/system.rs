@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::io;
 use std::ptr::{null, null_mut};
+use std::sync::{Arc, OnceLock};
 
 use tokio::sync::watch;
 use windows_sys::Win32::Foundation::{
@@ -40,8 +41,8 @@ use windows_sys::Win32::System::SystemServices::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DispatchMessageW, GetMessageW, MSG,
-    PBT_APMPOWERSTATUSCHANGE, PBT_POWERSETTINGCHANGE, RegisterClassExW, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE,
-    WNDCLASSEXW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+    PBT_APMPOWERSTATUSCHANGE, PBT_POWERSETTINGCHANGE, PostMessageW, RegisterClassExW, SC_MONITORPOWER,
+    WM_POWERBROADCAST, WM_SYSCOMMAND, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 use windows_sys::core::{GUID, PWSTR, w};
 
@@ -49,6 +50,8 @@ use windows_sys::core::{GUID, PWSTR, w};
 const USER_PRESENT: u32 = 0;
 /// `MONITOR_DISPLAY_STATE`'s `PowerMonitorOff`; on and dimmed count as on.
 const DISPLAY_OFF: u32 = 0;
+/// `SC_MONITORPOWER`'s argument that turns the display off.
+const MONITOR_OFF: LPARAM = 2;
 /// `SYSTEM_POWER_STATUS.BatteryFlag` bits and values.
 const BATTERY_CHARGING: u8 = 8;
 const NO_BATTERY: u8 = 128;
@@ -68,6 +71,8 @@ pub struct State {
 
 pub struct System {
     state: watch::Receiver<State>,
+    /// The hidden window's address once the watcher thread made it.
+    window: Arc<OnceLock<usize>>,
 }
 
 thread_local! {
@@ -79,20 +84,22 @@ impl System {
     pub fn connect() -> Self {
         let first = State { battery: battery(), locked: locked(), ..State::default() };
         let (sender, state) = watch::channel(first);
+        let window = Arc::new(OnceLock::new());
+        let made = Arc::clone(&window);
         let spawned = std::thread::Builder::new().name("system-watch".into()).spawn(move || {
-            if let Err(error) = watch_session(sender) {
+            if let Err(error) = watch_session(sender, &made) {
                 log::warn!("watching lock, presence and battery: {error}");
             }
         });
         if let Err(error) = spawned {
             log::warn!("watching lock, presence and battery: {error}");
         }
-        Self { state }
+        Self { state, window }
     }
 
     /// What phones can ask of this desktop, as `SetSessionCapabilities` lists it.
     pub fn capabilities(&self) -> Vec<&'static str> {
-        vec!["lock", "suspend"]
+        vec!["lock", "suspend", "screen-off"]
     }
 
     pub async fn read(&self) -> State {
@@ -118,13 +125,25 @@ impl System {
                 Ok(result) => result.map_err(|error| format!("Sleep failed: {error}")),
                 Err(error) => Err(format!("Sleep failed: {error}")),
             },
+            "screen-off" => {
+                let Some(&window) = self.window.get() else {
+                    return Err("Screen off failed: the PC's state window did not start".to_owned());
+                };
+                let window: HWND = std::ptr::with_exposed_provenance_mut(window);
+                // SAFETY: the window lives until the process ends; its procedure hands the command to
+                // DefWindowProcW, which turns the display off. Posting does not wait for that thread.
+                match unsafe { PostMessageW(window, WM_SYSCOMMAND, SC_MONITORPOWER as WPARAM, MONITOR_OFF) } {
+                    0 => Err(format!("Screen off failed: {}", io::Error::last_os_error())),
+                    _ => Ok(()),
+                }
+            }
             other => Err(format!("{other} is not a command this PC takes")),
         }
     }
 }
 
 /// Runs the hidden window's message loop until the process ends.
-fn watch_session(sender: watch::Sender<State>) -> io::Result<()> {
+fn watch_session(sender: watch::Sender<State>, made: &OnceLock<usize>) -> io::Result<()> {
     SENDER.with(|cell| *cell.borrow_mut() = Some(sender));
     let class = w!("AndromedaLinkSessionWatch");
     // SAFETY: null asks for this program's module.
@@ -146,6 +165,7 @@ fn watch_session(sender: watch::Sender<State>) -> io::Result<()> {
     if window.is_null() {
         return Err(io::Error::last_os_error());
     }
+    made.get_or_init(|| window.expose_provenance());
     // SAFETY: `window` lives until the process ends, so neither registration needs undoing.
     if unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } == 0 {
         log::warn!("lock and unlock notifications: {}", io::Error::last_os_error());
