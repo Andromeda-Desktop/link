@@ -61,7 +61,7 @@ use link_core::transfer;
 use link_core::transport::PathServer;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn"))
@@ -129,21 +129,31 @@ async fn run() -> anyhow::Result<()> {
     let (desktop_media, media_requests) = desktop_media::channel();
     wifi_direct::remove_stale().await;
     let mdns = link_core::discovery::responder().inspect_err(|error| log::warn!("mdns: {error}")).ok();
-    let (mut hub, handle, snapshots, events) =
+    let (hub, handle, snapshots, events) =
         hub::Hub::new(identity.spki().clone(), store, paths, desktop_media, transfers, puncher, mdns.clone());
     #[cfg(windows)]
     win_net::start(handle.clone(), mdns.clone(), port);
-    let bluetooth = bluetooth::Bluetooth::start().await;
-    #[cfg(target_os = "linux")]
-    l2cap::start(server.socket.clone(), bluetooth.on_radio()).await;
+    let (bluetooth_ready, bluetooth) = oneshot::channel();
+    tokio::spawn({
+        let hub = handle.clone();
+        #[cfg(target_os = "linux")]
+        let socket = server.socket.clone();
+        // The API must not wait for Bluetooth: macOS blocks the adapter's first use until the user answers.
+        async move {
+            let bluetooth = bluetooth::Bluetooth::start().await;
+            #[cfg(target_os = "linux")]
+            l2cap::start(socket, bluetooth.on_radio()).await;
+            if let Some(address) = &bluetooth.address {
+                hub.set_bluetooth(address.clone(), bluetooth.pairing_window(), bluetooth.pairing_beacon()).await;
+            }
+            drop(bluetooth_ready.send(bluetooth));
+        }
+    });
     usb::start(server.socket.clone(), handle.clone()).await;
     let relay = relay::spec(&state_dir.join("relay"));
     let (relay_seen_tx, relay_seen) = tokio::sync::watch::channel(None);
     if let Some(spec) = &relay {
         relay::start(server.clone(), spec.clone(), relay_seen_tx);
-    }
-    if let Some(address) = &bluetooth.address {
-        hub.set_bluetooth(address.clone(), bluetooth.pairing_window(), bluetooth.pairing_beacon());
     }
     if let Transport::Bus(bus) = &transport {
         dbus::serve(bus, handle.clone(), snapshots.clone(), nearby.clone()).await?;

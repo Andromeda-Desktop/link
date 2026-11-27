@@ -4,8 +4,8 @@ use super::{
 };
 
 impl Hub {
-    /// Names the adapter in pairing QR codes and opens it to pairing during each window; before [`Self::run`].
-    pub fn set_bluetooth(
+    /// Names the adapter in later pairing QR codes and opens it to pairing during each window, the open one too.
+    pub(super) fn set_bluetooth(
         &mut self,
         address: String,
         open: watch::Sender<Option<Instant>>,
@@ -13,6 +13,10 @@ impl Hub {
     ) {
         self.bluetooth = Some((address, open));
         self.beacon = Some(beacon);
+        if let Some(deadline) = self.window.as_ref().map(|window| window.deadline) {
+            self.open_bluetooth_until(deadline);
+        }
+        self.refresh();
     }
 
     /// Keeps the adapter accepting unpaired devices until at least `until`.
