@@ -23,7 +23,7 @@ data class ViewerState(
     val phase: ViewerPhase = ViewerPhase.Waiting,
     val muted: Boolean = false,
     /** The picture moves the pointer and clicks where it is, as the pad does, instead of clicking where it is touched. */
-    val touchpad: Boolean = false,
+    val touchpad: Boolean = true,
 ) {
     /** A window's place on the desktop is unknown: the picture takes no clicks, and the pad moves the desktop's pointer. */
     val window get() = sources.getOrNull(current)?.window == true

@@ -5,8 +5,8 @@
 # 1. With the input grant, the Device page offers Remote control, and the viewer shows the desktop's picture.
 # 2. The menu lists the shared monitors and window; picking the second output, where a fullscreen window that logs its
 #    input opened, streams that output instead.
-# 3. Direct touch: an adb tap in the picture's centre reaches that window as pointer motion near the output's centre
-#    and a left button press and release.
+# 3. Touchpad mode, the default: a tap on the picture clicks at the phone's pointer, which starts at the output's
+#    centre; the window sees pointer motion near that centre and a left button press and release.
 # 4. Sound crosses: link-session counts the units it sent when Disconnect ends the stream, and the phone plays them.
 # Needs ANDROID_SERIAL, the debug APKs, a built Andromeda desktop (the superproject's compositor, shell and portal
 # build-debug), and the phone on this machine's network. Writes steps.txt, viewer.png, menu.png, viewer-2.png, window.jsonl,
@@ -141,7 +141,7 @@ sleep 2 # real time: the new stream's first frames paint
 shot viewer-2
 step "sources: lists HEADLESS-1, HEADLESS-2, and Window 1; picking HEADLESS-2 streams it"
 
-# The picture: the camera starts on the pointer at the desktop's centre, so the picture's centre is the output's.
+# The picture in touchpad mode: a tap puts the desktop's pointer on the phone's, at the output's centre, and clicks.
 ui picture
 adb shell input tap $(bounds picture "Desktop screen")
 wait_for 10 "the tap did not press the left button in the window" grep -q '"press", "button": 1' "$OUT/window.jsonl"

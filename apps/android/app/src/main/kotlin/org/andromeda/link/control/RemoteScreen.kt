@@ -422,32 +422,27 @@ private fun Rail(
 
 /**
  * The one touchpad of the Remote and the Viewer: raw fingers when the desktop makes a real touchpad of them ([raw]),
- * else the phone's own gestures. [onUse] runs at each touch.
+ * else the phone's own gestures. With [aim], one finger moves the phone's own pointer by it instead of the desktop's.
  */
 @Composable
 fun Modifier.touchpad(
     actions: RemoteActions,
     raw: Boolean,
-    onUse: () -> Unit = {},
+    aim: ((dx: Float, dy: Float) -> Unit)? = null,
 ): Modifier {
     val context = LocalContext.current
     DisposableEffect(raw) {
         val restore = if (raw) keepMultiFingerTouches(context) else null
         onDispose { restore?.invoke() }
     }
-    val use by rememberUpdatedState(onUse)
+    // The gesture loop outlives recompositions; it reads the latest aim.
+    val currentAim by rememberUpdatedState(aim)
+    val aiming = aim != null
+    val moved = remember(actions, aiming) { if (aiming) Aim({ dx, dy -> currentAim?.invoke(dx, dy) }, actions::send) else null }
     return if (raw) {
-        rawTouchpad(LocalResources.current.displayMetrics, onTick = actions::tick) {
-            use()
-            actions.send(RemoteInput.Touch(it))
-        }
+        rawTouchpad(LocalResources.current.displayMetrics, moved, onTick = actions::tick) { actions.send(RemoteInput.Touch(it)) }
     } else {
-        pointerInput(actions) {
-            interpret(actions) { dx, dy ->
-                use()
-                actions.move(dx, dy)
-            }
-        }
+        pointerInput(actions, aiming) { interpret(actions) { dx, dy -> currentAim?.invoke(dx, dy) ?: actions.move(dx, dy) } }
     }
 }
 

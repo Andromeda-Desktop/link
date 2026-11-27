@@ -75,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
@@ -283,8 +284,6 @@ fun ViewerScreen(
     var px by rememberSaveable { mutableFloatStateOf(CENTRE) }
     var py by rememberSaveable { mutableFloatStateOf(CENTRE) }
     val pointer = Offset(px, py)
-    // The phone draws its pointer where a tap aimed; after a pad move only the desktop knows where it is.
-    var aimed by rememberSaveable { mutableStateOf(true) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     BoxWithConstraints(modifier.fillMaxSize().background(LinkTheme.scheme.solidRegular)) {
         val landscape = maxWidth > maxHeight
@@ -302,24 +301,37 @@ fun ViewerScreen(
             }
         var camera by remember(lens) { mutableStateOf(lens?.let { if (state.window) it.whole() else it.follow(pointer) }) }
         val aimTo = { at: Offset ->
-            aimed = true
             px = at.x
             py = at.y
             input.point(RemoteInput.Point((at.x * MIRROR_UNIT).roundToInt(), (at.y * MIRROR_UNIT).roundToInt()))
             lens?.let { l -> camera?.let { camera = l.keep(it, at) } }
         }
-        val padUsed = { aimed = false }
+        // On a monitor one finger on the pad moves the phone's pointer, so the picture shows it and follows it at once;
+        // a window's place is unknown, so there the pad moves the desktop's.
+        val padAim: ((Float, Float) -> Unit)? =
+            if (state.window || stream == null) {
+                null
+            } else {
+                { dx, dy ->
+                    aimTo(
+                        Offset(
+                            (px + dx * PAD_SPEED / stream.width).coerceIn(0f, 1f),
+                            (py + dy * PAD_SPEED / stream.height).coerceIn(0f, 1f),
+                        ),
+                    )
+                }
+            }
         val picture: @Composable (Modifier) -> Unit = { modifier ->
             Picture(
                 state = state,
                 deskName = desk.name,
                 lens = lens,
                 camera = camera,
-                pointer = if (state.window || !aimed) null else pointer,
+                pointer = if (state.window) null else pointer,
                 clicks = canInput && !state.window,
                 pad = canInput && state.touchpad,
                 touchpad = touchpad,
-                onPad = padUsed,
+                padAim = padAim,
                 input = actions,
                 onCamera = { camera = it },
                 onAim = { aimTo(it) },
@@ -424,7 +436,7 @@ fun ViewerScreen(
                                 canInput = canInput,
                                 pictureIsPad = state.touchpad,
                                 raw = touchpad,
-                                onUse = padUsed,
+                                aim = padAim,
                                 modifier = Modifier.weight(1f).fillMaxWidth(),
                             ) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(Tok.Space.p12.dp)) { keys() }
@@ -499,7 +511,7 @@ private fun Picture(
     /** Touchpad mode: the picture is the Remote's touchpad. */
     pad: Boolean,
     touchpad: Boolean,
-    onPad: () -> Unit,
+    padAim: ((Float, Float) -> Unit)?,
     input: RemoteActions,
     onCamera: (Camera) -> Unit,
     onAim: (Offset) -> Unit,
@@ -594,7 +606,7 @@ private fun Picture(
                     .semantics { contentDescription = description }
                     .then(
                         if (pad) {
-                            Modifier.touchpad(input, touchpad, onPad)
+                            Modifier.touchpad(input, touchpad, padAim)
                         } else {
                             Modifier.pointerInput(lens, clicks) {
                                 pictureGestures(
@@ -1025,7 +1037,7 @@ private fun Pad(
     canInput: Boolean,
     pictureIsPad: Boolean,
     raw: Boolean,
-    onUse: () -> Unit,
+    aim: ((Float, Float) -> Unit)?,
     modifier: Modifier = Modifier,
     keys: @Composable () -> Unit,
 ) {
@@ -1036,7 +1048,7 @@ private fun Pad(
             Modifier
                 .fillMaxSize()
                 .dots(s.fill2)
-                .then(if (canInput) Modifier.touchpad(input, raw, onUse) else Modifier)
+                .then(if (canInput) Modifier.touchpad(input, raw, aim) else Modifier)
                 .semantics { contentDescription = touchpad },
         )
         if (canInput) {
@@ -1047,6 +1059,23 @@ private fun Pad(
                 if (!pictureIsPad) Tip("", stringResource(R.string.viewer_tip_picture), Icons.Screen)
                 Tip("1", stringResource(R.string.viewer_tip_pad))
                 Tip("2", stringResource(R.string.viewer_tip_two))
+            }
+            val context = LocalContext.current
+            if (raw && needsMultiFingerGrant(context)) {
+                Text(
+                    stringResource(R.string.remote_multi_finger_grant, context.packageName),
+                    LinkTheme.phoneType.footnote,
+                    color = s.label2,
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(
+                                start = Tok.Space.p24.dp,
+                                end = Tok.Space.p24.dp,
+                                bottom = (Tok.Space.p24 + Tok.Phone.roundKeyL + Tok.Space.p8).dp,
+                            ),
+                )
             }
         } else {
             Text(
@@ -1204,6 +1233,7 @@ private fun BoxScope.Sheets(
 }
 
 private const val CENTRE = 0.5f
+private const val PAD_SPEED = 1.5f
 private const val HOLD_MS = 400L
 private const val THUMB_MS = 500L
 private const val DRAG_NEAR = 4f
