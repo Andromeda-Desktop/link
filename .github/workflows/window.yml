@@ -112,7 +112,7 @@ jobs:
       # Linux names; compiling stays with Apple clang. stb is the Arch package's commit.
       - name: Tools
         run: |
-          brew install meson ninja llvm lld pkgconf coreutils gnu-sed
+          brew install meson ninja llvm lld pkgconf coreutils gnu-sed protobuf
           mkdir -p /tmp/llvm-tools
           for tool in llvm-otool llvm-install-name-tool llvm-strip llvm-ar llvm-nm; do
             ln -s "$(brew --prefix)/opt/llvm/bin/$tool" /tmp/llvm-tools/
