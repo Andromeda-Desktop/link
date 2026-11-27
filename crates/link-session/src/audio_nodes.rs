@@ -25,11 +25,11 @@ pub type Pcm = Arc<Mutex<Jitter>>;
 /// Sound a phone sound `Jitter` holds before it plays, and keeps after it drops a backlog: units arrive within
 /// +-10 ms of their 20 ms cadence, and its stream pulls every `PLAYBACK_LATENCY`.
 const SOUND_TARGET_MS: usize = 30;
-/// The same for a microphone, whose feed pulls at the graph's quantum (21 ms by default).
-const MIC_TARGET_MS: usize = 40;
+/// The same for a microphone, whose feed also pulls every `PLAYBACK_LATENCY`.
+const MIC_TARGET_MS: usize = 30;
 /// Sound a `Jitter` holds at most.
 const MAX_MS: usize = 100;
-/// The graph period phone sound asks for; `PipeWire`'s default of 1024 frames adds 21 ms.
+/// The graph period phone sound and a microphone feed ask for; `PipeWire`'s default of 1024 frames adds 21 ms.
 const PLAYBACK_LATENCY: &str = "480/48000";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -304,6 +304,7 @@ fn source(core: &pw::core::CoreRc, key: &str, name: &str, pcm: Pcm) -> Result<So
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::NODE_NAME => feed_name.as_str(),
         *pw::keys::NODE_AUTOCONNECT => "false",
+        *pw::keys::NODE_LATENCY => PLAYBACK_LATENCY,
     };
     let wiring = RefCell::new(Wiring::default());
     let registry = core.get_registry_rc()?;
