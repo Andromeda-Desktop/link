@@ -1,9 +1,11 @@
 //! `link-session` on Windows: the daemon's signals served with Win32 backends: keep-awake, the PC's state (battery,
-//! lock, presence, display) with lock, sleep and screen off, the output volume, the clipboard both ways, and the
-//! phone as touchpad and keyboard, and "Ring desktop". Notifications and the screen come with their Windows backends
-//! (TASK-link-windows W6, W7).
+//! lock, presence, display) with lock, sleep and screen off, the output volume, the clipboard both ways, the
+//! phone as touchpad and keyboard, phone notifications as toasts, and "Ring desktop". The screen comes with its
+//! Windows backend (TASK-link-windows W7).
 
 #![allow(unsafe_code, reason = "FFI: COM initialization for this thread")]
+
+mod notify;
 
 use anyhow::Context;
 use futures_util::StreamExt;
@@ -23,6 +25,8 @@ pub async fn run() -> anyhow::Result<()> {
     let link = link::Link::connect(&daemon).await?;
     let mut system_commands = link.proxy.receive_system_command().await?;
     let mut remote_input = link.proxy.receive_remote_input().await?;
+    let mut posted = link.proxy.receive_notification_posted().await?;
+    let mut removed = link.proxy.receive_notification_removed().await?;
     let mut clip_offered = link.proxy.receive_clipboard_offered().await?;
     let mut ring_requests = link.proxy.receive_ring_requested().await?;
     let mut ring = ring::Ring::default();
@@ -35,12 +39,14 @@ pub async fn run() -> anyhow::Result<()> {
     if let Some(backend) = &input {
         log::info!("input through {}", backend.name());
     }
+    let mut notifications = attempt("Windows toasts", notify::Notifications::connect(link.clone()).map(Some));
     let mut clipboard = clipboard::Backend::native();
     if let Some(backend) = &clipboard {
         log::info!("clipboard through {}", backend.name());
     }
     let mut prefetch: Option<prefetch::Prefetch> = None;
     let optional = [
+        (notifications.is_some(), "notifications"),
         (clipboard.is_some(), "clipboard"),
         (input.is_some(), "input"),
         (input.as_ref().is_some_and(input::Backend::shortcuts), "shortcuts"),
@@ -70,6 +76,16 @@ pub async fn run() -> anyhow::Result<()> {
                 match input::Action::parse(args.action, args.dx, args.dy, args.detail.to_owned()) {
                     Some(action) => backend.run(action).context("the input backend stopped")?,
                     None => log::debug!("remote input {} ignored", args.action),
+                }
+            }
+            Some(signal) = posted.next() => {
+                if let (Ok(args), Some(notifications)) = (signal.args(), notifications.as_mut()) {
+                    notifications.posted(&args);
+                }
+            }
+            Some(signal) = removed.next() => {
+                if let (Ok(args), Some(notifications)) = (signal.args(), notifications.as_mut()) {
+                    notifications.removed(args.device_id, args.id);
                 }
             }
             Some(signal) = clip_offered.next() => {

@@ -17,7 +17,6 @@ impl Link {
         Ok(Self { proxy: Link1Proxy::new(bus).await? })
     }
 
-    #[cfg_attr(windows, expect(dead_code, reason = "Windows toasts come with W6"))]
     pub async fn notification_action(&self, device: &str, id: &str, action: &str, reply: &str) {
         log_failure("NotificationAction", self.proxy.notification_action(device, id, action, reply).await);
     }
@@ -72,7 +71,6 @@ impl Link {
         result.inspect_err(|error| log::warn!("PullClipboardData: {error}")).ok()
     }
 
-    #[cfg_attr(windows, expect(dead_code, reason = "Windows toasts come with W6"))]
     pub async fn notification_dismiss(&self, device: &str, id: &str) {
         log_failure("NotificationDismiss", self.proxy.notification_dismiss(device, id).await);
     }
