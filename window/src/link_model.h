@@ -121,6 +121,7 @@ namespace linkapp {
     Kind kind = Kind::Notification;
     std::string key; // unique: kind prefix + Link1 id
     std::string deviceId;
+    std::string app; // Notification only: the app that posted it
     std::string who;
     std::string body;
     std::int64_t atMs = 0;

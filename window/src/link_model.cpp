@@ -49,7 +49,7 @@ namespace linkapp {
       json actions = json::array();
       for (const FeedAction& a : item.actions) actions.push_back({{"id", a.id}, {"label", a.label}, {"reply", a.reply}});
       out["items"].push_back({{"kind", static_cast<int>(item.kind)}, {"key", item.key}, {"deviceId", item.deviceId},
-                              {"who", item.who}, {"body", item.body}, {"atMs", item.atMs}, {"actions", std::move(actions)}});
+                              {"app", item.app}, {"who", item.who}, {"body", item.body}, {"atMs", item.atMs}, {"actions", std::move(actions)}});
     }
     return out.dump();
   }
@@ -69,7 +69,7 @@ namespace linkapp {
         const int kind = i.at("kind");
         if (kind < 0 || kind >= static_cast<int>(FeedItem::Kind::Offer)) return std::nullopt;
         FeedItem item{.kind = static_cast<FeedItem::Kind>(kind), .key = i.at("key"), .deviceId = i.at("deviceId"),
-                      .who = i.at("who"), .body = i.at("body"), .atMs = i.at("atMs")};
+                      .app = i.value("app", ""), .who = i.at("who"), .body = i.at("body"), .atMs = i.at("atMs")};
         for (const auto& a : i.at("actions")) item.actions.push_back({a.at("id"), a.at("label"), a.at("reply")});
         snapshot.items.push_back(std::move(item));
       }

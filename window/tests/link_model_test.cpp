@@ -63,7 +63,7 @@ namespace {
     for (std::size_t i = 0; same && i < kept.size(); ++i) {
       const FeedItem& a = *kept[i];
       const FeedItem& b = back->items[i];
-      same = a.kind == b.kind && a.key == b.key && a.deviceId == b.deviceId && a.who == b.who && a.body == b.body &&
+      same = a.kind == b.kind && a.key == b.key && a.deviceId == b.deviceId && a.app == b.app && a.who == b.who && a.body == b.body &&
              a.atMs == b.atMs && a.actions.size() == b.actions.size();
     }
     expect(same, "snapshot round trip keeps every non-offer item", seed, step);
@@ -82,6 +82,7 @@ namespace {
         FeedItem item;
         item.key = k;
         item.kind = (key(rng) % 2) ? FeedItem::Kind::Offer : FeedItem::Kind::Notification;
+        if (item.kind == FeedItem::Kind::Notification) item.app = "app" + k;
         item.atMs = base - age(rng);
         feed.upsert(item);
         expect(feed.find(k).has_value() || feed.items().size() == Feed::kMax, "upserted item present", seed, step);

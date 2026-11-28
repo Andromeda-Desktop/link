@@ -107,7 +107,7 @@ namespace linkapp {
                      const std::vector<bus::Struct<std::string, std::string, bool>>& actions, bool,
                      const std::vector<std::string>& replies) {
           FeedItem item{.kind = FeedItem::Kind::Notification, .key = "n:" + id, .deviceId = device,
-                        .who = app.empty() ? title : app + " · " + title, .body = text, .atMs = nowMs(),
+                        .app = app, .who = title, .body = text, .atMs = nowMs(),
                         .replies = replies};
           for (const auto& a : actions) item.actions.push_back({a.get<0>(), a.get<1>(), a.get<2>()});
           m_feed.upsert(std::move(item));

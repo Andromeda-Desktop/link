@@ -708,7 +708,7 @@ namespace linkapp {
                                                                     : "bell";
       row->addChild(plate(glyph, 36.0F * s, "", s));
       auto lines = ui::column({.align = FlexAlign::Stretch, .gap = 1.0F * s, .flexGrow = 1.0F});
-      lines->addChild(text(clock(item.atMs), Tokens::typeFootnote, ColorRole::Label2, s));
+      lines->addChild(text(item.app.empty() ? clock(item.atMs) : item.app + " · " + clock(item.atMs), Tokens::typeFootnote, ColorRole::Label2, s));
       lines->addChild(text(item.who, Tokens::typeHeadline, item.kind == FeedItem::Kind::MissedCall ? ColorRole::DangerText : ColorRole::Label1, s));
       if (!item.body.empty()) lines->addChild(text(item.body, Tokens::typeBody, ColorRole::Label2, s));
       row->addChild(std::move(lines));

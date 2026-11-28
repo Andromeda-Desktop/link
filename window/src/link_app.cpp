@@ -243,7 +243,8 @@ namespace linkapp {
     const std::string who = offer ? (item.files.size() == 1 ? item.files.front().first
                                                             : i18n::trp("link.common.files-count", static_cast<long>(item.files.size())))
                             : item.kind == FeedItem::Kind::Text ? m_client.messages().nameFor(item.who)
-                                                                : item.who;
+                            : item.app.empty()                  ? item.who
+                                                                : item.app + " · " + item.who;
     const std::string line = offer    ? i18n::tr("link.feed.offered", "size", byteSize(item.total))
                              : missed ? i18n::tr("link.feed.missed", "time", clock(item.atMs))
                              : photos ? i18n::tr("link.feed.drag-hint")
