@@ -64,7 +64,7 @@ test('mirror_decoder', executable('mirror_decoder_test', 'tests/mirror_decoder_t
 # paths::assetsRoot finds <exe dir>/assets; /proc/self/exe resolves the bindir link to this directory.
 _own_dir = get_option('prefix') / get_option('libdir') / 'andromeda-link'
 executable('andromeda-link-app',
-  files('src/main.cpp', 'src/app_main.cpp', 'src/link_app.cpp', 'src/home.cpp', 'src/mirror.cpp', 'src/sky.cpp', 'src/link_bus.cpp', 'src/link_client.cpp',
+  files('src/main.cpp', 'src/app_main.cpp', 'src/link_app.cpp', 'src/home.cpp', 'src/mirror.cpp', 'src/settings.cpp', 'src/sky.cpp', 'src/link_bus.cpp', 'src/link_client.cpp',
     'src/mirror_decoder.cpp') + _video,
   link_with: _model,
   dependencies: [_desk, _ffi, dependency('libqrencode'), dependency('tomlplusplus').partial_dependency(includes: true)]
