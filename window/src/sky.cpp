@@ -18,6 +18,14 @@ namespace linkapp {
 
   namespace {
     constexpr float kTwoPi = 2.0F * std::numbers::pi_v<float>;
+
+    // The band's left scrim (pages.html .band::after) at `strength`; s = UI scale.
+    GalaxyScrim bandScrim(bool light, float strength, float s) {
+      const Color edge = rgbaHex(light ? Tokens::componentLinkBandScrimLight : Tokens::componentLinkBandScrimDark);
+      const Color mid = rgbaHex(light ? Tokens::componentLinkBandScrimLightMid : Tokens::componentLinkBandScrimDarkMid);
+      return {.color = {edge.r, edge.g, edge.b}, .edge = edge.a, .mid = mid.a, .midX = Tokens::componentLinkBandScrimMid * s,
+              .endX = Tokens::componentLinkBandScrimEnd * s, .strength = strength};
+    }
     // Cameras of the handoff (mockups/link-desk-v2/handoff.yaml home, band).
     constexpr GalaxyCamera kHero{.yaw = 0.55F, .pitch = 0.42F, .dist = 3.0F, .sx = 0.12F, .sy = 0.12F};
     constexpr GalaxyCamera kBand{.yaw = 0.55F, .pitch = 0.3F, .dist = 1.15F, .sx = -0.18F, .sy = 0.3F};
@@ -273,6 +281,9 @@ namespace linkapp {
     m_galaxy->setFrameSize(m_layer->width(), height);
     m_galaxy->setMoving(m_morph.has_value() || m_dragging);
     m_galaxy->setCamera(camera());
+    // Only Hero and Band morph: the scrim fades in toward Band and out toward Hero.
+    const float scrim = m_look.mode == SkyMode::Band ? e : m_morph ? 1.0F - e : 0.0F;
+    m_galaxy->setScrim(bandScrim(m_look.light, scrim, m_scale));
     if (m_layer->front != nullptr) m_layer->front->setOpacity(e);
     if (m_follower != nullptr) m_follower->setTranslation(m_follower->translationX(), m_followerY + height - m_height);
     placeLeaders();

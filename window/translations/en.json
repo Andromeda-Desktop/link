@@ -96,6 +96,7 @@
     "clear-all": "Clear all",
     "clear-finished": "Clear finished",
     "decline": "Decline",
+    "dismiss": "Dismiss",
     "files-count": "{count} file",
     "files-count-plural": "{count} files",
     "open": "Open",
@@ -131,13 +132,15 @@
     "start-service": "Start the Link service to reach your phone."
   },
   "feed": {
-    "drag-hint": "Drag one to the desktop, or open Photos",
+    "drag-hint": "Drag one out, or open Photos",
     "earlier-today": "Earlier today",
     "from-phone": "From your phone",
     "locked": "Unlock your phone to see the text",
+    "missed": "Missed call · {time}",
     "new-photos": "{count} new photo",
     "new-photos-plural": "{count} new photos",
     "now": "Now",
+    "offered": "{size} · offered by the phone",
     "reply": "Reply",
     "text": "Text"
   },
@@ -408,7 +411,10 @@
     "unread": "{count} unread · {name}"
   },
   "waiting": {
+    "answer": "Needs an answer",
+    "count": "{count} waiting",
     "empty-body": "Texts, missed calls and files from your phone show here.",
-    "empty-title": "Nothing waiting"
+    "empty-title": "Nothing waiting",
+    "notifications": "Notifications"
   }
 }

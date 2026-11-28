@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <array>
 #include <vector>
 
 class Label;
@@ -26,15 +27,22 @@ namespace linkapp {
 
   enum class Page : std::uint8_t { Home, Waiting, Messages, Calls, Photos, Files, Activity, Mirror, Settings };
 
-  // The Waiting feed as a virtual list: one row per item, built the same way to measure and to show.
+  // One card of the Waiting page as a virtual list: one row per item of its section, built the same way to measure
+  // and to show.
   class FeedAdapter final : public VirtualListAdapter {
   public:
+    // Needs an answer: texts, offered files, missed calls, new photos. Notifications: the phone's notifications.
+    enum class Section : std::uint8_t { Answer, Notifications };
     struct Hooks {
       std::function<void(const std::string&)> textTo; // a missed call's "Text": opens a text to the number
       std::function<void()> openPhotos;               // a strip thumbnail clicked
       std::function<void(const std::string&)> dragPhoto; // a strip thumbnail dragged: phone path
     };
-    FeedAdapter(LinkClient& client, const float& scale, Hooks hooks) : m_client(client), m_scale(scale), m_hooks(std::move(hooks)) {}
+    FeedAdapter(LinkClient& client, const float& scale, Section section, Hooks hooks)
+        : m_client(client), m_scale(scale), m_section(section), m_hooks(std::move(hooks)) {}
+    [[nodiscard]] static Section sectionOf(const FeedItem& item) {
+      return item.kind == FeedItem::Kind::Notification ? Section::Notifications : Section::Answer;
+    }
     [[nodiscard]] std::size_t itemCount() const override;
     [[nodiscard]] std::uint64_t itemKey(std::size_t index) const override;
     [[nodiscard]] bool itemInteractive(std::size_t /*index*/) const override { return true; }
@@ -46,8 +54,12 @@ namespace linkapp {
     // renderer is null while measuring: the strip then loads no thumbnails.
     [[nodiscard]] std::unique_ptr<Node> build(Renderer* renderer, std::size_t index, float width);
 
+    [[nodiscard]] const FeedItem& item(std::size_t index) const;
+
     LinkClient& m_client;
     const float& m_scale;
+    Section m_section;
+    mutable std::vector<std::size_t> m_index; // feed index of each row, refreshed by itemCount
     std::map<std::string, std::string> m_drafts; // reply text per item key, kept across row recycling
     Hooks m_hooks;
     struct Press {
@@ -236,6 +248,7 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Node> content(Renderer& renderer, float width, float height);
     // The shown page's own content, inside the sheet.
     [[nodiscard]] std::unique_ptr<Node> pageBody(Renderer& renderer, float width, float height);
+    std::unique_ptr<Node> waiting(Renderer& renderer, float width, float height);
     [[nodiscard]] static std::string pageTitle(Page page);
     [[nodiscard]] std::unique_ptr<Node> home(Renderer& renderer, float width, float height);
     [[nodiscard]] std::unique_ptr<Node> homeIdentity(const Presence& presence, float s);
@@ -315,8 +328,8 @@ namespace linkapp {
     void openCompose(const std::string& to);
 
     std::unique_ptr<LinkClient> m_client;
-    std::unique_ptr<FeedAdapter> m_feed;
-    ScrollViewState m_feedScroll;
+    std::array<std::unique_ptr<FeedAdapter>, 2> m_feed; // by FeedAdapter::Section
+    std::array<ScrollViewState, 2> m_feedScroll;
     ScrollViewState m_sideScroll;
     std::unique_ptr<ThreadAdapter> m_threads;
     std::unique_ptr<ConversationAdapter> m_conversation;
@@ -339,7 +352,7 @@ namespace linkapp {
     ScrollViewState m_fileScroll;
     std::unique_ptr<PhotoAdapter> m_photos;
     ScrollViewState m_photoScroll;
-    VirtualListView* m_feedList = nullptr;  // the Waiting list of the last build, null off Waiting
+    std::array<VirtualListView*, 2> m_feedList{}; // the Waiting cards of the last build, null off Waiting
     VirtualListView* m_conversationList = nullptr; // the open conversation of the last build, null off Messages
     VirtualGridView* m_photoGrid = nullptr; // the grid of the last build, null off the Photos page
     std::unique_ptr<TransferAdapter> m_transfers;

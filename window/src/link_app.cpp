@@ -147,11 +147,18 @@ namespace linkapp {
 
   } // namespace
 
-  std::size_t FeedAdapter::itemCount() const { return m_client.feed().items().size(); }
-
-  std::uint64_t FeedAdapter::itemKey(std::size_t index) const {
-    return std::hash<std::string>{}(m_client.feed().items()[index].key);
+  std::size_t FeedAdapter::itemCount() const {
+    const std::vector<FeedItem>& items = m_client.feed().items();
+    m_index.clear();
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (sectionOf(items[i]) == m_section) m_index.push_back(i);
+    }
+    return m_index.size();
   }
+
+  const FeedItem& FeedAdapter::item(std::size_t index) const { return m_client.feed().items()[m_index[index]]; }
+
+  std::uint64_t FeedAdapter::itemKey(std::size_t index) const { return std::hash<std::string>{}(item(index).key); }
 
   float FeedAdapter::measureItem(Renderer& renderer, std::size_t index, float width) {
     return build(nullptr, index, width)->measure(renderer, LayoutConstraints::available(width, 1.0e6F)).height;
@@ -165,58 +172,130 @@ namespace linkapp {
     holder.addChild(build(&renderer, index, width));
   }
 
-  // FeedItem (handoff.yaml): avatar 32 | who headline + time footnote; body paragraph, 2 lines; actions row g 8.
+  // Waiting row (pages.html .row, sizes snapped): avatar 32 | who headline + line footnote | time or actions; below,
+  // from the text column: the reply field and quick replies, the photo strip, or the transfer bar.
   std::unique_ptr<Node> FeedAdapter::build(Renderer* renderer, std::size_t index, float width) {
     const float s = m_scale;
-    const Feed& feed = m_client.feed();
-    const FeedItem& item = feed.items()[index];
+    const FeedItem& item = this->item(index);
     const bool locked = m_client.presence().kind == Presence::Kind::Locked;
+    const bool offer = item.kind == FeedItem::Kind::Offer;
+    const bool photos = item.kind == FeedItem::Kind::Photos;
+    const bool missed = item.kind == FeedItem::Kind::MissedCall;
+    const bool notification = item.kind == FeedItem::Kind::Notification;
+    const float pad = Tokens::spaceP8 * s;
+    const float gap = Tokens::spaceP12 * s;
+    const float avatarSize = Tokens::sizeControlM * s;
+    const float indent = avatarSize + gap;
     auto block = ui::column({.align = FlexAlign::Stretch});
-    const std::size_t earlier = feed.earlierStart(nowMs());
-    if (index == 0 || index == earlier) {
-      block->addChild(ui::row({.paddingV = Tokens::spaceP8 * s, .paddingH = (Tokens::spaceP16 + Tokens::sizeControlM + Tokens::spaceP12) * s},
-                              text(index < earlier ? i18n::tr("link.feed.now") : i18n::tr("link.feed.earlier-today"), Tokens::typeFootnote, ColorRole::Label2, s)));
-    } else {
-      block->addChild(ui::separator({}));
-    }
+    if (index > 0) block->addChild(ui::separator({}));
+    auto cell = ui::column({.align = FlexAlign::Stretch, .gap = pad, .paddingV = pad, .paddingH = pad});
 
-    auto row = ui::row({.align = FlexAlign::Start, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP12 * s,
-                        .paddingH = Tokens::spaceP16 * s});
+    auto row = ui::row({.align = FlexAlign::Center, .gap = gap});
     switch (item.kind) {
     case FeedItem::Kind::Text: row->addChild(initialsAvatar(m_client.messages().nameFor(item.who), s)); break;
-    case FeedItem::Kind::Offer: row->addChild(glyphAvatar("file", s)); break;
+    case FeedItem::Kind::Offer: row->addChild(glyphAvatar("file-text", s)); break;
     case FeedItem::Kind::MissedCall: row->addChild(glyphAvatar("phone-x", s)); break;
     case FeedItem::Kind::Notification: row->addChild(glyphAvatar("bell", s)); break;
     case FeedItem::Kind::Photos: row->addChild(glyphAvatar("photo", s)); break;
     }
 
-    auto body = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
-    const bool offer = item.kind == FeedItem::Kind::Offer;
     const std::string who = offer ? (item.files.size() == 1 ? item.files.front().first
                                                             : i18n::trp("link.common.files-count", static_cast<long>(item.files.size())))
-                                  : item.kind == FeedItem::Kind::Text ? m_client.messages().nameFor(item.who)
-                                                                      : item.who;
-    auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    auto name = text(who, Tokens::typeHeadline, ColorRole::Label1, s);
-    name->setFlexGrow(1.0F);
-    head->addChild(std::move(name));
-    const bool photos = item.kind == FeedItem::Kind::Photos;
-    head->addChild(text(offer ? byteSize(item.total) : photos ? i18n::tr("link.day.today") : clock(item.atMs), Tokens::typeFootnote,
-                        ColorRole::Label2, s));
-    body->addChild(std::move(head));
-    const std::string line = offer    ? i18n::tr("link.feed.from-phone")
+                            : item.kind == FeedItem::Kind::Text ? m_client.messages().nameFor(item.who)
+                                                                : item.who;
+    const std::string line = offer    ? i18n::tr("link.feed.offered", "size", byteSize(item.total))
+                             : missed ? i18n::tr("link.feed.missed", "time", clock(item.atMs))
                              : photos ? i18n::tr("link.feed.drag-hint")
                              : locked ? lockedText()
                                       : item.body;
-    body->addChild(text(line, Tokens::typeParagraph, (locked && !offer) || photos ? ColorRole::Label2 : ColorRole::Label1, s, 2));
-    if (photos) {
-      // Mockup .strip: 72 thumbnails at gap 8, as many as fit the body width.
+    auto lines = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    lines->addChild(text(who, Tokens::typeHeadline, missed ? ColorRole::DangerText : ColorRole::Label1, s));
+    lines->addChild(text(line, Tokens::typeFootnote, ColorRole::Label2, s));
+    row->addChild(std::move(lines));
+
+    // The time sits at the top of the row (pages.html .tm align-self start).
+    const auto time = [&](std::string value) {
+      auto top = ui::column({.align = FlexAlign::End, .height = avatarSize});
+      top->addChild(text(std::move(value), Tokens::typeFootnote, ColorRole::Label2, s));
+      return top;
+    };
+    const FeedItem copy = item;
+    if (offer && item.transfer == Transfer::Offered) {
+      row->addChild(pill(i18n::tr("link.common.decline"), std::nullopt, false, s, [this, copy] { m_client.decline(copy); }));
+      row->addChild(pill(i18n::tr("link.common.save"), std::nullopt, true, s, [this, copy] { m_client.accept(copy); }));
+    } else if (missed) {
+      for (const FeedAction& action : item.actions) {
+        if (action.reply) continue;
+        if (m_hooks.textTo) {
+          row->addChild(pill(i18n::tr("link.feed.text"), std::string("message"), false, s,
+                             [this, number = action.id] { m_hooks.textTo(number); }));
+        }
+        row->addChild(pill(action.label, std::string("phone"), false, s, [this, copy, id = action.id] { m_client.action(copy, id); }));
+      }
+    } else {
+      for (const FeedAction& action : item.actions) {
+        if (action.reply || !notification) continue;
+        row->addChild(pill(action.label, std::nullopt, false, s, [this, copy, id = action.id] { m_client.action(copy, id); }));
+      }
+      row->addChild(time(offer ? byteSize(item.total) : photos ? i18n::tr("link.day.today") : clock(item.atMs)));
+      if (notification) {
+        row->addChild(ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = 28.0F * s,
+                                  .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.common.dismiss"), .radius = 14.0F * s,
+                                  .width = 28.0F * s, .onClick = [this, copy] { m_client.dismiss(copy); }}));
+      }
+    }
+    cell->addChild(std::move(row));
+
+    auto below = ui::column({.align = FlexAlign::Stretch});
+    below->setPadding(0.0F, 0.0F, 0.0F, indent);
+    const bool canReply = item.kind == FeedItem::Kind::Text || std::ranges::any_of(item.actions, &FeedAction::reply);
+    if (offer && item.transfer != Transfer::Offered) {
+      const float progress = item.total > 0 ? static_cast<float>(item.bytes) / static_cast<float>(item.total) : 0.0F;
+      below->addChild(ui::progressBar({.progress = item.transfer == Transfer::Done ? 1.0F : progress,
+                                       .height = Tokens::spaceP4 * s}));
+    } else if (canReply && !locked) {
+      // pages.html .qr: the reply field (fill_2, send inside) takes the room the quick replies (outlined chips) leave.
+      const float height = Tokens::sizeControlM * s;
+      auto qr = ui::row({.align = FlexAlign::Center, .gap = pad});
+      auto field = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s, .fill = colorSpecFromRole(ColorRole::Fill2),
+                            .radius = height / 2.0F, .minWidth = Tokens::componentLinkReplyMin * s, .height = height, .flexGrow = 1.0F});
+      field->setPadding(0.0F, Tokens::spaceP4 * s, 0.0F, gap);
+      const std::string key = item.key;
+      const auto send = [this, copy, key] {
+        const std::string value = m_drafts[key];
+        if (value.empty()) return;
+        m_drafts.erase(key);
+        m_client.reply(copy, value);
+      };
+      field->addChild(ui::input({.value = m_drafts[key], .placeholder = i18n::tr("link.feed.reply"), .fontSize = Tokens::typeBody.size * s,
+                                 .frameVisible = false, .flexGrow = 1.0F,
+                                 .onChange = [this, key](const std::string& value) { m_drafts[key] = value; },
+                                 .onSubmit = [send](const std::string&) { send(); }}));
+      const float key24 = Tokens::sizeControlS * s;
+      field->addChild(ui::button({.glyph = std::string("send"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = key24,
+                                  .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.common.send"), .radius = key24 / 2.0F,
+                                  .width = key24, .onClick = send}));
+      qr->addChild(std::move(field));
+      const Button::ButtonStateColors rest{.bg = clearColorSpec(), .border = colorSpecFromRole(ColorRole::Separator),
+                                           .label = colorSpecFromRole(ColorRole::Label2)};
+      const Button::ButtonStateColors hot{.bg = colorSpecFromRole(ColorRole::Fill1), .border = colorSpecFromRole(ColorRole::Separator),
+                                          .label = colorSpecFromRole(ColorRole::Label1)};
+      for (const std::string& reply : item.replies) {
+        qr->addChild(ui::button({.text = reply, .fontSize = Tokens::typeBody.size * s, .controlHeight = height,
+                                 .customPalette = Button::ButtonPalette{.borderWidth = 1.0F, .normal = rest, .hover = hot, .pressed = hot,
+                                                                        .disabled = rest},
+                                 .paddingH = gap, .radius = height / 2.0F,
+                                 .onClick = [this, copy, reply] { m_client.reply(copy, reply); }}));
+      }
+      below->addChild(std::move(qr));
+    } else if (photos) {
+      // pages.html .strip: thumbnails (link.strip_thumb) at gap 4, as many as fit the text column.
       const float side = Tokens::componentLinkStripThumb * s;
-      const float gap = Tokens::spaceP8 * s;
-      const float bodyWidth = width - (2.0F * Tokens::spaceP16 + Tokens::sizeControlM + Tokens::spaceP12) * s;
-      const auto fit = static_cast<std::size_t>(std::max(1.0F, std::floor((bodyWidth + gap) / (side + gap))));
+      const float stripGap = Tokens::spaceP4 * s;
+      const float stripWidth = width - 2.0F * pad - indent;
+      const auto fit = static_cast<std::size_t>(std::max(1.0F, std::floor((stripWidth + stripGap) / (side + stripGap))));
       const float radius = Style::scaledRadius(Tokens::radiusR12, s);
-      auto strip = ui::row({.gap = gap, .paddingV = Tokens::spaceP4 * s});
+      auto strip = ui::row({.gap = stripGap});
       for (const std::string& path : item.photos | std::views::take(fit)) {
         InputArea* area = nullptr;
         auto pick = ui::inputArea({.out = &area, .cursorShape = CursorShape::Pointer, .width = side, .height = side,
@@ -235,61 +314,12 @@ namespace linkapp {
         pick->addChild(ui::image({.out = &image, .fit = ImageFit::Cover, .radius = radius, .width = side, .height = side}));
         const std::vector<std::uint8_t>* png = renderer != nullptr ? m_client.thumbnail(path) : nullptr;
         if (png != nullptr) (void)image->setSourceBytes(*renderer, png->data(), png->size());
-        pick->addChild(ui::box({.fill = clearColorSpec(), .border = colorSpecFromRole(ColorRole::Stroke),
-                                .borderWidth = Tokens::componentSplitStroke * s, .radius = radius, .width = side, .height = side}));
         strip->addChild(std::move(pick));
       }
-      body->addChild(std::move(strip));
+      below->addChild(std::move(strip));
     }
-
-    auto actions = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingV = Tokens::spaceP4 * s});
-    const FeedItem copy = item;
-    const auto canReply = item.kind == FeedItem::Kind::Text || std::ranges::any_of(item.actions, &FeedAction::reply);
-    if (offer && item.transfer == Transfer::Offered) {
-      actions->addChild(ui::button({.text = i18n::tr("link.common.decline"), .variant = ButtonVariant::Tonal,
-                                    .onClick = [this, copy] { m_client.decline(copy); }}));
-      actions->addChild(ui::button({.text = i18n::tr("link.common.save-to-downloads"), .variant = ButtonVariant::Primary,
-                                    .onClick = [this, copy] { m_client.accept(copy); }}));
-    } else if (offer) {
-      const float progress = item.total > 0 ? static_cast<float>(item.bytes) / static_cast<float>(item.total) : 0.0F;
-      actions->addChild(ui::progressBar({.progress = item.transfer == Transfer::Done ? 1.0F : progress,
-                                         .height = Tokens::spaceP4 * s, .flexGrow = 1.0F}));
-    } else if (canReply && !locked) {
-      const std::string key = item.key;
-      auto capsule = replyCapsule(m_drafts[key], i18n::tr("link.feed.reply"), Tokens::sizeControlM * s, s,
-                                  [this, key](const std::string& value) { m_drafts[key] = value; },
-                                  [this, copy, key] {
-                                    const std::string value = m_drafts[key];
-                                    if (value.empty()) return;
-                                    m_drafts.erase(key);
-                                    m_client.reply(copy, value);
-                                  });
-      actions->addChild(std::move(capsule));
-      // Mockup .chip: a 24 high fill_1 capsule, footnote text.
-      for (const std::string& reply : item.replies) {
-        actions->addChild(ui::button({.text = reply, .fontSize = Tokens::typeFootnote.size * s, .controlHeight = Tokens::sizeControlS * s,
-                                      .variant = ButtonVariant::Tonal,
-                                      .paddingV = 0.0F, .paddingH = Tokens::spaceP8 * s, .radius = Tokens::sizeControlS * s / 2.0F,
-                                      .height = Tokens::sizeControlS * s,
-                                      .onClick = [this, copy, reply] { m_client.reply(copy, reply); }}));
-      }
-    } else {
-      for (const FeedAction& action : item.actions) {
-        if (action.reply) continue;
-        const bool call = item.kind == FeedItem::Kind::MissedCall;
-        actions->addChild(ui::button({.text = action.label, .glyph = call ? std::optional<std::string>("phone") : std::nullopt,
-                                      .glyphSize = Tokens::sizeSymbolInline * s, .variant = ButtonVariant::Tonal,
-                                      .onClick = [this, copy, id = action.id] { m_client.action(copy, id); }}));
-        if (call && m_hooks.textTo) {
-          actions->addChild(ui::button({.text = i18n::tr("link.feed.text"), .glyph = std::string("message"),
-                                        .glyphSize = Tokens::sizeSymbolInline * s, .variant = ButtonVariant::Ghost,
-                                        .onClick = [this, number = action.id] { m_hooks.textTo(number); }}));
-        }
-      }
-    }
-    if (!actions->children().empty()) body->addChild(std::move(actions));
-    row->addChild(std::move(body));
-    block->addChild(std::move(row));
+    if (!below->children().empty()) cell->addChild(std::move(below));
+    block->addChild(std::move(cell));
     return block;
   }
 
@@ -794,14 +824,16 @@ namespace linkapp {
     window.setContentCards(true);
     if (m_client == nullptr) {
       m_client = std::make_unique<LinkClient>([this](const std::vector<std::string>& paths) { showInFolder(paths); });
-      m_feed = std::make_unique<FeedAdapter>(*m_client, m_scale,
-                                             FeedAdapter::Hooks{.textTo =
-                                                                    [this](const std::string& number) {
-                                                                      openCompose(number);
-                                                                      show(Page::Messages);
-                                                                    },
-                                                                .openPhotos = [this] { show(Page::Photos); },
-                                                                .dragPhoto = [this](const std::string& path) { dragPhoto(path); }});
+      const FeedAdapter::Hooks hooks{.textTo =
+                                         [this](const std::string& number) {
+                                           openCompose(number);
+                                           show(Page::Messages);
+                                         },
+                                     .openPhotos = [this] { show(Page::Photos); },
+                                     .dragPhoto = [this](const std::string& path) { dragPhoto(path); }};
+      for (const auto section : {FeedAdapter::Section::Answer, FeedAdapter::Section::Notifications}) {
+        m_feed[static_cast<std::size_t>(section)] = std::make_unique<FeedAdapter>(*m_client, m_scale, section, hooks);
+      }
       m_threads = std::make_unique<ThreadAdapter>(*m_client, m_scale, m_thread, m_search, [this](std::uint64_t id) { openThread(id); });
       m_conversation = std::make_unique<ConversationAdapter>(*m_client, m_scale);
       m_calls = std::make_unique<CallAdapter>(*m_client, m_scale, m_search);
@@ -817,7 +849,9 @@ namespace linkapp {
       m_client->setOnMirrorFrame([this](MirrorDecoder::Frame frame) { showMirrorFrame(std::move(frame)); });
       m_client->setOnThumbnail([this] {
         if (m_photoGrid != nullptr) m_photoGrid->notifyDataChanged();
-        if (m_feedList != nullptr) m_feedList->notifyDataChanged();
+        for (VirtualListView* list : m_feedList) {
+          if (list != nullptr) list->notifyDataChanged();
+        }
         if (m_conversationList != nullptr) m_conversationList->notifyDataChanged();
       });
       m_transfers = std::make_unique<TransferAdapter>(*m_client, m_scale, [this](const std::string& path) { openLocalFile(path); });
@@ -888,9 +922,6 @@ namespace linkapp {
     };
     window.setHeaderAccessoryBuilder([this, clear]() -> std::unique_ptr<Node> {
       if (m_client == nullptr || pairShown()) return ui::node();
-      if (m_page == Page::Waiting && !m_client->feed().items().empty()) {
-        return ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End}, clear(false));
-      }
       if (m_page == Page::Activity && m_client->activity().finishedCount() > 0) {
         return ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End}, clear(true));
       }
@@ -1339,11 +1370,63 @@ namespace linkapp {
     return page;
   }
 
+  // Waiting (pages.html B.waiting): "<n> waiting" + Clear all, then the two section cards side by side. A card is as
+  // tall as its rows, at most the room below its head; its rows scroll inside it.
+  std::unique_ptr<Node> LinkApp::waiting(Renderer& renderer, float width, float height) {
+    const float s = m_scale;
+    const float gap = Tokens::spaceP24 * s;
+    const float barGap = Tokens::spaceP16 * s;
+    const float inset = Tokens::spaceP4 * s;
+    auto page = ui::column({.align = FlexAlign::Stretch, .gap = barGap, .width = width, .height = height});
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .minHeight = Tokens::sizeControlM * s});
+    auto count = text(i18n::tr("link.waiting.count", "count", m_client->feed().items().size()), Tokens::typeFootnote, ColorRole::Label2, s);
+    count->setFontWeight(FontWeight::SemiBold);
+    count->setFlexGrow(1.0F);
+    bar->addChild(std::move(count));
+    bar->addChild(pill(i18n::tr("link.common.clear-all"), std::nullopt, false, s, [this] { m_client->clearAll(); }));
+    const float barHeight = bar->measure(renderer, LayoutConstraints::available(width, height)).height;
+    page->addChild(std::move(bar));
+
+    const float columnWidth = std::floor((width - gap) / 2.0F);
+    auto columns = ui::row({.align = FlexAlign::Start, .gap = gap, .flexGrow = 1.0F});
+    for (const auto section : {FeedAdapter::Section::Answer, FeedAdapter::Section::Notifications}) {
+      const auto i = static_cast<std::size_t>(section);
+      auto column = ui::column({.align = FlexAlign::Stretch, .width = columnWidth});
+      FeedAdapter& adapter = *m_feed[i];
+      const std::size_t rows = adapter.itemCount();
+      if (rows > 0) {
+        auto head = ui::row({.align = FlexAlign::Center});
+        head->setPadding(Tokens::spaceP12 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s);
+        auto title = text(i18n::tr(section == FeedAdapter::Section::Answer ? "link.waiting.answer" : "link.waiting.notifications"),
+                          Tokens::typeFootnote, ColorRole::Label2, s);
+        title->setFontWeight(FontWeight::SemiBold);
+        head->addChild(std::move(title));
+        const float headHeight = head->measure(renderer, LayoutConstraints::available(columnWidth, height)).height;
+        column->addChild(std::move(head));
+        const float room = std::max(0.0F, height - barHeight - barGap - headHeight - 2.0F * inset);
+        const float rowWidth = columnWidth - 2.0F * inset;
+        float content = 0.0F;
+        for (std::size_t r = 0; r < rows && content < room; ++r) content += adapter.measureItem(renderer, r, rowWidth);
+        const float radius = Style::scaledRadius(Tokens::radiusR16, s);
+        auto card = ui::column({.align = FlexAlign::Stretch, .padding = inset, .fill = colorSpecFromRole(ColorRole::Card),
+                                .radius = radius, .clipChildren = true});
+        auto rowsBox = ui::column({.align = FlexAlign::Stretch, .height = std::min(content, room)});
+        rowsBox->addChild(ui::virtualListView({.out = &m_feedList[i], .state = &m_feedScroll[i], .contentScale = s, .adapter = &adapter,
+                                               .flexGrow = 1.0F}));
+        card->addChild(std::move(rowsBox));
+        column->addChild(std::move(card));
+      }
+      columns->addChild(std::move(column));
+    }
+    page->addChild(std::move(columns));
+    return page;
+  }
+
   std::string LinkApp::pageTitle(Page page) { return i18n::tr(kPages[static_cast<std::size_t>(page)].title); }
 
   std::unique_ptr<Node> LinkApp::pageBody(Renderer& renderer, float width, float height) {
     m_photoGrid = nullptr;
-    m_feedList = nullptr;
+    m_feedList = {};
     m_conversationList = nullptr;
     m_mirrorImage = nullptr;
     m_mirrorStat = nullptr;
@@ -1391,9 +1474,7 @@ namespace linkapp {
     if (m_client->feed().items().empty()) {
       return emptyState("bell", i18n::tr("link.waiting.empty-title"), i18n::tr("link.waiting.empty-body"), s);
     }
-    auto view = ui::virtualListView({.out = &m_feedList, .state = &m_feedScroll, .contentScale = s, .adapter = m_feed.get(),
-                                     .flexGrow = 1.0F});
-    return view;
+    return waiting(renderer, width, height);
   }
 
   // A card as split cards look (design-split): window card radius, stroke edge, a 40 caption that moves the window.

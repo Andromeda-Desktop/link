@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <system_error>
 #include <format>
+#include <functional>
+#include <optional>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -43,6 +45,20 @@ namespace linkapp {
     const Button::ButtonStateColors hot{.bg = colorSpecFromRole(ColorRole::Label2), .border = clearColorSpec(),
                                         .label = colorSpecFromRole(ColorRole::View)};
     return {.normal = rest, .hover = hot, .pressed = hot, .disabled = rest};
+  }
+
+  // Pill (pages.html .pill, padding snapped): a 32 capsule in fill_2, or filled neutral (playPalette) for the main act.
+  inline std::unique_ptr<Button> pill(std::string label, std::optional<std::string> glyph, bool filled, float s,
+                                      std::function<void()> click) {
+    const Button::ButtonStateColors rest{.bg = colorSpecFromRole(ColorRole::Fill2), .border = clearColorSpec(),
+                                         .label = colorSpecFromRole(ColorRole::Label1)};
+    const Button::ButtonStateColors hot{.bg = colorSpecFromRole(ColorRole::Fill3), .border = clearColorSpec(),
+                                        .label = colorSpecFromRole(ColorRole::Label1)};
+    const float height = Tokens::sizeControlM * s;
+    return ui::button({.text = std::move(label), .glyph = std::move(glyph), .fontSize = Tokens::typeHeadline.size * s,
+                       .glyphSize = Tokens::sizeSymbol * s, .controlHeight = height,
+                       .customPalette = filled ? playPalette() : Button::ButtonPalette{.normal = rest, .hover = hot, .pressed = hot, .disabled = rest},
+                       .paddingH = Tokens::spaceP12 * s, .gap = Tokens::spaceP8 * s, .radius = height / 2.0F, .onClick = std::move(click)});
   }
 
   inline std::unique_ptr<Label> text(std::string value, const Tokens::Type& type, ColorRole role, float s, int lines = 1) {
