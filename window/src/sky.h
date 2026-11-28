@@ -28,6 +28,7 @@ namespace linkapp {
     float dim = 1.0F;     // the galaxy's own light, 0..1
     bool light = false;   // the Aurora sky of the light theme
     bool cool = false;    // battery under 15 %: the core glows red
+    std::optional<GalaxyCamera> camera; // a Full page's fixed camera; none: the Hero camera with the user's turn
     bool operator==(const SkyLook&) const = default;
   };
 

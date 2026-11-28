@@ -125,7 +125,9 @@ namespace linkapp {
 
   GalaxyCamera Sky::camera() const {
     GalaxyCamera c = kBand;
-    if (m_look.mode != SkyMode::Band) {
+    if (m_look.mode == SkyMode::Full && m_look.camera) {
+      c = *m_look.camera;
+    } else if (m_look.mode != SkyMode::Band) {
       c = kHero;
       c.yaw += m_yaw;
       c.pitch = std::clamp(c.pitch + m_pitch, kPitchMin, kPitchMax);

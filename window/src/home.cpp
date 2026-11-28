@@ -135,6 +135,9 @@ namespace linkapp {
   std::unique_ptr<Node> LinkApp::content(Renderer& renderer, float width, float height) {
     // The live card's nodes die with the old tree; only the new build may hand them to the tick.
     m_liveView = {};
+    m_mirrorImage = nullptr;
+    m_mirrorStat = nullptr;
+    m_mirrorArea = nullptr;
     auto column = skyColumn(renderer, width, height);
     syncLiveTick();
     return column;
@@ -150,10 +153,18 @@ namespace linkapp {
     }
     const Presence presence = m_client->presence();
     if (m_page == Page::Home && presence.kind != Presence::Kind::NotPaired && !pairShown()) return home(renderer, width, height);
-    if (presence.kind == Presence::Kind::NotPaired || pairShown() || m_page == Page::Mirror) {
-      // Full sky pages draw their own content for now (step 5 moves Pair and Mirror onto the sky).
+    if (presence.kind == Presence::Kind::NotPaired || pairShown()) {
+      // Pair draws its own content for now (step 5 moves it onto the sky).
       m_sky->hide();
       return pageBody(renderer, width, height);
+    }
+    if (m_page == Page::Mirror && (presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked)) {
+      m_renderer = &renderer;
+      // pages.html: the core behind the phone's screen.
+      SkyLook look = skyLook(SkyMode::Full);
+      look.camera = GalaxyCamera{.yaw = 0.55F, .pitch = 0.5F, .dist = 2.6F, .sx = Tokens::componentLinkMirrorCentre * 2.0F - 1.0F, .sy = 0.05F};
+      if (m_client->mirror().kind != Mirror::Kind::Showing) look.dim = std::min(look.dim, 0.3F); // a message over the core, as on Away
+      return m_sky->build(look, width, height, m_window->headerHeight(), mirror(width, height), {});
     }
     const float band = Tokens::componentLinkBand * s;
     const float overlap = Tokens::componentLinkBandOverlap * s;

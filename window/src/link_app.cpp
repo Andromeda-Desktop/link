@@ -1478,9 +1478,6 @@ namespace linkapp {
     m_photoGrid = nullptr;
     m_feedList = {};
     m_conversationList = nullptr;
-    m_mirrorImage = nullptr;
-    m_mirrorStat = nullptr;
-    m_mirrorArea = nullptr;
     m_renderer = &renderer;
     const float s = m_scale = m_window->uiScale();
     if (m_client == nullptr) return emptyState("plug-connected-x", i18n::tr("link.errors.no-bus-title"), i18n::tr("link.errors.no-bus-body"), s);
@@ -1513,7 +1510,6 @@ namespace linkapp {
     if (m_page == Page::Calls) return calls(renderer, width, height);
     if (m_page == Page::Photos) return photos(renderer, width, height);
     if (m_page == Page::Files) return files(width, height);
-    if (m_page == Page::Mirror) return mirror(width, height);
     if (m_page == Page::Activity) return activity(renderer, width, height);
     if (m_page == Page::Settings && m_settingsView == SettingsView::Commands) return commands(presence, width, height);
     if (m_page == Page::Settings) return settings(presence);

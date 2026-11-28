@@ -130,143 +130,203 @@ namespace linkapp {
     m_window->surface()->requestRedraw();
   }
 
-  // Mirror (flow.html#page=mirror): a dark stage, the phone's screen centred, its size and rate above, keys below.
+  // Mirror (pages.html PAGE mirror), on the Full sky: the title and the stream's stat line, the phone's screen in a
+  // bezel left of centre, the key bar under it, the switch column at the right. Other states show their message centred.
   std::unique_ptr<Node> LinkApp::mirror(float width, float height) {
     const float s = m_scale;
     const Mirror& mirror = m_client->mirror();
-    const std::string phone = m_client->presence().phone.name;
-    std::vector<std::unique_ptr<Node>> caption;
-    caption.push_back(text(i18n::tr("link.pages.mirror"), Tokens::typeHeadline, ColorRole::Label1, s));
-    auto name = text(phone, Tokens::typeFootnote, ColorRole::Label2, s);
-    name->setFlexGrow(1.0F);
-    caption.push_back(std::move(name));
-    if (mirror.kind == Mirror::Kind::Showing || mirror.kind == Mirror::Kind::Asking) {
-      caption.push_back(ui::button({.text = i18n::tr("link.mirror.stop"), .variant = ButtonVariant::Ghost, .onClick = [this] { m_client->stopMirror(); }}));
-    }
+    const Phone phone = m_client->presence().phone;
+    auto front = ui::column({.align = FlexAlign::Stretch, .width = width, .height = height});
+    const auto measure = [&](Node& node) { return node.measure(*m_renderer, LayoutConstraints::available(width, height)); };
 
-    const float bodyH = height - Tokens::componentWindowCaption * s;
-    auto stage = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .gap = Tokens::spaceP16 * s,
-                             .fill = colorSpecFromRole(ColorRole::View), .flexGrow = 1.0F});
-    stage->setPaletteTone(PaletteTone::Dark);
-    const auto start = [this](const char* label) {
-      return ui::button({.text = i18n::tr(label), .variant = ButtonVariant::Primary, .onClick = [this] { m_client->startMirror(); }});
-    };
-    switch (mirror.kind) {
-    case Mirror::Kind::Idle:
-      stage->addChild(emptyState("device-mobile", i18n::tr("link.mirror.idle-title", "phone", phone), i18n::tr("link.mirror.idle-body"), s, start("link.mirror.start")));
-      break;
-    case Mirror::Kind::Asking:
-      stage->addChild(emptyState("device-mobile", i18n::tr("link.mirror.asking-title"), i18n::tr("link.mirror.asking-body", "phone", phone), s));
-      break;
-    case Mirror::Kind::Ended:
-      stage->addChild(emptyState("device-mobile-off", i18n::tr("link.mirror.ended-title"), i18n::tr("link.mirror.ended-body", "phone", phone), s, start("link.mirror.start-again")));
-      break;
-    case Mirror::Kind::Failed:
-      stage->addChild(emptyState("device-mobile-off", i18n::tr("link.mirror.failed-title"), mirror.error, s, start("link.common.try-again")));
-      break;
-    case Mirror::Kind::Showing: {
-      auto stat = text(mirrorStat(), Tokens::typeFootnote, ColorRole::Label2, s);
+    auto head = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP4 * s});
+    head->setPadding(30.0F * s, 0.0F, 0.0F, 32.0F * s);
+    head->addChild(text(pageTitle(Page::Mirror), Tokens::typeLarge, ColorRole::Label1, s));
+    auto line = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP16 * s});
+    line->addChild(text(phone.name, Tokens::typeBody, ColorRole::Label2, s));
+    if (mirror.kind == Mirror::Kind::Showing) {
+      auto stat = text(mirrorStat(), Tokens::typeBody, ColorRole::Label2, s);
       m_mirrorStat = stat.get();
-      stage->addChild(std::move(stat));
-      // The video fills the stage height less the stat line, the key bar and their gaps, in the phone's aspect.
-      const float aspect = static_cast<float>(mirror.width) / static_cast<float>(mirror.height);
-      float videoH = std::max(1.0F, bodyH - Tokens::componentLinkMirrorChrome * s);
-      float videoW = videoH * aspect;
-      const float maxW = width - 2.0F * Tokens::spaceP24 * s;
-      if (videoW > maxW) {
-        videoW = maxW;
-        videoH = videoW / aspect;
-      }
-      m_client->setMirrorTarget(static_cast<int>(std::lround(videoW)), static_cast<int>(std::lround(videoH)));
-      Image* image = nullptr;
-      auto area = ui::inputArea({.width = videoW, .height = videoH});
-      // Keys reach the phone only while the video holds focus; a click gives it focus, Tab stays inside.
-      InputArea* keys = area.get();
-      m_mirrorArea = keys;
-      area->setFocusable(true);
-      area->setTabFocusKey("link-mirror");
-      area->setCapturesAllKeys(true);
-      area->setCapturesTab(true);
-      area->setRetainsFocusOnPointerRelease(true);
-      area->setOnKeyDown([this](const InputArea::KeyData& data) { mirrorKeyInput(data); });
-      area->setOnKeyUp([this](const InputArea::KeyData& data) { mirrorKeyInput(data); });
-      area->setOnFocusGain([this] {
-        if (m_mirrorStat != nullptr) m_mirrorStat->setText(mirrorStat());
-      });
-      area->setOnFocusLoss([this] {
-        releaseMirrorKeys();
-        if (m_mirrorStat != nullptr) m_mirrorStat->setText(mirrorStat());
-      });
-      const float corner = m_client->mirrorCorner() > 0 ? videoW * static_cast<float>(m_client->mirrorCorner()) / 10000.0F
-                                                        : Style::scaledRadius(Tokens::componentLinkMirrorRadius, s);
-      area->addChild(ui::image({.out = &image, .fit = ImageFit::Contain, .radius = corner,
-                                .width = videoW, .height = videoH}));
-      m_mirrorImage = image;
-      if (m_mirrorTexture.valid()) image->setExternalTexture(*m_renderer, m_mirrorTexture);
-      // MirrorInput takes positions in 1/10000 of the video.
-      const auto at = [videoW, videoH](float x, float y) {
-        return std::pair{static_cast<std::int32_t>(std::clamp(x / videoW, 0.0F, 1.0F) * 10000.0F),
-                         static_cast<std::int32_t>(std::clamp(y / videoH, 0.0F, 1.0F) * 10000.0F)};
-      };
-      area->setOnPress([this, at, keys](const InputArea::PointerData& data) {
-        if (data.pressed && !keys->focused()) m_window->input().setFocus(keys);
-        if (data.button != BTN_LEFT || data.pressed == m_touching) return;
-        m_touching = data.pressed;
-        const auto [x, y] = at(data.localX, data.localY);
-        m_client->mirrorTouch(data.pressed ? "touch-down" : "touch-up", x, y);
-      });
-      area->setOnMotion([this, at](const InputArea::PointerData& data) {
-        if (!m_touching) return;
-        const auto [x, y] = at(data.localX, data.localY);
-        m_client->mirrorTouch("touch-move", x, y);
-      });
-      area->setOnAxisHandler([this, at](const InputArea::PointerData& data) {
-        // A detent is 120 in value120; a touchpad gives about 10 per detent-sized move.
-        const double turn = data.axisValue120 != 0 ? data.axisValue120 * 100.0 / 120.0 : data.axisValue * 10.0;
-        const auto step = static_cast<std::int32_t>(std::clamp(std::lround(turn), -10000L, 10000L));
-        if (step == 0) return true;
-        const auto [x, y] = at(data.localX, data.localY);
-        constexpr std::uint32_t kVertical = 0; // WL_POINTER_AXIS_VERTICAL_SCROLL
-        if (data.axis == kVertical) {
-          m_client->mirrorWheel(x, y, 0, step);
-        } else {
-          m_client->mirrorWheel(x, y, step, 0);
-        }
-        return true;
-      });
-      stage->addChild(std::move(area));
+      line->addChild(std::move(stat));
+    }
+    head->addChild(std::move(line));
+    const float headH = measure(*head).height;
+    front->addChild(std::move(head));
 
-      // FloatingCapsuleBar (handoff.yaml), dark glass: Back, Home, Recents | Volume, Lock.
-      auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::Popover),
-                          .radius = Tokens::sizeControlXl * s / 2.0F, .height = Tokens::sizeControlXl * s});
-      bar->setPadding(0.0F, Tokens::spaceP8 * s, 0.0F, Tokens::spaceP8 * s);
-      const auto key = [&](const char* glyph, const char* tip, std::function<void()> press,
-                           std::function<void()> secondary = nullptr, bool on = false) {
-        bar->addChild(ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s,
-                                  .variant = on ? ButtonVariant::Primary : ButtonVariant::Ghost,
-                                  .tooltip = i18n::tr(tip),
-                                  .onClick = std::move(press), .onRightClick = std::move(secondary)}));
-      };
-      key("chevron-left", "link.common.back", [this] { m_client->mirrorAction("back"); });
-      key("home", "link.mirror.home", [this] { m_client->mirrorAction("home"); });
-      key("dots", "link.mirror.recents", [this] { m_client->mirrorAction("recents"); });
-      bar->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .width = s, .height = Tokens::spaceP12 * s}));
-      constexpr std::int32_t kVolumeUp = 24; // Android KeyEvent codes
-      constexpr std::int32_t kVolumeDown = 25;
-      key("volume", "link.mirror.volume", [this] { m_client->mirrorKey(kVolumeUp); },
-          [this] { m_client->mirrorKey(kVolumeDown); });
-      key("lock", "link.mirror.lock", [this] { confirmLock(); });
-      const bool dark = m_client->mirrorScreenOff();
-      key("device-mobile-off", dark ? "link.mirror.screen-on" : "link.mirror.screen-off",
-          [this, dark] { m_client->setMirrorScreenOff(!dark); }, nullptr, dark);
-      key("photo", "link.mirror.screenshot", [this] { m_client->mirrorAction("screenshot"); });
-      stage->addChild(std::move(bar));
-      break;
+    if (mirror.kind != Mirror::Kind::Showing) {
+      const auto start = [this](const char* label) { return pill(i18n::tr(label), std::nullopt, true, m_scale, [this] { m_client->startMirror(); }); };
+      std::unique_ptr<Node> message;
+      switch (mirror.kind) {
+      case Mirror::Kind::Idle:
+        message = emptyState("device-mobile", i18n::tr("link.mirror.idle-title", "phone", phone.name), i18n::tr("link.mirror.idle-body"), s, start("link.mirror.start"));
+        break;
+      case Mirror::Kind::Asking:
+        message = emptyState("device-mobile", i18n::tr("link.mirror.asking-title"), i18n::tr("link.mirror.asking-body", "phone", phone.name), s,
+                             pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this] { m_client->stopMirror(); }));
+        break;
+      case Mirror::Kind::Ended:
+        message = emptyState("device-mobile-off", i18n::tr("link.mirror.ended-title"), i18n::tr("link.mirror.ended-body", "phone", phone.name), s, start("link.mirror.start-again"));
+        break;
+      case Mirror::Kind::Failed:
+      case Mirror::Kind::Showing:
+        message = emptyState("device-mobile-off", i18n::tr("link.mirror.failed-title"), mirror.error, s, start("link.common.try-again"));
+        break;
+      }
+      front->addChild(std::move(message));
+      return front;
     }
+
+    // The screen: the token's height band, the phone's aspect, narrowed so it never reaches the switch column.
+    const float side = Tokens::componentLinkMirrorSide * s;
+    const float margin = Tokens::spaceP24 * s;
+    const float bezel = Tokens::componentLinkMirrorBezelWidth * s;
+    const float top = Tokens::componentLinkMirrorTop * s;
+    const float aspect = static_cast<float>(mirror.width) / static_cast<float>(mirror.height);
+    float videoH = std::max(1.0F, std::min(height - top - Tokens::componentLinkMirrorRoom * s, Tokens::componentLinkMirrorMax * s));
+    float videoW = videoH * aspect;
+    const float maxW = std::max(1.0F, width - side - 3.0F * margin - 2.0F * bezel);
+    if (videoW > maxW) {
+      videoW = maxW;
+      videoH = videoW / aspect;
     }
-    auto cards = ui::row({.align = FlexAlign::Stretch, .width = width, .height = height});
-    cards->addChild(card(std::move(caption), std::move(stage), width, true));
-    return cards;
+    const float videoX = std::clamp(width * Tokens::componentLinkMirrorCentre - videoW / 2.0F, margin + bezel, width - side - 2.0F * margin - bezel - videoW);
+    m_client->setMirrorTarget(static_cast<int>(std::lround(videoW)), static_cast<int>(std::lround(videoH)));
+
+    Image* image = nullptr;
+    auto area = ui::inputArea({.width = videoW, .height = videoH});
+    // Keys reach the phone only while the video holds focus; a click gives it focus, Tab stays inside.
+    InputArea* keys = area.get();
+    m_mirrorArea = keys;
+    area->setFocusable(true);
+    area->setTabFocusKey("link-mirror");
+    area->setCapturesAllKeys(true);
+    area->setCapturesTab(true);
+    area->setRetainsFocusOnPointerRelease(true);
+    area->setOnKeyDown([this](const InputArea::KeyData& data) { mirrorKeyInput(data); });
+    area->setOnKeyUp([this](const InputArea::KeyData& data) { mirrorKeyInput(data); });
+    area->setOnFocusGain([this] {
+      if (m_mirrorStat != nullptr) m_mirrorStat->setText(mirrorStat());
+    });
+    area->setOnFocusLoss([this] {
+      releaseMirrorKeys();
+      if (m_mirrorStat != nullptr) m_mirrorStat->setText(mirrorStat());
+    });
+    const float corner = m_client->mirrorCorner() > 0 ? videoW * static_cast<float>(m_client->mirrorCorner()) / 10000.0F
+                                                      : Style::scaledRadius(Tokens::componentLinkMirrorRadius, s);
+    area->addChild(ui::image({.out = &image, .fit = ImageFit::Contain, .radius = corner, .width = videoW, .height = videoH}));
+    m_mirrorImage = image;
+    if (m_mirrorTexture.valid()) image->setExternalTexture(*m_renderer, m_mirrorTexture);
+    // MirrorInput takes positions in 1/10000 of the video.
+    const auto at = [videoW, videoH](float x, float y) {
+      return std::pair{static_cast<std::int32_t>(std::clamp(x / videoW, 0.0F, 1.0F) * 10000.0F),
+                       static_cast<std::int32_t>(std::clamp(y / videoH, 0.0F, 1.0F) * 10000.0F)};
+    };
+    area->setOnPress([this, at, keys](const InputArea::PointerData& data) {
+      if (data.pressed && !keys->focused()) m_window->input().setFocus(keys);
+      if (data.button != BTN_LEFT || data.pressed == m_touching) return;
+      m_touching = data.pressed;
+      const auto [x, y] = at(data.localX, data.localY);
+      m_client->mirrorTouch(data.pressed ? "touch-down" : "touch-up", x, y);
+    });
+    area->setOnMotion([this, at](const InputArea::PointerData& data) {
+      if (!m_touching) return;
+      const auto [x, y] = at(data.localX, data.localY);
+      m_client->mirrorTouch("touch-move", x, y);
+    });
+    area->setOnAxisHandler([this, at](const InputArea::PointerData& data) {
+      // A detent is 120 in value120; a touchpad gives about 10 per detent-sized move.
+      const double turn = data.axisValue120 != 0 ? data.axisValue120 * 100.0 / 120.0 : data.axisValue * 10.0;
+      const auto step = static_cast<std::int32_t>(std::clamp(std::lround(turn), -10000L, 10000L));
+      if (step == 0) return true;
+      const auto [x, y] = at(data.localX, data.localY);
+      constexpr std::uint32_t kVertical = 0; // WL_POINTER_AXIS_VERTICAL_SCROLL
+      if (data.axis == kVertical) {
+        m_client->mirrorWheel(x, y, 0, step);
+      } else {
+        m_client->mirrorWheel(x, y, step, 0);
+      }
+      return true;
+    });
+    // The bezel: a ring of the bezel colour, and a 1 px edge line outside it.
+    const float edge = s;
+    auto frame = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .padding = edge,
+                          .fill = fixedColorSpec(rgbaHex(Tokens::componentLinkMirrorBezelEdge)), .radius = corner + bezel + edge});
+    auto ring = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .padding = bezel,
+                         .fill = fixedColorSpec(rgbaHex(Tokens::componentLinkMirrorBezel)), .radius = corner + bezel});
+    ring->addChild(std::move(area));
+    frame->addChild(std::move(ring));
+    const float frameW = videoW + 2.0F * (bezel + edge);
+
+    // The key bar (pages.html .tools): 40 keys on the sheet colour, a line between the phone keys and the others.
+    const float keySize = Tokens::sizeControlL * s;
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s, .padding = Tokens::spaceP4 * s,
+                        .fill = colorSpecFromRole(ColorRole::SolidRegular), .radius = keySize / 2.0F + Tokens::spaceP4 * s,
+                        .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = s});
+    const auto key = [&](const char* glyph, const char* tip, std::function<void()> press, std::function<void()> secondary = nullptr) {
+      bar->addChild(ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = keySize,
+                                .variant = ButtonVariant::Ghost, .tooltip = i18n::tr(tip), .radius = keySize / 2.0F, .width = keySize,
+                                .onClick = std::move(press), .onRightClick = std::move(secondary)}));
+    };
+    key("arrow-left", "link.common.back", [this] { m_client->mirrorAction("back"); });
+    key("circle", "link.mirror.home", [this] { m_client->mirrorAction("home"); });
+    key("square", "link.mirror.recents", [this] { m_client->mirrorAction("recents"); });
+    bar->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .width = s, .height = keySize - 2.0F * Tokens::spaceP8 * s}));
+    constexpr std::int32_t kVolumeUp = 24; // Android KeyEvent codes
+    constexpr std::int32_t kVolumeDown = 25;
+    key("volume", "link.mirror.volume", [this] { m_client->mirrorKey(kVolumeUp); }, [this] { m_client->mirrorKey(kVolumeDown); });
+    key("lock", "link.mirror.lock", [this] { confirmLock(); });
+    key("screenshot", "link.mirror.screenshot", [this] { m_client->mirrorAction("screenshot"); });
+    const float barW = measure(*bar).width;
+    // The screen column is as wide as its wider child; the spacer before it keeps the screen at videoX.
+    const float stageW = std::max(frameW, barW);
+    auto stage = ui::column({.align = FlexAlign::Center, .gap = Tokens::spaceP16 * s, .width = stageW});
+    stage->addChild(std::move(frame));
+    stage->addChild(std::move(bar));
+
+    // The switch column (pages.html .side .sr): glyph 20 | label over its line | switch or key, rows 48 in r16 cards.
+    const auto sideCard = [&] {
+      return ui::column({.align = FlexAlign::Stretch, .padding = Tokens::spaceP4 * s, .fill = colorSpecFromRole(ColorRole::Card),
+                         .radius = Style::scaledRadius(Tokens::radiusR16, s)});
+    };
+    const auto sideRow = [&](Flex& card, const char* glyph, const char* label, const char* sub, std::unique_ptr<Node> control) {
+      if (!card.children().empty()) card.addChild(ui::separator({}));
+      auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
+                          .paddingH = Tokens::spaceP12 * s, .minHeight = Tokens::sizeControlXl * s});
+      row->addChild(ui::glyph({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
+      auto lines = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
+      lines->addChild(text(i18n::tr(label), Tokens::typeBody, ColorRole::Label1, s));
+      if (sub != nullptr) lines->addChild(text(i18n::tr(sub), Tokens::typeFootnote, ColorRole::Label2, s));
+      row->addChild(std::move(lines));
+      row->addChild(std::move(control));
+      card.addChild(std::move(row));
+    };
+    const std::string pid = phone.id;
+    auto column = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP8 * s, .width = side});
+    auto switches = sideCard();
+    sideRow(*switches, "hand-finger", "link.mirror.control", "link.mirror.control-sub",
+            ui::toggle({.checked = m_client->phoneSettings().input, .scale = s, .onChange = [this, pid](bool on) { m_client->setGrant(pid, "input", on); }}));
+    if (!phone.sound.empty()) {
+      sideRow(*switches, "volume", "link.mirror.sound", "link.mirror.sound-sub",
+              ui::toggle({.checked = phone.sound == "on", .scale = s,
+                          .onChange = [this, pid](bool on) { m_client->setPhoneAudio(pid, LinkClient::PhoneAudio::Sound, on); }}));
+    }
+    sideRow(*switches, "sun-off", "link.mirror.screen-off", "link.mirror.screen-off-sub",
+            ui::toggle({.checked = m_client->mirrorScreenOff(), .scale = s, .onChange = [this](bool on) { m_client->setMirrorScreenOff(on); }}));
+    column->addChild(std::move(switches));
+    auto actions = sideCard();
+    sideRow(*actions, "player-stop", "link.mirror.stop", nullptr,
+            iconKey("x", i18n::tr("link.mirror.stop"), false, Tokens::sizeControlM * s, s, [this] { m_client->stopMirror(); }));
+    column->addChild(std::move(actions));
+    column->setPadding(bezel + edge, 0.0F, 0.0F, 0.0F);
+
+    auto body = ui::row({.align = FlexAlign::Start, .flexGrow = 1.0F});
+    body->setPadding(std::max(0.0F, top - bezel - edge - headH), margin, 0.0F, 0.0F);
+    body->addChild(ui::box({.width = std::max(0.0F, videoX - bezel - edge - (stageW - frameW) / 2.0F)}));
+    body->addChild(std::move(stage));
+    body->addChild(ui::box({.flexGrow = 1.0F}));
+    body->addChild(std::move(column));
+    front->addChild(std::move(body));
+    return front;
   }
 
 } // namespace linkapp
