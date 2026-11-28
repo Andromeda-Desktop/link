@@ -42,6 +42,7 @@ namespace linkapp {
     std::int64_t lastSeen = 0; // unix seconds of its last session
     int locked = -1;           // 1, 0, or -1 when the phone does not say
     int dnd = -1;              // same values as locked
+    std::string ringer;        // normal, vibrate or silent; empty when the phone does not say
     int mediaVolume = -1;      // percent, -1 when the phone does not say
     int wifi = -1;             // Wi-Fi, Bluetooth, torch: as locked; all -1 on a phone without their commands
     int bluetooth = -1;

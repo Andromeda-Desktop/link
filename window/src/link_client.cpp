@@ -291,6 +291,7 @@ namespace linkapp {
             if (const auto it = controls.find(phone.id); it != controls.end()) {
               phone.mediaVolume = it->second.get<0>();
               phone.dnd = it->second.get<2>();
+              phone.ringer = it->second.get<1>();
               phone.locked = it->second.get<3>();
             }
             if (const auto it = toggles.find(phone.id); it != toggles.end()) {
@@ -1400,6 +1401,7 @@ namespace linkapp {
           for (Phone& phone : m_phones) {
             if (phone.id != m_command->device) continue;
             if (m_command->command == "set-dnd") phone.dnd = value;
+            if (m_command->command == "set-ringer") phone.ringer = value == 0 ? "silent" : value == 1 ? "vibrate" : "normal";
             if (m_command->command == "set-wifi") phone.wifi = value;
             if (m_command->command == "set-bluetooth") phone.bluetooth = value;
             if (m_command->command == "set-torch") phone.torch = value;

@@ -11,6 +11,7 @@
 #include "ui/controls/flex.h"
 #include "ui/controls/input.h"
 #include "ui/controls/progress_bar.h"
+#include "ui/controls/segmented.h"
 #include "ui/controls/slider.h"
 #include "ui/style.h"
 
@@ -468,6 +469,17 @@ namespace linkapp {
     sw->setPadding(22.0F * s, 0.0F, 0.0F, 0.0F);
     const float chip = Tokens::sizeControlL * s;
     const std::string pid = phone.id;
+    // set-ringer values by segment: normal 2, vibrate 1, silent 0.
+    constexpr std::array<std::string_view, 3> kRingers{"normal", "vibrate", "silent"};
+    if (const auto at = std::ranges::find(kRingers, phone.ringer); at != kRingers.end()) {
+      sw->addChild(ui::segmented({.options = std::vector<ui::SegmentedOption>{{.label = i18n::tr("link.home.ring"), .glyph = "bell"},
+                                                                              {.label = i18n::tr("link.home.vibrate"), .glyph = "device-mobile-vibration"},
+                                                                              {.label = i18n::tr("link.home.silent"), .glyph = "bell-off"}},
+                                  .selectedIndex = static_cast<std::size_t>(at - kRingers.begin()), .scale = s, .enabled = !away,
+                                  .surfaceRole = ColorRole::Card, .height = chip,
+                                  .onChange = [this, pid](std::size_t i) { m_client->sendSystemCommand(pid, "set-ringer", static_cast<std::uint32_t>(2 - i)); },
+                                  .configure = [](Segmented& seg) { seg.setThumbRoles(ColorRole::Label1, ColorRole::View); }}));
+    }
     if (phone.dnd >= 0) {
       sw->addChild(capsule(i18n::tr("link.home.dnd"), "moon", phone.dnd == 1, chip, s,
                            [this, pid, on = phone.dnd == 1] { m_client->setDnd(pid, !on); }, !away));

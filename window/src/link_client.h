@@ -168,7 +168,7 @@ namespace linkapp {
       std::string error; // the daemon's or the phone's reason, while Failed
       std::uint64_t serial = 0;
     };
-    // set-dnd, set-wifi, set-bluetooth or set-torch; a success also sets the phone's cached value.
+    // set-ringer, set-dnd, set-wifi, set-bluetooth or set-torch; a success also sets the phone's cached value.
     void sendSystemCommand(const std::string& deviceId, const std::string& command, std::uint32_t value);
     [[nodiscard]] const std::optional<SystemCommand>& systemCommand() const { return m_command; }
     // Reads the full photo into the cache for the viewer; a new path drops the last file and any read in flight.
