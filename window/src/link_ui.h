@@ -85,4 +85,20 @@ namespace linkapp {
     return label;
   }
 
+  // Rulebook §9.13: symbol 48 label_3, title_3, paragraph label_2, at most one button.
+  inline std::unique_ptr<Node> emptyState(const std::string& glyph, const std::string& title, const std::string& body, float s,
+                                   std::unique_ptr<Node> action = nullptr) {
+    auto box = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .gap = Tokens::spaceP8 * s,
+                           .flexGrow = 1.0F});
+    box->addChild(ui::glyph({.glyph = glyph, .glyphSize = Tokens::componentEmptySymbol * s,
+                             .color = colorSpecFromRole(ColorRole::Label3)}));
+    box->addChild(text(title, Tokens::typeTitle3, ColorRole::Label1, s));
+    auto paragraph = text(body, Tokens::typeParagraph, ColorRole::Label2, s, 3);
+    paragraph->setMaxWidth(Tokens::componentEmptyMaxWidth * s);
+    paragraph->setTextAlign(TextAlign::Center);
+    box->addChild(std::move(paragraph));
+    if (action) box->addChild(std::move(action));
+    return box;
+  }
+
 } // namespace linkapp
