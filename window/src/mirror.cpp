@@ -260,6 +260,7 @@ namespace linkapp {
     auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s, .padding = Tokens::spaceP4 * s,
                         .fill = colorSpecFromRole(ColorRole::SolidRegular), .radius = keySize / 2.0F + Tokens::spaceP4 * s,
                         .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = s});
+    bar->setElevation(&Tokens::elevationE3, s);
     const auto key = [&](const char* glyph, const char* tip, std::function<void()> press, std::function<void()> secondary = nullptr) {
       bar->addChild(ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = keySize,
                                 .variant = ButtonVariant::Ghost, .tooltip = i18n::tr(tip), .radius = keySize / 2.0F, .width = keySize,
@@ -285,6 +286,7 @@ namespace linkapp {
     const std::string pid = phone.id;
     auto column = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP8 * s, .width = side});
     auto switches = rowCard(s);
+    switches->setElevation(&Tokens::elevationE3, s);
     settingRow(*switches, "hand-finger", i18n::tr("link.mirror.control"), i18n::tr("link.mirror.control-sub"),
                neutralToggle(m_client->phoneSettings().input, s, [this, pid](bool on) { m_client->setGrant(pid, "input", on); }), s);
     if (!phone.sound.empty()) {
@@ -296,6 +298,7 @@ namespace linkapp {
                neutralToggle(m_client->mirrorScreenOff(), s, [this](bool on) { m_client->setMirrorScreenOff(on); }), s);
     column->addChild(std::move(switches));
     auto actions = rowCard(s);
+    actions->setElevation(&Tokens::elevationE3, s);
     settingRow(*actions, "player-stop", i18n::tr("link.mirror.stop"), {},
                iconKey("x", i18n::tr("link.mirror.stop"), false, Tokens::sizeControlM * s, s, [this] { m_client->stopMirror(); }), s);
     column->addChild(std::move(actions));

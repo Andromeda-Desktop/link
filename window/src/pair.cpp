@@ -27,6 +27,7 @@ namespace linkapp {
     auto card = ui::row({.align = FlexAlign::Center, .gap = pad, .padding = pad, .fill = colorSpecFromRole(ColorRole::SolidRegular),
                          .radius = Style::scaledRadius(Tokens::radiusR28, s), .border = colorSpecFromRole(ColorRole::Separator),
                          .borderWidth = 1.0F, .width = std::min(Tokens::componentLinkPairCard * s, 0.9F * width)});
+    card->setElevation(&Tokens::elevationE3, s);
     auto steps = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP8 * s, .flexGrow = 1.0F});
     auto actions = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     actions->setPadding(Tokens::spaceP8 * s, 0.0F, 0.0F, 0.0F);

@@ -128,6 +128,7 @@ namespace linkapp {
                         .fill = colorSpecFromRole(ColorRole::SolidRegular), .radius = Style::scaledRadius(Tokens::radiusR24, s),
                         .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F, .width = barWidth});
     bar->setParticipatesInLayout(false);
+    bar->setElevation(&Tokens::elevationE3, s);
     bar->setPosition((width - barWidth) / 2.0F, top);
 
     const float pulse = Tokens::sizeControlL * s;
@@ -344,6 +345,7 @@ namespace linkapp {
       auto c = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::SolidRegular),
                         .radius = h / 2.0F, .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F, .height = h});
       c->setPadding(0.0F, 6.0F * s, 0.0F, 6.0F * s);
+      c->setElevation(&Tokens::elevationE3, s);
       c->addChild(std::move(glyph));
       if (labels) {
         auto name = text(std::move(label), Tokens::typeBody, ColorRole::Label1, s);
@@ -556,7 +558,8 @@ namespace linkapp {
     const float radius = Style::scaledRadius(Tokens::radiusR16, s);
     const auto card = [&] {
       return ui::column({.align = FlexAlign::Stretch, .fill = colorSpecFromRole(ColorRole::SolidRegular), .radius = radius,
-                         .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F});
+                         .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F,
+                         .configure = [s](Flex& f) { f.setElevation(&Tokens::elevationE3, s); }});
     };
 
     if (p != nullptr) {
