@@ -1101,7 +1101,7 @@ namespace linkapp {
 
   bool LinkApp::pairShown() const {
     return m_client && m_client->pair().kind != Pair::Kind::Idle &&
-           m_client->presence().kind != Presence::Kind::NotPaired;
+           m_client->presence().kind != Presence::Kind::NoDaemon;
   }
 
   bool LinkApp::dismissable() const { return pairShown() || m_confirmForget || m_viewing || m_search; }
@@ -1188,8 +1188,8 @@ namespace linkapp {
     if (m_page == Page::Photos) m_client->markPhotosSeen();
     const Presence::Kind kind = m_client->presence().kind;
     const bool pairing = kind == Presence::Kind::NotPaired;
-    if (pairing && m_client->pair().kind == Pair::Kind::Idle) m_client->startPairing();
-    m_window->setTitle(pairing || pairShown() ? i18n::tr("link.pair.title") : i18n::tr(kPages[static_cast<std::size_t>(m_page)].title));
+    if (pairing && m_page != Page::Home && m_client->pair().kind == Pair::Kind::Idle) m_client->startPairing();
+    m_window->setTitle(pairShown() ? i18n::tr("link.pair.title") : i18n::tr(kPages[static_cast<std::size_t>(m_page)].title));
     const bool live = kind == Presence::Kind::Connected || kind == Presence::Kind::Locked;
     if (m_page == Page::Files && live && m_client->files().load() == Files::Load::Idle) m_client->openFolder("/");
     const bool commands = m_page == Page::Settings && m_settingsView == SettingsView::Commands && !pairing && !pairShown() &&
@@ -1410,13 +1410,12 @@ namespace linkapp {
     const float s = m_scale = m_window->uiScale();
     if (m_client == nullptr) return emptyState("plug-connected-x", i18n::tr("link.errors.no-bus-title"), i18n::tr("link.errors.no-bus-body"), s);
     const Presence presence = m_client->presence();
-    if (presence.kind != Presence::Kind::NoDaemon && pairShown()) return pair(renderer, s);
     switch (presence.kind) {
     case Presence::Kind::NoDaemon:
       if (m_page == Page::Settings) return settings(presence);
       return emptyState("plug-connected-x", i18n::tr("link.phone-card.not-running"), i18n::tr("link.errors.start-service"), s);
     case Presence::Kind::NotPaired:
-      return pair(renderer, s);
+      return pair(renderer, width, height);
     case Presence::Kind::Away: {
       if (m_page == Page::Settings && m_settingsView == SettingsView::Commands) return commands(presence, width, height);
       if (m_page == Page::Settings) return settings(presence);

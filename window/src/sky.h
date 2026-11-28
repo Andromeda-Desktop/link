@@ -28,6 +28,7 @@ namespace linkapp {
     float dim = 1.0F;     // the galaxy's own light, 0..1
     bool light = false;   // the Aurora sky of the light theme
     bool cool = false;    // battery under 15 %: the core glows red
+    bool forming = false; // Pair: a young galaxy, few stars and knots
     std::optional<GalaxyCamera> camera; // a Full page's fixed camera; none: the Hero camera with the user's turn
     bool operator==(const SkyLook&) const = default;
   };
@@ -59,7 +60,13 @@ namespace linkapp {
 
   private:
     class Layer;
-    void startPoints(bool cool);
+    // The galaxy the points are built for.
+    struct Shape {
+      bool cool = false;
+      bool forming = false;
+      bool operator==(const Shape&) const = default;
+    };
+    void startPoints(Shape shape);
     void startLoop();
     void stopLoop();
     void tick(float phase);
@@ -75,7 +82,7 @@ namespace linkapp {
     AppWindow& m_window;
     std::shared_ptr<int> m_alive = std::make_shared<int>(0);
     std::shared_ptr<const GalaxyPoints> m_points;
-    bool m_pointsCool = false;
+    Shape m_pointsShape;
     bool m_building = false;
     SkyLook m_look;
     // The user's turn and zoom of the Hero camera; the Band and Full cameras stay fixed.

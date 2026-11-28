@@ -299,7 +299,7 @@ namespace linkapp {
     void syncLiveTick();
     void tickLive();
     // Pair a Phone: the QR and code of this app's pairing window.
-    [[nodiscard]] std::unique_ptr<Node> pair(Renderer& renderer, float s);
+    [[nodiscard]] std::unique_ptr<Node> pair(Renderer& renderer, float width, float height);
     [[nodiscard]] std::unique_ptr<Node> messages(float width, float height);
     [[nodiscard]] std::unique_ptr<Node> compose(float s);
     [[nodiscard]] std::unique_ptr<Node> calls(Renderer& renderer, float width, float height);

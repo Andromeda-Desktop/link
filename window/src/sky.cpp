@@ -106,20 +106,27 @@ namespace linkapp {
     m_layer = nullptr;
   }
 
-  void Sky::startPoints(bool cool) {
-    if (m_building || (m_points != nullptr && m_pointsCool == cool)) return;
+  void Sky::startPoints(Shape want) {
+    if (m_building || (m_points != nullptr && m_pointsShape == want)) return;
     m_building = true;
     GalaxyShape shape;
-    if (cool) shape.temp = 1900.0;
+    if (want.cool) shape.temp = 1900.0;
+    if (want.forming) {
+      // pages.html PAGE pair
+      shape.seed = 41;
+      shape.stars = 9000;
+      shape.h2 = 60;
+      shape.glob = 6;
+    }
     BlockingPool::instance().run<std::shared_ptr<const GalaxyPoints>>(
         m_alive, [shape] { return std::make_shared<const GalaxyPoints>(buildGalaxy(shape)); },
-        [this, cool](std::shared_ptr<const GalaxyPoints> points) {
+        [this, want](std::shared_ptr<const GalaxyPoints> points) {
           m_building = false;
           m_points = std::move(points);
-          m_pointsCool = cool;
-          if (m_galaxy != nullptr) m_galaxy->setPoints(m_points);
+          m_pointsShape = want;
+          if (m_galaxy != nullptr && want == Shape{.cool = m_look.cool, .forming = m_look.forming}) m_galaxy->setPoints(m_points);
           // The look may have changed while this one was built.
-          startPoints(m_look.cool);
+          startPoints({.cool = m_look.cool, .forming = m_look.forming});
         });
   }
 
@@ -157,7 +164,8 @@ namespace linkapp {
     m_follower = nullptr;
     m_scale = m_window.uiScale();
     const float s = m_scale;
-    startPoints(look.cool);
+    const Shape shape{.cool = look.cool, .forming = look.forming};
+    startPoints(shape);
     auto layer = std::make_unique<Layer>(*this);
     layer->setSize(width, height);
     m_layer = layer.get();
@@ -165,7 +173,8 @@ namespace linkapp {
     auto galaxy = std::make_unique<GalaxyNode>();
     galaxy->setCacheOwner(this);
     galaxy->setSize(width, height);
-    galaxy->setPoints(m_points);
+    // A galaxy of another shape stays off until this one is built.
+    galaxy->setPoints(m_pointsShape == shape ? m_points : nullptr);
     galaxy->setDim(look.dim);
     galaxy->setLightSky(look.light ? std::optional(GalaxyLightSky{}) : std::nullopt);
     galaxy->setCamera(camera());

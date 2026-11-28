@@ -80,8 +80,8 @@ namespace linkapp {
 
   // Pill (pages.html .pill, padding snapped): a 32 capsule in fill_2, or filled neutral for the main act.
   inline std::unique_ptr<Button> pill(std::string label, std::optional<std::string> glyph, bool filled, float s,
-                                      std::function<void()> click) {
-    const float height = Tokens::sizeControlM * s;
+                                      std::function<void()> click, float size = Tokens::sizeControlM) {
+    const float height = size * s;
     return ui::button({.text = std::move(label), .glyph = std::move(glyph), .fontSize = Tokens::typeHeadline.size * s,
                        .glyphSize = Tokens::sizeSymbol * s, .controlHeight = height, .customPalette = keyPalette(filled),
                        .paddingH = Tokens::spaceP12 * s, .gap = Tokens::spaceP8 * s, .radius = height / 2.0F, .onClick = std::move(click)});

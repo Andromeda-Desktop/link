@@ -16,27 +16,40 @@
 
 namespace linkapp {
 
-  std::unique_ptr<Node> LinkApp::pair(Renderer& renderer, float s) {
+  // pages.html PAGE pair: one card centred on the forming sky, the QR beside the steps.
+  std::unique_ptr<Node> LinkApp::pair(Renderer& renderer, float width, float height) {
+    const float s = m_scale;
     const Pair& pair = m_client->pair();
+    // Without a phone, Home shows "No phone yet"; on any other page the app keeps a window open.
+    const bool cancellable = !m_client->phones().empty() || m_page == Page::Home;
+    const float pad = Tokens::spaceP24 * s;
+    auto front = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .width = width, .height = height});
+    auto card = ui::row({.align = FlexAlign::Center, .gap = pad, .padding = pad, .fill = colorSpecFromRole(ColorRole::SolidRegular),
+                         .radius = Style::scaledRadius(Tokens::radiusR28, s), .border = colorSpecFromRole(ColorRole::Separator),
+                         .borderWidth = 1.0F, .width = std::min(Tokens::componentLinkPairCard * s, 0.9F * width)});
+    auto steps = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP8 * s, .flexGrow = 1.0F});
+    auto actions = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+    actions->setPadding(Tokens::spaceP8 * s, 0.0F, 0.0F, 0.0F);
+    const auto paragraph = [s](std::string value, ColorRole role) { return text(std::move(value), Tokens::typeParagraph, role, s, 3); };
+
     if (pair.kind == Pair::Kind::Failed) {
-      auto actions = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-      if (!m_client->phones().empty()) {
-        actions->addChild(ui::button({.text = i18n::tr("common.actions.cancel"), .variant = ButtonVariant::Tonal,
-                                      .onClick = [this] { m_client->cancelPairing(); }}));
-      }
-      actions->addChild(ui::button({.text = i18n::tr("link.common.try-again"), .variant = ButtonVariant::Primary,
-                                    .onClick = [this] { m_client->startPairing(); }}));
-      return emptyState("device-mobile-off", i18n::tr("link.pair.failed"), pair.error, s, std::move(actions));
+      steps->addChild(text(i18n::tr("link.pair.failed"), Tokens::typeTitle1, ColorRole::Label1, s));
+      steps->addChild(paragraph(pair.error, ColorRole::Label2));
+      actions->addChild(pill(i18n::tr("link.common.try-again"), std::nullopt, true, s, [this] { m_client->startPairing(); }));
+      if (cancellable) actions->addChild(pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this] { m_client->cancelPairing(); }));
+      steps->addChild(std::move(actions));
+      card->addChild(std::move(steps));
+      front->addChild(std::move(card));
+      return front;
     }
-    auto page = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .gap = Tokens::spaceP32 * s,
-                         .flexGrow = 1.0F});
+
     // A scanner needs dark modules on a light ground in either scheme, so the QR view keeps the light tone.
-    auto view = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .padding = Tokens::spaceP16 * s,
+    const float inset = Tokens::spaceP12 * s;
+    auto view = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .padding = inset,
                             .fill = ColorSpec{.fixed = colorForRole(ColorRole::View, PaletteTone::Light)},
                             .radius = Style::scaledRadius(Tokens::radiusR16, s),
-                            .border = colorSpecFromRole(ColorRole::Stroke), .borderWidth = 0.5F * s,
                             .width = Tokens::componentLinkQr * s, .height = Tokens::componentLinkQr * s});
-    const float drawn = (Tokens::componentLinkQr - 2.0F * Tokens::spaceP16) * s;
+    const float drawn = Tokens::componentLinkQr * s - 2.0F * inset;
     Image* image = nullptr;
     view->addChild(ui::image({.out = &image, .fit = ImageFit::Contain, .width = drawn, .height = drawn}));
     const std::unique_ptr<QRcode, decltype(&QRcode_free)> qr(
@@ -58,33 +71,27 @@ namespace linkapp {
       }
       (void)image->setSourceRaw(renderer, rgba.data(), rgba.size(), side, side, side * 4, PixmapFormat::RGBA);
     }
-    page->addChild(std::move(view));
+    card->addChild(std::move(view));
 
-    auto steps = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP12 * s,
-                             .maxWidth = Tokens::componentLinkPairText * s});
-    steps->addChild(text(i18n::tr("link.pair.scan"), Tokens::typeTitle2, ColorRole::Label1, s));
-    auto how = text(i18n::tr("link.pair.how"), Tokens::typeParagraph, ColorRole::Label2, s, 4);
-    how->setMaxWidth(Tokens::componentLinkPairText * s);
-    steps->addChild(std::move(how));
-    steps->addChild(text(i18n::tr("link.pair.code"), Tokens::typeParagraph, ColorRole::Label1, s));
+    steps->addChild(text(i18n::tr("link.pair.scan"), Tokens::typeTitle1, ColorRole::Label1, s));
+    steps->addChild(paragraph(i18n::tr("link.pair.how"), ColorRole::Label2));
+    steps->addChild(paragraph(i18n::tr("link.pair.code"), ColorRole::Label1));
     auto code = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     for (const char digit : pair.code) {
       auto tile = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center,
-                              .fill = colorSpecFromRole(ColorRole::Fill1), .radius = Style::scaledRadius(Tokens::radiusR8, s),
+                              .fill = colorSpecFromRole(ColorRole::Fill1), .radius = Style::scaledRadius(Tokens::radiusR12, s),
                               .width = Tokens::componentLinkCodeDigitW * s, .height = Tokens::componentLinkCodeDigitH * s});
-      tile->addChild(text(std::string(1, digit), Tokens::typeTitle2, ColorRole::Label1, s));
+      tile->addChild(text(std::string(1, digit), Tokens::typeTitle1, ColorRole::Label1, s));
       code->addChild(std::move(tile));
     }
     steps->addChild(std::move(code));
-    if (!m_client->phones().empty()) {
-      auto cancel = ui::row({});
-      cancel->setPadding(Tokens::spaceP12 * s, 0.0F, 0.0F, 0.0F);
-      cancel->addChild(ui::button({.text = i18n::tr("common.actions.cancel"), .variant = ButtonVariant::Tonal,
-                                   .onClick = [this] { m_client->cancelPairing(); }}));
-      steps->addChild(std::move(cancel));
+    if (cancellable) {
+      actions->addChild(pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this] { m_client->cancelPairing(); }));
+      steps->addChild(std::move(actions));
     }
-    page->addChild(std::move(steps));
-    return page;
+    card->addChild(std::move(steps));
+    front->addChild(std::move(card));
+    return front;
   }
 
 } // namespace linkapp

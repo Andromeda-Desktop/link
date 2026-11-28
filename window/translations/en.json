@@ -219,7 +219,10 @@
     "files": "Files",
     "files-sub": "Or drop here",
     "nodaemon-title": "Link is not running",
-    "nodaemon-body": "The Link service stopped, so this window cannot reach your phones. Start it again; your pairings are kept."
+    "nodaemon-body": "The Link service stopped, so this window cannot reach your phones. Start it again; your pairings are kept.",
+    "unpaired-title": "No phone yet",
+    "unpaired-body": "Pair your Android phone to see its messages, calls and photos here, send files both ways, and use its camera and mic on this computer.",
+    "pair": "Pair a phone"
   },
   "hotspot": {
     "always": "Always Allow",
@@ -308,10 +311,10 @@
     "home": "Home"
   },
   "pair": {
-    "code": "Or enter this code on the phone:",
+    "code": "Or type this code on the phone",
     "failed": "Pairing did not start",
     "how": "Open Link on your Android phone, tap Pair, and point the camera at this code. With no shared network, Bluetooth on both devices is enough.",
-    "scan": "Scan with Andromeda Link",
+    "scan": "Scan with Link on your phone",
     "title": "Pair a Phone"
   },
   "phone-card": {

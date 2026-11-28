@@ -152,11 +152,14 @@ namespace linkapp {
       return pageBody(renderer, width, height);
     }
     const Presence presence = m_client->presence();
-    if (m_page == Page::Home && presence.kind != Presence::Kind::NotPaired && !pairShown()) return home(renderer, width, height);
+    if (m_page == Page::Home && !pairShown()) return home(renderer, width, height);
     if (presence.kind == Presence::Kind::NotPaired || pairShown()) {
-      // Pair draws its own content for now (step 5 moves it onto the sky).
-      m_sky->hide();
-      return pageBody(renderer, width, height);
+      // pages.html PAGE pair: a young galaxy, seen from above.
+      SkyLook look = skyLook(SkyMode::Full);
+      look.forming = true;
+      look.dim = 0.55F;
+      look.camera = GalaxyCamera{.yaw = 0.9F, .pitch = 0.7F, .dist = 3.4F, .sx = 0.0F, .sy = 0.0F};
+      return m_sky->build(look, width, height, m_window->headerHeight(), pair(renderer, width, height), {});
     }
     if (m_page == Page::Mirror && (presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked)) {
       m_renderer = &renderer;
@@ -286,14 +289,22 @@ namespace linkapp {
   std::unique_ptr<Node> LinkApp::home(Renderer& renderer, float width, float height) {
     const float s = m_scale;
     const Presence presence = m_client->presence();
-    if (presence.kind == Presence::Kind::NoDaemon) {
+    // concept-g.html empty: the Full sky with a title, a line and, with no phone, Pair a phone.
+    if (presence.kind == Presence::Kind::NoDaemon || presence.kind == Presence::Kind::NotPaired) {
+      const bool unpaired = presence.kind == Presence::Kind::NotPaired;
       auto front = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .gap = Tokens::spaceP12 * s,
                                .width = width, .height = height});
-      front->addChild(text(i18n::tr("link.home.nodaemon-title"), Tokens::typeDisplay, ColorRole::Label1, s));
-      auto body = text(i18n::tr("link.home.nodaemon-body"), Tokens::typeTitle3, ColorRole::Label2, s, 3);
+      front->addChild(text(i18n::tr(unpaired ? "link.home.unpaired-title" : "link.home.nodaemon-title"), Tokens::typeDisplay, ColorRole::Label1, s));
+      auto body = text(i18n::tr(unpaired ? "link.home.unpaired-body" : "link.home.nodaemon-body"), Tokens::typeTitle3, ColorRole::Label2, s, 3);
       body->setMaxWidth(std::min(520.0F * s, width * 0.8F));
       body->setTextAlign(TextAlign::Center);
       front->addChild(std::move(body));
+      if (unpaired) {
+        auto actions = ui::row({});
+        actions->setPadding(Tokens::spaceP12 * s, 0.0F, 0.0F, 0.0F);
+        actions->addChild(pill(i18n::tr("link.home.pair"), std::nullopt, true, s, [this] { m_client->startPairing(); }, Tokens::sizeControlL));
+        front->addChild(std::move(actions));
+      }
       return m_sky->build(skyLook(SkyMode::Full), width, height, m_window->headerHeight(), std::move(front), {});
     }
     const float overlap = Tokens::componentLinkSheetOverlap * s;
