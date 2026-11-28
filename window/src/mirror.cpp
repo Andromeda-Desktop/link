@@ -286,14 +286,14 @@ namespace linkapp {
     auto column = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP8 * s, .width = side});
     auto switches = rowCard(s);
     settingRow(*switches, "hand-finger", i18n::tr("link.mirror.control"), i18n::tr("link.mirror.control-sub"),
-               ui::toggle({.checked = m_client->phoneSettings().input, .scale = s, .onChange = [this, pid](bool on) { m_client->setGrant(pid, "input", on); }}), s);
+               neutralToggle(m_client->phoneSettings().input, s, [this, pid](bool on) { m_client->setGrant(pid, "input", on); }), s);
     if (!phone.sound.empty()) {
       settingRow(*switches, "volume", i18n::tr("link.mirror.sound"), i18n::tr("link.mirror.sound-sub"),
-                 ui::toggle({.checked = phone.sound == "on", .scale = s,
-                             .onChange = [this, pid](bool on) { m_client->setPhoneAudio(pid, LinkClient::PhoneAudio::Sound, on); }}), s);
+                 neutralToggle(phone.sound == "on", s,
+                               [this, pid](bool on) { m_client->setPhoneAudio(pid, LinkClient::PhoneAudio::Sound, on); }), s);
     }
     settingRow(*switches, "sun-off", i18n::tr("link.mirror.screen-off"), i18n::tr("link.mirror.screen-off-sub"),
-               ui::toggle({.checked = m_client->mirrorScreenOff(), .scale = s, .onChange = [this](bool on) { m_client->setMirrorScreenOff(on); }}), s);
+               neutralToggle(m_client->mirrorScreenOff(), s, [this](bool on) { m_client->setMirrorScreenOff(on); }), s);
     column->addChild(std::move(switches));
     auto actions = rowCard(s);
     settingRow(*actions, "player-stop", i18n::tr("link.mirror.stop"), {},

@@ -158,8 +158,7 @@ namespace linkapp {
       words->addChild(note(i18n::tr(!granted ? "link.commands.grant-off" : away ? "link.commands.grant-away" : "link.commands.grant-on"),
                            ColorRole::Label2));
       r->addChild(std::move(words));
-      r->addChild(ui::toggle({.checked = granted, .scale = s,
-                              .onChange = [this, id](bool on) { m_client->setGrant(id, "commands", on); }}));
+      r->addChild(neutralToggle(granted, s, [this, id](bool on) { m_client->setGrant(id, "commands", on); }));
       grant->addChild(std::move(r));
     }
     page->addChild(std::move(grant));
@@ -334,7 +333,7 @@ namespace linkapp {
     const DesktopSettings& desk = m_client->desktopSettings();
     const std::string id = presence.phone.id;
     const auto toggle = [&](bool on, std::function<void(bool)> change) {
-      return ui::toggle({.checked = on, .scale = s, .onChange = std::move(change)});
+      return neutralToggle(on, s, std::move(change));
     };
     const auto chevron = [&](std::function<void()> click) {
       return iconKey("chevron-right", {}, false, Tokens::sizeControlM * s, s, std::move(click));

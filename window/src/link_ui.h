@@ -41,6 +41,14 @@ namespace linkapp {
     return std::format("{:02}:{:02}", tm.tm_hour, tm.tm_min);
   }
 
+  // A switch in the neutral primary (pages.html .tg): label_1 track and view knob when on, label_2 knob when off.
+  inline std::unique_ptr<Toggle> neutralToggle(bool on, float scale, std::function<void(bool)> change) {
+    return ui::toggle({.checked = on, .scale = scale, .onChange = std::move(change), .configure = [](Toggle& t) {
+                         t.setColors({.trackOff = ColorRole::Fill2, .trackOn = ColorRole::Label1,
+                                      .thumbOff = ColorRole::Label2, .thumbOn = ColorRole::View});
+                       }});
+  }
+
   // The filled neutral key (play, the primary pill): label_1 fill, view ink.
   inline Button::ButtonPalette playPalette() {
     const Button::ButtonStateColors rest{.bg = colorSpecFromRole(ColorRole::Label1), .border = clearColorSpec(),
