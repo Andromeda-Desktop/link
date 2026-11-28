@@ -1539,6 +1539,26 @@ namespace linkapp {
     return box;
   }
 
+  // A page's search field (pages.html .field): card fill with a stroke, on the shared query.
+  std::unique_ptr<Flex> LinkApp::pageSearch(const std::string& placeholder, float s) {
+    auto field = ui::searchCapsule({.out = &m_pageSearchInput, .placeholder = placeholder, .height = Tokens::sizeControlM, .scale = s,
+                                    .value = m_query, .clearButton = true,
+                                    .onChange = [this](const std::string& query) {
+                                      m_searchCaret = m_pageSearchInput != nullptr ? m_pageSearchInput->caret() : query.size();
+                                      setQuery(query);
+                                    },
+                                    .onKeyEvent = [this](std::uint32_t sym, std::uint32_t) {
+                                      if (sym != XKB_KEY_Escape || m_query.empty()) return false;
+                                      setQuery({});
+                                      return true;
+                                    }});
+    field->setFill(colorSpecFromRole(ColorRole::Card));
+    field->setBorder(colorSpecFromRole(ColorRole::Separator), s);
+    m_pageSearchInput->inputArea()->setTabFocusKey("link-page-search");
+    m_pageSearchInput->selectRange(m_searchCaret, m_searchCaret);
+    return field;
+  }
+
   bool LinkApp::splitPage() const {
     if (m_client == nullptr || pairShown()) return false;
     if (m_page != Page::Messages && (m_page != Page::Calls || m_client->callLog() != CallLog::Ready)) return false;
@@ -1560,21 +1580,8 @@ namespace linkapp {
     pane->setPadding(Tokens::spaceP16 * s, Tokens::spaceP12 * s, 0.0F, Tokens::spaceP12 * s);
     auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     bar->setPadding(0.0F, Tokens::spaceP4 * s, Tokens::spaceP16 * s, Tokens::spaceP4 * s);
-    auto field = ui::searchCapsule({.out = &m_threadSearchInput, .placeholder = i18n::tr("link.messages.search"), .height = Tokens::sizeControlM,
-                                    .scale = s, .value = m_query, .flexGrow = 1.0F, .clearButton = true,
-                                    .onChange = [this](const std::string& query) {
-                                      m_searchCaret = m_threadSearchInput != nullptr ? m_threadSearchInput->caret() : query.size();
-                                      setQuery(query);
-                                    },
-                                    .onKeyEvent = [this](std::uint32_t sym, std::uint32_t) {
-                                      if (sym != XKB_KEY_Escape || m_query.empty()) return false;
-                                      setQuery({});
-                                      return true;
-                                    }});
-    field->setFill(colorSpecFromRole(ColorRole::Card));
-    field->setBorder(colorSpecFromRole(ColorRole::Separator), line);
-    m_threadSearchInput->inputArea()->setTabFocusKey("link-thread-search");
-    m_threadSearchInput->selectRange(m_searchCaret, m_searchCaret);
+    auto field = pageSearch(i18n::tr("link.messages.search"), s);
+    field->setFlexGrow(1.0F);
     bar->addChild(std::move(field));
     bar->addChild(iconKey("edit", i18n::tr("link.messages.new-tooltip"), false, Tokens::sizeControlM * s, s, [this] { openCompose({}); }));
     pane->addChild(std::move(bar));
@@ -2255,21 +2262,22 @@ namespace linkapp {
     auto tile = std::make_unique<Node>();
     m_shown.erase(tile.get()); // a tile of an earlier grid may have had this address
     tile->addChild(ui::image({.fit = ImageFit::Cover}));
-    // Rulebook §9.7 thumbnail grid: a 2 px label_1 ring at a 2 px gap and a 20 px accent check badge at inset 8.
-    tile->addChild(ui::box({.fill = clearColorSpec(), .border = colorSpecFromRole(ColorRole::Label1), .borderWidth = 2.0F}));
-    tile->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Accent)}));
-    tile->addChild(ui::glyph({.glyph = std::string("check"), .color = colorSpecFromRole(ColorRole::OnAccent)}));
-    // A video's length at inset 8, bottom left (flow.html .pgrid i.vid): caption 600 in white over the picture.
-    tile->addChild(ui::label({.fontSize = Tokens::typeCaption.size * m_scale, .fontWeight = static_cast<FontWeight>(600),
-                              .color = colorSpecFromRole(ColorRole::OnAccent), .maxLines = 1}));
+    // pages.html .pg .sel: an inset core ring and a core check badge at the top right.
+    tile->addChild(ui::box({.fill = clearColorSpec(), .border = core(), .borderWidth = 0.0F}));
+    tile->addChild(ui::box({.fill = core()}));
+    tile->addChild(ui::glyph({.glyph = std::string("check"), .color = fixedColorSpec(rgbaHex(Tokens::componentLinkCoreInk))}));
+    // A video's length at the bottom left (pages.html .pg .vid): caption in white on a shade plate.
+    tile->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Shadow, Tokens::componentLinkVideoShade)}));
+    tile->addChild(ui::label({.fontSize = Tokens::typeCaption.size * m_scale, .color = colorSpecFromRole(ColorRole::OnAccent),
+                              .maxLines = 1}));
     return tile;
   }
 
   namespace {
-    // The corner check of a tile (rulebook §9.7: 20 px at inset 8), with an inset-8 margin around it as its hit area.
-    bool inCheck(float x, float y, float width, float height, float s) {
+    // The corner check of a tile (top right, inset 8), with an inset-8 margin around it as its hit area.
+    bool inCheck(float x, float y, float width, float /*height*/, float s) {
       const float reach = (Tokens::componentLinkTileCheck + 2.0F * Tokens::spaceP8) * s;
-      return x >= width - reach && y >= height - reach;
+      return x >= width - reach && y <= reach;
     }
   } // namespace
 
@@ -2294,25 +2302,27 @@ namespace linkapp {
     auto* ring = static_cast<Box*>(kids[1].get());
     auto* badge = static_cast<Box*>(kids[2].get());
     auto* check = static_cast<Glyph*>(kids[3].get());
-    auto* length = static_cast<Label*>(kids[4].get());
+    auto* plate = static_cast<Box*>(kids[4].get());
+    auto* length = static_cast<Label*>(kids[5].get());
     const float w = tile.width();
     const float h = tile.height();
     const bool picked = m_client.photos().selected(at(index));
-    const float radius = Style::scaledRadius(Tokens::radiusR12, s);
-    const float inset = picked ? 4.0F * s : 0.0F; // the ring and its gap stay inside the cell
-    image->setPosition(inset, inset);
-    image->setSize(w - 2.0F * inset, h - 2.0F * inset);
-    image->setRadius(std::max(0.0F, radius - inset));
-    ring->setBorder(colorSpecFromRole(picked ? ColorRole::Label1 : ColorRole::Stroke), (picked ? 2.0F : 0.5F) * s);
+    const float radius = Style::scaledRadius(Tokens::radiusR4, s);
+    image->setPosition(0.0F, 0.0F);
+    image->setSize(w, h);
+    image->setRadius(radius);
+    ring->setVisible(picked);
+    ring->setBorder(core(), Tokens::componentLinkTileRing * s);
     ring->setPosition(0.0F, 0.0F);
     ring->setSize(w, h);
     ring->setRadius(radius);
     const float d = Tokens::componentLinkTileCheck * s;
+    const float inset = Tokens::spaceP8 * s;
     // A hovered tile shows its empty check: a press there selects without opening the viewer.
     badge->setVisible(picked || hovered);
-    badge->setFill(picked ? colorSpecFromRole(ColorRole::Accent) : colorSpecFromRole(ColorRole::Shadow, Tokens::componentLinkTileCheckShade));
+    badge->setFill(picked ? core() : colorSpecFromRole(ColorRole::Shadow, Tokens::componentLinkTileCheckShade));
     badge->setBorder(picked ? clearColorSpec() : colorSpecFromRole(ColorRole::OnAccent), Tokens::componentLinkTileCheckEdge * s);
-    badge->setPosition(w - Tokens::spaceP8 * s - d, h - Tokens::spaceP8 * s - d);
+    badge->setPosition(w - inset - d, inset);
     badge->setSize(d, d);
     badge->setRadius(d / 2.0F);
     check->setVisible(picked);
@@ -2320,11 +2330,17 @@ namespace linkapp {
     if (m_renderer != nullptr) check->layout(*m_renderer); // its size is known only once measured
     check->setPosition(badge->x() + (d - check->width()) / 2.0F, badge->y() + (d - check->height()) / 2.0F);
     const Photo& photo = m_client.photos().items()[at(index)];
+    plate->setVisible(photo.videoS.has_value());
     length->setVisible(photo.videoS.has_value());
     if (photo.videoS) {
       length->setText(std::format("{}:{:02}", *photo.videoS / 60, *photo.videoS % 60));
-      length->setShadow(colorSpecFromRole(ColorRole::Shadow), 0.0F, s);
-      length->setPosition(Tokens::spaceP8 * s + inset, h - Tokens::spaceP8 * s - inset - Tokens::typeCaption.line * s);
+      if (m_renderer != nullptr) length->measure(*m_renderer);
+      const float padH = Tokens::spaceP4 * s;
+      const float plateH = Tokens::typeCaption.line * s;
+      plate->setPosition(inset, h - inset - plateH);
+      plate->setSize(length->width() + 2.0F * padH, plateH);
+      plate->setRadius(plateH / 2.0F);
+      length->setPosition(inset + padH, h - inset - plateH);
     }
     if (!m_search && index + Photos::kCount / 2 >= itemCount()) m_client.loadMorePhotos(); // a search covers loaded pages
     const std::string& path = photo.path;
@@ -2345,9 +2361,9 @@ namespace linkapp {
 
   std::unique_ptr<Node> PhotoAdapter::createSectionHeader() {
     auto header = ui::column({.align = FlexAlign::Start, .justify = FlexJustify::End});
-    header->setPadding(Tokens::spaceP16 * m_scale, 0.0F, Tokens::spaceP8 * m_scale, 0.0F);
+    header->setPadding(Tokens::spaceP12 * m_scale, 0.0F, Tokens::spaceP8 * m_scale, Tokens::spaceP2 * m_scale);
     header->addChild(ui::label({.fontSize = Tokens::typeFootnote.size * m_scale, .fontWeight = static_cast<FontWeight>(600),
-                                .color = colorSpecFromRole(ColorRole::Label2), .maxLines = 1}));
+                                .color = colorSpecFromRole(ColorRole::Label3), .maxLines = 1}));
     return header;
   }
 
@@ -2355,52 +2371,58 @@ namespace linkapp {
     if (section < m_days.size()) static_cast<Label*>(header.children()[0].get())->setText(m_days[section].second);
   }
 
-  // Photos (flow.html#page=photos): caption title, total and the All / Photos / Videos segment; the grid under day
-  // headers; the FloatingCapsuleBar over the grid, 24 px above the card's foot.
+  // Photos (pages.html B.photos): bar (All / Photos / Videos, the count, Take Photo, "Search by name"), the grid under
+  // day heads, and the floating selection bar over the grid's foot.
   std::unique_ptr<Node> LinkApp::photos(Renderer& renderer, float width, float height) {
     const float s = m_scale;
     const Photos& photos = m_client->photos();
-    std::vector<std::unique_ptr<Node>> caption;
-    caption.push_back(text(i18n::tr("link.pages.photos"), Tokens::typeHeadline, ColorRole::Label1, s));
-    if (photos.total() > 0) caption.push_back(text(groupedCount(photos.total()), Tokens::typeFootnote, ColorRole::Label2, s));
-    caption.push_back(ui::row({.flexGrow = 1.0F}));
+    auto page = ui::column({.align = FlexAlign::Stretch, .width = width, .height = height});
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .minHeight = Tokens::sizeControlM * s});
+    bar->setPadding(0.0F, 0.0F, Tokens::spaceP12 * s, 0.0F);
     if (m_viewing) {
-      // The lightbox caption: Back, the photo's place in the grid order.
-      caption.clear();
-      caption.push_back(ui::button({.glyph = std::string("chevron-left"), .glyphSize = Tokens::sizeSymbol * s,
-                                    .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.photos.back"),
-                                    .onClick = [this] { viewPhoto(std::nullopt); }}));
+      bar->addChild(iconKey("chevron-left", i18n::tr("link.photos.back"), false, Tokens::sizeControlM * s, s,
+                            [this] { viewPhoto(std::nullopt); }));
       const std::vector<std::size_t>* order = m_search ? &m_search->photos : nullptr;
       const auto& items = photos.items();
       const auto at = std::ranges::find(items, *m_viewing, &Photo::path);
       const auto index = static_cast<std::size_t>(at - items.begin());
       if (order != nullptr && std::ranges::find(*order, index) == order->end()) order = nullptr; // not a hit: place among all
       const std::size_t shown = order ? static_cast<std::size_t>(std::ranges::find(*order, index) - order->begin()) : index;
-      auto place = text(i18n::tr("link.photos.place", "index", groupedCount(shown + 1), "count", groupedCount(order ? order->size() : photos.total())),
-                        Tokens::typeFootnote, ColorRole::Label2, s);
-      caption.push_back(std::move(place));
-      caption.push_back(ui::row({.flexGrow = 1.0F}));
+      bar->addChild(text(i18n::tr("link.photos.place", "index", groupedCount(shown + 1), "count",
+                                  groupedCount(order ? order->size() : photos.total())),
+                         Tokens::typeBody, ColorRole::Label2, s));
     } else {
-      const bool taking = m_client->takingPhoto();
-      const bool live = m_client->presence().kind == Presence::Kind::Connected;
-      caption.push_back(ui::button({.text = i18n::tr(taking ? "link.photos.waiting" : "link.photos.take"),
-                                    .glyph = std::string("camera"), .enabled = live && !taking,
-                                    .variant = ButtonVariant::Tonal, .onClick = [this] { m_client->takePhoto(); }}));
-      if (taking) {
-        caption.push_back(ui::button({.text = i18n::tr("common.actions.cancel"), .variant = ButtonVariant::Ghost,
-                                      .onClick = [this] { m_client->cancelTakePhoto(); }}));
+      bar->addChild(ui::segmented({.options = std::vector<ui::SegmentedOption>{{.label = i18n::tr("link.photos.all")},
+                                                                               {.label = i18n::tr("link.pages.photos")},
+                                                                               {.label = i18n::tr("link.photos.videos")}},
+                                   .selectedIndex = static_cast<std::size_t>(photos.media()), .scale = s, .compact = true,
+                                   .surfaceRole = ColorRole::Card,
+                                   .onChange = [this](std::size_t i) { m_client->setPhotoMedia(static_cast<Photos::Media>(i)); },
+                                   .configure = [](Segmented& seg) { seg.setThumbRoles(ColorRole::Label1, ColorRole::View); }}));
+      if (photos.total() > 0) {
+        auto count = ui::row({.paddingH = Tokens::spaceP8 * s},
+                             text(i18n::tr(photos.total() == 1 ? "link.photos.item" : "link.photos.items", "count", groupedCount(photos.total())),
+                                  Tokens::typeBody, ColorRole::Label2, s));
+        bar->addChild(std::move(count));
       }
+      bar->addChild(ui::row({.flexGrow = 1.0F}));
+      if (m_client->takingPhoto()) {
+        bar->addChild(text(i18n::tr("link.photos.waiting"), Tokens::typeBody, ColorRole::Label2, s));
+        bar->addChild(pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this] { m_client->cancelTakePhoto(); }));
+      } else if (m_client->presence().kind == Presence::Kind::Connected) {
+        bar->addChild(pill(i18n::tr("link.photos.take"), std::string("camera"), false, s, [this] { m_client->takePhoto(); }));
+      }
+      auto field = pageSearch(i18n::tr("link.photos.search"), s);
+      const float searchWidth = Tokens::componentLinkPhotoSearch * s;
+      field->setMinWidth(searchWidth);
+      field->setMaxWidth(searchWidth);
+      bar->addChild(std::move(field));
     }
-    if (!m_viewing) caption.push_back(ui::segmented({.options = std::vector<ui::SegmentedOption>{{.label = i18n::tr("link.photos.all")}, {.label = i18n::tr("link.pages.photos")}, {.label = i18n::tr("link.photos.videos")}},
-                                     .selectedIndex = static_cast<std::size_t>(photos.media()), .scale = s, .compact = true,
-                                     .onChange = [this](std::size_t i) {
-                                       m_client->setPhotoMedia(static_cast<Photos::Media>(i));
-                                     }}));
-    const auto cards = [&](std::unique_ptr<Node> body) {
+    page->addChild(std::move(bar));
+    const auto filled = [&](std::unique_ptr<Node> body) {
       body->setFlexGrow(1.0F);
-      auto row = ui::row({.align = FlexAlign::Stretch, .width = width, .height = height});
-      row->addChild(card(std::move(caption), std::move(body), width, true));
-      return row;
+      page->addChild(std::move(body));
+      return std::move(page);
     };
     const auto retry = [this] {
       return ui::button({.text = i18n::tr("link.common.try-again"), .variant = ButtonVariant::Secondary,
@@ -2411,26 +2433,24 @@ namespace linkapp {
     case Photos::Load::Idle:
     case Photos::Load::Loading:
       if (photos.items().empty()) {
-        return cards(emptyState("photo", i18n::tr("link.photos.loading-title"), i18n::tr("link.photos.loading-body"), s));
+        return filled(emptyState("photo", i18n::tr("link.photos.loading-title"), i18n::tr("link.photos.loading-body"), s));
       }
       break;
     case Photos::Load::Denied:
-      return cards(emptyState("photo-off", i18n::tr("link.photos.denied-title"), i18n::tr("link.photos.denied-body"), s,
-                              retry()));
+      return filled(emptyState("photo-off", i18n::tr("link.photos.denied-title"), i18n::tr("link.photos.denied-body"), s, retry()));
     case Photos::Load::Unsupported:
-      return cards(emptyState("photo-off", i18n::tr("link.photos.unsupported-title"),
-                              i18n::tr("link.photos.unsupported-body"), s));
+      return filled(emptyState("photo-off", i18n::tr("link.photos.unsupported-title"), i18n::tr("link.photos.unsupported-body"), s));
     case Photos::Load::Failed:
-      return cards(emptyState("alert-circle", i18n::tr("link.photos.failed-title"), i18n::tr("link.photos.failed-body"), s, retry()));
+      return filled(emptyState("alert-circle", i18n::tr("link.photos.failed-title"), i18n::tr("link.photos.failed-body"), s, retry()));
     case Photos::Load::More:
     case Photos::Load::Ready:
       if (photos.items().empty()) {
-        return cards(videos ? emptyState("video", i18n::tr("link.photos.no-videos-title"), i18n::tr("link.photos.no-videos-body"), s)
-                            : emptyState("photo", i18n::tr("link.photos.none-title"), i18n::tr("link.photos.none-body"), s));
+        return filled(videos ? emptyState("video", i18n::tr("link.photos.no-videos-title"), i18n::tr("link.photos.no-videos-body"), s)
+                             : emptyState("photo", i18n::tr("link.photos.none-title"), i18n::tr("link.photos.none-body"), s));
       }
       break;
     }
-    if (m_viewing) return cards(viewer(renderer, width, height));
+    if (m_viewing) return filled(viewer(renderer, width, height));
     m_photos->setRenderer(&renderer);
     auto days = m_search ? std::vector<std::pair<std::size_t, std::string>>{{0, std::format("{} of {} loaded", m_search->photos.size(), photos.items().size())}}
                          : photos.days(nowMs());
@@ -2438,17 +2458,16 @@ namespace linkapp {
     starts.reserve(days.size());
     for (const auto& day : days) starts.push_back(day.first);
     m_photos->setDays(std::move(days));
-    auto page = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-    page->setPadding(0.0F, Tokens::spaceP24 * s, Tokens::spaceP24 * s, Tokens::spaceP24 * s);
-    const float headerH = (Tokens::spaceP16 + Tokens::typeFootnote.line + Tokens::spaceP8) * s;
+    const float headerH = (Tokens::spaceP12 + Tokens::typeFootnote.line + Tokens::spaceP8) * s;
+    const float gap = Tokens::spaceP4 * s;
     page->addChild(ui::virtualGridView({.out = &m_photoGrid, .state = &m_photoScroll, .contentScale = s,
-                                        .minCellWidth = Tokens::componentLinkPhotoMin * s, .squareCells = true,
-                                        .columnGap = Tokens::spaceP8 * s, .rowGap = Tokens::spaceP8 * s, .overscanRows = 2,
-                                        .itemCursorShape = CursorShape::Pointer, .adapter = m_photos.get(), .flexGrow = 1.0F}));
+                                        .minCellWidth = Tokens::componentLinkPhotoMin * s, .squareCells = true, .columnGap = gap,
+                                        .rowGap = gap, .overscanRows = 2, .itemCursorShape = CursorShape::Pointer,
+                                        .adapter = m_photos.get(), .flexGrow = 1.0F}));
     m_photoGrid->setSections(std::move(starts), headerH);
     if (m_photoScrollTo) m_photoGrid->scrollToIndex(*std::exchange(m_photoScrollTo, std::nullopt));
 
-    // FloatingCapsuleBar (handoff.yaml): "n selected · Save · Clear", or how the last save went.
+    // Selection bar (pages.html .fbar): "<n> selected", Clear, Save to Downloads; or how the last save went.
     std::string what;
     if (photos.selectedCount() > 0) {
       what = i18n::tr("link.photos.selected", "count", photos.selectedCount());
@@ -2459,25 +2478,24 @@ namespace linkapp {
                                       : i18n::tr("link.photos.not-saved", "count", photos.saveFailed());
     }
     if (!what.empty()) {
-      auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::Popover),
-                          .radius = Tokens::sizeControlL * s / 2.0F, .height = Tokens::sizeControlL * s});
-      bar->setPadding(0.0F, Tokens::spaceP8 * s, 0.0F, Tokens::spaceP16 * s);
-      bar->addChild(text(what, Tokens::typeBody, ColorRole::Label1, s));
+      const float h = Tokens::sizeControlXl * s;
+      auto selection = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::Popover),
+                                .radius = h / 2.0F, .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = s, .height = h});
+      selection->setPadding(0.0F, Tokens::spaceP8 * s, 0.0F, Tokens::spaceP16 * s);
+      selection->addChild(text(what, Tokens::typeBody, ColorRole::Label1, s));
       if (photos.selectedCount() > 0) {
-        const bool saving = photos.save() == Photos::Save::Saving;
-        bar->addChild(ui::button({.text = i18n::tr("link.common.save"), .glyph = std::string("download"), .enabled = !saving,
-                                  .variant = ButtonVariant::Ghost, .onClick = [this] { m_client->savePhotos(); }}));
-        bar->addChild(ui::button({.text = i18n::tr("link.photos.clear"), .glyph = std::string("x"), .variant = ButtonVariant::Ghost,
-                                  .onClick = [this] { m_client->clearPhotoSelection(); }}));
+        selection->addChild(pill(i18n::tr("link.photos.clear"), std::string("x"), false, s, [this] { m_client->clearPhotoSelection(); }));
+        if (photos.save() != Photos::Save::Saving) {
+          selection->addChild(pill(i18n::tr("link.photos.save"), std::string("download"), true, s, [this] { m_client->savePhotos(); }));
+        }
       }
       // Over the grid: out of the page's layout, laid out alone to learn its width.
-      bar->setParticipatesInLayout(false);
-      bar->layout(renderer);
-      const float pageH = height - Tokens::componentWindowCaption * s;
-      bar->setPosition((width - bar->width()) / 2.0F, pageH - Tokens::spaceP24 * s - bar->height());
-      page->addChild(std::move(bar));
+      selection->setParticipatesInLayout(false);
+      selection->layout(renderer);
+      selection->setPosition((width - selection->width()) / 2.0F, height - selection->height());
+      page->addChild(std::move(selection));
     }
-    return cards(std::move(page));
+    return page;
   }
 
   // Calls (pages.html B.calls): a pane with "Name or number" + Call and the log under day heads, a line, then the shown

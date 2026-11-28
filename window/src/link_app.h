@@ -328,6 +328,7 @@ namespace linkapp {
     [[nodiscard]] bool pairShown() const;
     // The page body fills the sheet edge to edge (pages.html .split): Messages and Calls while a phone is there.
     [[nodiscard]] bool splitPage() const;
+    [[nodiscard]] std::unique_ptr<Flex> pageSearch(const std::string& placeholder, float s);
     // Esc: cancels that pairing, else closes the Forget question.
     [[nodiscard]] bool dismissable() const;
     void dismiss();
@@ -347,7 +348,7 @@ namespace linkapp {
     std::optional<std::uint64_t> m_thread; // the selected thread
     std::string m_query;                   // the sidebar search field and the Messages "Search texts" field
     Input* m_searchInput = nullptr;
-    Input* m_threadSearchInput = nullptr;
+    Input* m_pageSearchInput = nullptr; // the page's own field on m_query (Messages, Photos)
     std::optional<SearchHits> m_search;    // the query's hits; set exactly while m_query is not empty
     struct Compose {
       std::string to;   // name or number as typed
