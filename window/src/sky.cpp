@@ -270,7 +270,7 @@ namespace linkapp {
     if (m_layer == nullptr || m_galaxy == nullptr) return;
     const float e = m_morph ? m_morph->eased : 1.0F;
     const float height = m_morph ? m_morph->fromHeight + (m_height - m_morph->fromHeight) * e : m_height;
-    m_galaxy->setSize(m_layer->width(), height);
+    m_galaxy->setFrameSize(m_layer->width(), height);
     m_galaxy->setMoving(m_morph.has_value() || m_dragging);
     m_galaxy->setCamera(camera());
     if (m_layer->front != nullptr) m_layer->front->setOpacity(e);
@@ -313,6 +313,7 @@ namespace linkapp {
     return it != m_arrivals.end() ? it->t : 1.0F;
   }
 
+  // Runs each life tick: it resizes only for paint (setFrameSize), so a tick never lays out the window.
   void Sky::placeLeaders() {
     if (m_layer == nullptr || m_galaxy == nullptr) return;
     const float s = m_scale;
@@ -340,19 +341,19 @@ namespace linkapp {
       const float length = std::hypot(dx, dy) * in;
       const float ex = px + dx * in;
       const float ey = py + dy * in;
-      leader.line->setSize(length, s);
+      leader.line->setFrameSize(length, s);
       leader.line->setPosition((px + ex - length) / 2.0F, (py + ey - s) / 2.0F);
       leader.line->setRotation(std::atan2(dy, dx));
       leader.line->setOpacity(band ? kBandLeaderAlpha / Tokens::componentLinkLeaderAlpha : 1.0F);
       leader.dot->setOpacity(in);
       const float k = alive ? 1.0F + 0.35F * std::sin(t * 3.0F + anchor.star[0] * 7.0F) : 1.0F;
       const float halo = Tokens::componentLinkLeaderHalo * (band ? kBandHaloShare : 1.0F) * s * k;
-      leader.halo->setSize(2.0F * halo, 2.0F * halo);
+      leader.halo->setFrameSize(2.0F * halo, 2.0F * halo);
       leader.halo->setRadius(halo);
       leader.halo->setPosition(px - halo, py - halo);
       leader.halo->setOpacity(in * (alive ? 0.22F / k : 0.2F));
       const float dot = Tokens::componentLinkLeaderDot * (band ? kBandDotShare : 1.0F) * s;
-      leader.dot->setSize(2.0F * dot, 2.0F * dot);
+      leader.dot->setFrameSize(2.0F * dot, 2.0F * dot);
       leader.dot->setRadius(dot);
       leader.dot->setPosition(px - dot, py - dot);
     }
