@@ -213,6 +213,7 @@ namespace linkapp {
     Transfer state = Transfer::Offered;
     std::string status; // TransferFinished status: done, failed, no-space, too-large, busy, cancelled
     std::vector<std::string> paths; // where an incoming transfer saved its files
+    std::vector<std::string> sources; // the local files an outgoing transfer sends: Try again sends them again
     std::uint64_t bytes = 0;
     std::uint64_t total = 0;
     std::int64_t atMs = 0;     // offered or first seen
@@ -229,8 +230,8 @@ namespace linkapp {
     std::int64_t atMs = 0;
   };
 
-  // The Activity list, newest first: transfers and clips. A progress for an unknown id is a transfer this desktop
-  // sends (SendFiles from any app); a declined offer leaves the list. At most kClips clips stay, in memory only.
+  // The Activity list, newest first: transfers and clips. A progress or finish for an unknown id is a transfer this
+  // desktop sends (SendFiles from any app); a declined offer leaves the list. At most kClips clips stay, in memory only.
   class Activity {
   public:
     static constexpr std::size_t kClips = 20;
@@ -241,6 +242,15 @@ namespace linkapp {
     // False when the move is rejected (a finished transfer) and nothing changed.
     bool progress(const std::string& id, std::uint64_t bytes, std::uint64_t total, std::int64_t nowMs);
     bool finished(const std::string& id, const std::string& status, std::vector<std::string> paths, std::int64_t nowMs);
+    // The SendFiles reply: names the files of an outgoing transfer, before or after its first progress. Never moves
+    // a state; an incoming transfer with this id stays as it is.
+    void sent(const std::string& id, const std::string& deviceId, std::vector<std::pair<std::string, std::uint64_t>> files,
+              std::vector<std::string> sources, std::int64_t nowMs);
+    // Removes a failed transfer (sent again under a new id). False for any other state.
+    bool forget(const std::string& id);
+    [[nodiscard]] static bool retryable(const TransferEntry& e) {
+      return !e.incoming && e.state == Transfer::Failed && e.status != "cancelled" && !e.sources.empty();
+    }
     void clipped(ClipEntry clip);
     // Removes finished transfers and every clip.
     void clearFinished();

@@ -566,175 +566,208 @@ namespace linkapp {
     return block;
   }
 
+  TransferAdapter::Section TransferAdapter::sectionOf(const TransferEntry& e) {
+    switch (e.state) {
+    case Transfer::Offered: return Section::Waiting;
+    case Transfer::Running: return Section::Running;
+    case Transfer::Done: return Section::Done;
+    case Transfer::Failed: return e.status == "cancelled" ? Section::Done : Section::Failed;
+    }
+    return Section::Done;
+  }
+
+  std::size_t TransferAdapter::itemCount() const {
+    const Activity& activity = m_client.activity();
+    m_rows.clear();
+    for (std::size_t i = 0; i < activity.rowCount(); ++i) {
+      const Activity::Row row = activity.row(i);
+      if (const auto* const* clip = std::get_if<const ClipEntry*>(&row)) {
+        if (m_section == Section::Done) m_rows.emplace_back(*clip);
+      } else if (const TransferEntry* e = std::get<const TransferEntry*>(row); sectionOf(*e) == m_section) {
+        m_rows.emplace_back(e);
+      }
+    }
+    if (m_section == Section::Running) {
+      const Presence presence = m_client.presence();
+      if (presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked) {
+        m_phone = presence.phone;
+        for (const StreamKind& k : kStreams) {
+          if (streamLive(m_phone.*k.state)) m_rows.emplace_back(&k);
+        }
+      }
+    }
+    return m_rows.size();
+  }
+
   std::uint64_t TransferAdapter::itemKey(std::size_t index) const {
-    const Activity::Row row = m_client.activity().row(index);
-    if (const auto* const* clip = std::get_if<const ClipEntry*>(&row)) return std::hash<std::string>{}(std::format("c:{}", (*clip)->id));
-    return std::hash<std::string>{}(std::get<const TransferEntry*>(row)->id);
+    return std::visit(
+        [](const auto* e) {
+          using T = std::remove_cvref_t<decltype(*e)>;
+          if constexpr (std::is_same_v<T, TransferEntry>) return std::hash<std::string>{}(e->id);
+          else if constexpr (std::is_same_v<T, ClipEntry>) return std::hash<std::string>{}(std::format("c:{}", e->id));
+          else return std::hash<std::string>{}(std::format("s:{}", e->glyph));
+        },
+        m_rows[index]);
   }
 
   float TransferAdapter::measureItem(Renderer& renderer, std::size_t index, float width) {
-    return build(index)->measure(renderer, LayoutConstraints::available(width, 1.0e6F)).height;
+    return build(index, false)->measure(renderer, LayoutConstraints::available(width, 1.0e6F)).height;
   }
 
   std::unique_ptr<Node> TransferAdapter::createItem() { return ui::column({.align = FlexAlign::Stretch}); }
 
-  void TransferAdapter::bindItem(Renderer& /*renderer*/, Node& item, std::size_t index, float /*width*/, bool /*hovered*/) {
+  void TransferAdapter::bindItem(Renderer& /*renderer*/, Node& item, std::size_t index, float /*width*/, bool hovered) {
     auto& holder = static_cast<Flex&>(item);
     while (!holder.children().empty()) holder.removeChild(holder.children().back().get());
-    holder.addChild(build(index));
+    holder.addChild(build(index, hovered));
   }
 
-  std::unique_ptr<Node> TransferAdapter::build(std::size_t index) const {
+  namespace {
+    // "2 min", "1 h", then the day: the age of a Done row.
+    std::string ageText(std::int64_t atMs, std::int64_t now) {
+      const std::int64_t s = std::max<std::int64_t>(0, (now - atMs) / 1000);
+      if (s < 60) return i18n::tr("link.activity.age-now");
+      if (s < 3600) return i18n::tr("link.activity.age-minutes", "count", s / 60);
+      if (daysAgo(atMs, now) == 0) return i18n::tr("link.activity.age-hours", "count", s / 3600);
+      return dayLabel(atMs, now);
+    }
+
+    std::string folderOf(const std::string& path) {
+      const auto slash = path.find_last_of('/');
+      const std::string dir = slash == std::string::npos ? std::string() : path.substr(0, slash);
+      return dir.substr(dir.find_last_of('/') + 1);
+    }
+  } // namespace
+
+  // Activity row (pages.html .row in a .card): avatar 32 | headline + footnote (a running transfer puts its core
+  // progress bar between them) | pills, or the age at the top right of a Done row.
+  std::unique_ptr<Node> TransferAdapter::build(std::size_t index, bool hovered) const {
     const float s = m_scale;
-    const Activity& activity = m_client.activity();
-    const auto atMs = [](const Activity::Row& row) { return std::visit([](const auto* e) { return e->atMs; }, row); };
-    const Activity::Row current = activity.row(index);
     const std::int64_t now = nowMs();
-    const float indent = Tokens::sizeControlM * s + Tokens::spaceP12 * s;
+    const float pad = Tokens::spaceP8 * s;
+    const float avatarSize = Tokens::sizeControlM * s;
     auto block = ui::column({.align = FlexAlign::Stretch});
-    const std::string day = dayLabel(atMs(current), now);
-    if (index == 0 || dayLabel(atMs(activity.row(index - 1)), now) != day) {
-      auto head = text(day, Tokens::typeFootnote, ColorRole::Label2, s);
-      head->setFontWeight(FontWeight::SemiBold);
-      auto line = ui::row({}, std::move(head));
-      line->setPadding(Tokens::spaceP16 * s, 0.0F, Tokens::spaceP8 * s, indent);
-      block->addChild(std::move(line));
+    if (index > 0) block->addChild(ui::separator({}));
+    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = pad, .paddingH = pad,
+                        .radius = Style::scaledRadius(Tokens::radiusR12, s)}); // nested in the r16 card, inset 4
+    auto lines = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    const auto headline = [&](std::string value) { lines->addChild(text(std::move(value), Tokens::typeHeadline, ColorRole::Label1, s)); };
+    const auto footnote = [&](std::string value, ColorRole role = ColorRole::Label2) {
+      lines->addChild(text(std::move(value), Tokens::typeFootnote, role, s));
+    };
+    std::vector<std::unique_ptr<Node>> trailing;
+
+    if (const auto* const* stream = std::get_if<const StreamKind*>(&m_rows[index])) {
+      const StreamKind& k = **stream;
+      const bool asking = m_phone.*k.state == "asking";
+      auto plate = avatar(ui::glyph({.glyph = std::string(k.glyph), .glyphSize = Tokens::sizeSymbol * s,
+                                     .color = fixedColorSpec(rgbaHex(Tokens::componentLinkCoreInk))}),
+                          s);
+      plate->setFill(core());
+      row->addChild(std::move(plate));
+      headline(i18n::tr(k.name));
+      footnote(i18n::tr(asking ? "link.home.asking" : k.on));
+      trailing.push_back(pill(i18n::tr(asking ? "link.home.cancel" : "link.home.stop"), std::nullopt, false, s,
+                              [this, id = m_phone.id, glyph = std::string(k.glyph)] { m_hooks.stop(id, glyph); }));
+    } else if (const auto* const* clip = std::get_if<const ClipEntry*>(&m_rows[index])) {
+      const ClipEntry& e = **clip;
+      row->addChild(glyphAvatar("clipboard", s));
+      headline(i18n::tr("link.activity.clip-received"));
+      std::size_t cut = std::min(e.text.find('\n'), std::size_t{200});
+      while (cut < e.text.size() && (static_cast<unsigned char>(e.text[cut]) & 0xC0U) == 0x80U) --cut; // a UTF-8 boundary
+      footnote(e.text.substr(0, cut));
+      trailing.push_back(text(ageText(e.atMs, now), Tokens::typeFootnote, ColorRole::Label2, s));
     } else {
-      auto rule = ui::column({.align = FlexAlign::Stretch});
-      rule->setPadding(0.0F, 0.0F, 0.0F, indent);
-      rule->addChild(ui::separator({}));
-      block->addChild(std::move(rule));
+      const TransferEntry& e = *std::get<const TransferEntry*>(m_rows[index]);
+      const std::string name = transferName(e);
+      const std::string id = e.id;
+      switch (sectionOf(e)) {
+      case Section::Running: {
+        row->addChild(glyphAvatar(e.incoming ? "file-download" : "file-upload", s));
+        headline(i18n::tr(e.incoming ? "link.activity.from-the-phone" : "link.activity.to-the-phone", "name", name));
+        const float progress = e.total > 0 ? static_cast<float>(e.bytes) / static_cast<float>(e.total) : 0.0F;
+        auto bar = ui::row({.align = FlexAlign::Center, .paddingV = Tokens::spaceP4 * s});
+        bar->addChild(ui::progressBar({.fill = core(), .track = colorSpecFromRole(ColorRole::Fill2), .progress = progress,
+                                       .height = Tokens::spaceP4 * s, .flexGrow = 1.0F}));
+        lines->addChild(std::move(bar));
+        std::string status = i18n::tr("link.activity.progress", "pct", e.total > 0 ? e.bytes * 100 / e.total : 0, "total", byteSize(e.total));
+        if (const double rate = transferRate(e, now); rate > 0.0) {
+          const auto left = static_cast<std::uint64_t>(static_cast<double>(e.total - std::min(e.bytes, e.total)) / rate);
+          status += std::format(" · {}/s · {}", byteSize(static_cast<std::uint64_t>(rate)),
+                                left < 60 ? i18n::tr("link.activity.seconds-left", "count", left)
+                                          : i18n::tr("link.activity.minutes-left", "count", (left + 59) / 60));
+        }
+        footnote(std::move(status));
+        trailing.push_back(pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this, id] { m_client.cancelTransfer(id); }));
+        break;
+      }
+      case Section::Waiting:
+        row->addChild(glyphAvatar("file-download", s));
+        headline(name);
+        footnote(i18n::tr("link.activity.offered", "size", byteSize(e.total)));
+        trailing.push_back(pill(i18n::tr("link.common.decline"), std::nullopt, false, s, [this, id] { m_client.declineTransfer(id); }));
+        trailing.push_back(pill(i18n::tr("link.common.save"), std::nullopt, true, s, [this, id] { m_client.acceptTransfer(id); }));
+        break;
+      case Section::Failed:
+        row->addChild(glyphAvatar("alert-triangle", s));
+        headline(name);
+        footnote(e.status == "no-space"    ? i18n::tr("link.activity.failed-no-space")
+                 : e.status == "too-large" ? i18n::tr("link.activity.failed-too-large")
+                 : e.status == "busy"      ? i18n::tr("link.activity.failed-busy")
+                                           : i18n::tr("link.activity.failed-broke-off", "pct", e.total > 0 ? e.bytes * 100 / e.total : 0),
+                 ColorRole::DangerText);
+        if (Activity::retryable(e)) {
+          trailing.push_back(pill(i18n::tr("link.common.try-again"), std::nullopt, false, s, [this, id] { m_client.retryTransfer(id); }));
+        }
+        break;
+      case Section::Done: {
+        const bool cancelled = e.state == Transfer::Failed;
+        row->addChild(glyphAvatar(e.files.size() == 1 ? fileGlyph(e.files.front().first) : "files", s));
+        headline(i18n::tr(e.incoming ? "link.activity.received" : "link.activity.sent", "name", name));
+        footnote(cancelled          ? i18n::tr("link.activity.cancelled")
+                 : e.paths.empty() ? byteSize(e.total)
+                                   : i18n::tr("link.activity.done-in", "size", byteSize(e.total), "folder", folderOf(e.paths.front())));
+        trailing.push_back(text(ageText(e.endMs, now), Tokens::typeFootnote, ColorRole::Label2, s));
+        break;
+      }
+      }
     }
-    if (const auto* const* clip = std::get_if<const ClipEntry*>(&current)) {
-      block->addChild(buildClip(**clip));
+    row->addChild(std::move(lines));
+    if (m_section == Section::Done) {
+      auto top = ui::column({.align = FlexAlign::End, .height = avatarSize}); // pages.html .tm align-self start
+      top->addChild(std::move(trailing.front()));
+      row->addChild(std::move(top));
     } else {
-      block->addChild(buildTransfer(*std::get<const TransferEntry*>(current)));
+      for (auto& node : trailing) row->addChild(std::move(node));
     }
+    if (hovered && activation(index)) row->setFill(colorSpecFromRole(ColorRole::Fill1));
+    block->addChild(std::move(row));
     return block;
   }
 
-  // Clip row: clipboard symbol | the text's first line, "Copied on <phone> · time" | Copy puts the text back on
-  // this desktop's clipboard.
-  std::unique_ptr<Node> TransferAdapter::buildClip(const ClipEntry& e) const {
-    const float s = m_scale;
-    const float key = Tokens::sizeControlM * s;
-    auto symbol = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
-                           .radius = Style::scaledRadius(Tokens::radiusR8, s), .width = key, .height = key});
-    symbol->addChild(ui::glyph({.glyph = std::string("clipboard"), .glyphSize = Tokens::sizeSymbol * s,
-                                .color = colorSpecFromRole(ColorRole::Label2)}));
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                        .minHeight = Tokens::componentLinkThreadRow * s});
-    row->addChild(std::move(symbol));
-    std::size_t cut = std::min(e.text.find('\n'), std::size_t{200});
-    while (cut < e.text.size() && (static_cast<unsigned char>(e.text[cut]) & 0xC0U) == 0x80U) --cut; // a UTF-8 boundary
-    const std::string first = e.text.substr(0, cut);
-    const Presence& presence = m_client.presence();
-    const std::string phone = presence.phone.id == e.deviceId ? presence.phone.name : i18n::tr("link.activity.the-phone");
-    auto body = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
-    auto title = text(first, Tokens::typeBody, ColorRole::Label1, s);
-    title->setFontWeight(FontWeight::Medium);
-    body->addChild(std::move(title));
-    body->addChild(text(i18n::tr("link.activity.copied-on", "phone", phone, "time", clock(e.atMs)), Tokens::typeFootnote, ColorRole::Label2, s));
-    row->addChild(std::move(body));
-    row->addChild(ui::button({.text = i18n::tr("desk.edit.copy"), .variant = ButtonVariant::Ghost, .onClick = [clip = e.text] {
-                                if (TextClipboard* clipboard = Input::textClipboard(); clipboard != nullptr) {
-                                  clipboard->setClipboardText(clip);
-                                }
-                              }}));
-    return row;
+  std::function<void()> TransferAdapter::activation(std::size_t index) const {
+    if (const auto* const* clip = std::get_if<const ClipEntry*>(&m_rows[index])) {
+      return [text = (*clip)->text] {
+        if (TextClipboard* clipboard = Input::textClipboard(); clipboard != nullptr) clipboard->setClipboardText(text);
+      };
+    }
+    const auto* const* entry = std::get_if<const TransferEntry*>(&m_rows[index]);
+    if (entry == nullptr || sectionOf(**entry) != Section::Done) return nullptr;
+    const TransferEntry& e = **entry;
+    if (e.incoming && e.paths.size() == 1) return [this, path = e.paths.front()] { m_hooks.open(path); };
+    if (!e.paths.empty()) return [this, paths = e.paths] { m_client.showInFolder(paths); };
+    return nullptr;
   }
 
-  // Transfer row (handoff.yaml): direction symbol | name, status line, ProgressBar | actions: offered Decline + Save,
-  // running Cancel, done Open (one received file) and "Show in Folder"; a failed one says why in danger_text.
+  void TransferAdapter::onActivate(std::size_t index) {
+    if (const auto run = activation(index)) run();
+  }
+
+  // A transfer's name: its one file, or the count of its files.
   std::string transferName(const TransferEntry& e) {
     return e.files.size() == 1 ? e.files.front().first
            : e.files.empty()   ? i18n::tr("link.activity.desktop-files")
                                : i18n::trp("link.common.files-count", static_cast<long>(e.files.size()));
-  }
-
-  std::unique_ptr<Node> TransferAdapter::buildTransfer(const TransferEntry& e) const {
-    const float s = m_scale;
-    const std::int64_t now = nowMs();
-    const float key = Tokens::sizeControlM * s;
-    auto symbol = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
-                           .radius = Style::scaledRadius(Tokens::radiusR8, s), .width = key, .height = key});
-    symbol->addChild(ui::glyph({.glyph = std::string(e.incoming ? "arrow-down" : "arrow-up"), .glyphSize = Tokens::sizeSymbol * s,
-                                .color = colorSpecFromRole(ColorRole::Label2)}));
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                        .minHeight = Tokens::componentLinkThreadRow * s});
-    row->addChild(std::move(symbol));
-
-    const std::string name = transferName(e);
-    std::string status;
-    switch (e.state) {
-    case Transfer::Offered: status = i18n::tr("link.activity.offered", "size", byteSize(e.total)); break;
-    case Transfer::Running: {
-      const auto pct = e.total > 0 ? e.bytes * 100 / e.total : 0;
-      status = std::format("{} %", pct);
-      if (const double rate = transferRate(e, now); rate > 0.0) {
-        const auto left = static_cast<std::uint64_t>(static_cast<double>(e.total - std::min(e.bytes, e.total)) / rate);
-        status += std::format(" · {}/s · {}", byteSize(static_cast<std::uint64_t>(rate)),
-                              left < 60 ? i18n::tr("link.activity.under-a-minute") : i18n::tr("link.activity.minutes-left", "count", (left + 59) / 60));
-      }
-      break;
-    }
-    case Transfer::Done:
-      if (e.incoming && !e.paths.empty()) {
-        const std::string& path = e.paths.front();
-        const auto slash = path.find_last_of('/');
-        const std::string dir = slash == std::string::npos ? std::string() : path.substr(0, slash);
-        status = i18n::tr("link.activity.saved-to", "folder", dir.substr(dir.find_last_of('/') + 1), "time", clock(e.endMs));
-      } else {
-        status = i18n::tr(e.incoming ? "link.activity.saved-line" : "link.activity.sent-line", "size", byteSize(e.total), "time", clock(e.endMs));
-      }
-      break;
-    case Transfer::Failed:
-      status = e.status == "cancelled"   ? i18n::tr("link.activity.cancelled")
-               : e.status == "no-space"  ? i18n::tr("link.activity.failed-no-space")
-               : e.status == "too-large" ? i18n::tr("link.activity.failed-too-large")
-               : e.status == "busy"      ? i18n::tr("link.activity.failed-busy")
-                                         : i18n::tr("link.activity.failed-broke-off");
-      break;
-    }
-    auto body = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
-    auto title = text(name, Tokens::typeBody, ColorRole::Label1, s);
-    title->setFontWeight(FontWeight::Medium);
-    body->addChild(std::move(title));
-    const bool failed = e.state == Transfer::Failed && e.status != "cancelled";
-    body->addChild(text(status, Tokens::typeFootnote, failed ? ColorRole::DangerText : ColorRole::Label2, s));
-    if (e.state == Transfer::Running) {
-      const float progress = e.total > 0 ? static_cast<float>(e.bytes) / static_cast<float>(e.total) : 0.0F;
-      body->addChild(ui::progressBar({.progress = progress, .height = Tokens::spaceP4 * s}));
-    }
-    row->addChild(std::move(body));
-
-    auto actions = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    const std::string id = e.id;
-    switch (e.state) {
-    case Transfer::Offered:
-      actions->addChild(ui::button({.text = i18n::tr("link.common.decline"), .variant = ButtonVariant::Tonal,
-                                    .onClick = [this, id] { m_client.declineTransfer(id); }}));
-      actions->addChild(ui::button({.text = i18n::tr("link.common.save"), .variant = ButtonVariant::Primary,
-                                    .onClick = [this, id] { m_client.acceptTransfer(id); }}));
-      break;
-    case Transfer::Running:
-      actions->addChild(ui::button({.text = i18n::tr("common.actions.cancel"), .variant = ButtonVariant::Tonal,
-                                    .onClick = [this, id] { m_client.cancelTransfer(id); }}));
-      break;
-    case Transfer::Done:
-      if (e.incoming && e.paths.size() == 1) {
-        actions->addChild(ui::button({.text = i18n::tr("link.common.open"), .variant = ButtonVariant::Ghost,
-                                      .onClick = [this, path = e.paths.front()] { m_open(path); }}));
-      }
-      if (!e.paths.empty()) {
-        actions->addChild(ui::button({.text = i18n::tr("link.common.show-in-folder"), .variant = ButtonVariant::Ghost,
-                                        .onClick = [this, paths = e.paths] { m_client.showInFolder(paths); }}));
-      }
-      break;
-    case Transfer::Failed: break;
-    }
-    if (!actions->children().empty()) row->addChild(std::move(actions));
-    return row;
   }
 
   LinkApp::LinkApp()
@@ -897,7 +930,12 @@ namespace linkapp {
         }
         if (m_conversationList != nullptr) m_conversationList->notifyDataChanged();
       });
-      m_transfers = std::make_unique<TransferAdapter>(*m_client, m_scale, [this](const std::string& path) { openLocalFile(path); });
+      const TransferAdapter::Hooks transferHooks{.open = [this](const std::string& path) { openLocalFile(path); },
+                                                 .stop = [this](const std::string& id, const std::string& glyph) { stopStream(id, glyph); }};
+      for (const auto section : {TransferAdapter::Section::Running, TransferAdapter::Section::Waiting, TransferAdapter::Section::Failed,
+                                 TransferAdapter::Section::Done}) {
+        m_transfers[static_cast<std::size_t>(section)] = std::make_unique<TransferAdapter>(*m_client, m_scale, section, transferHooks);
+      }
       m_client->setOnPaired([this](const std::string& id) { choosePhone(id); });
       DeskApp::commands().add({.id = "edit.find", .label = i18n::tr("link.commands.find"), .group = "Edit",
                                .shortcut = KeyChord{.sym = XKB_KEY_f, .modifiers = KeyMod::Ctrl},
@@ -957,25 +995,6 @@ namespace linkapp {
                          Tokens::typeTitle3, ColorRole::Label1, s));
       root->addChild(std::move(cue));
       return std::unique_ptr<Node>(std::move(root));
-    });
-    // The header's one Ghost action: "Clear all" on Waiting, "Clear finished" on Activity.
-    const auto clear = [this](bool finished) {
-      return ui::button({.text = i18n::tr(finished ? "link.common.clear-finished" : "link.common.clear-all"), .variant = ButtonVariant::Ghost,
-                         .onClick = [this, finished] { finished ? m_client->clearFinished() : m_client->clearAll(); }});
-    };
-    window.setHeaderAccessoryBuilder([this, clear]() -> std::unique_ptr<Node> {
-      if (m_client == nullptr || pairShown()) return ui::node();
-      if (m_page == Page::Activity && m_client->activity().finishedCount() > 0) {
-        return ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End}, clear(true));
-      }
-      return ui::node();
-    });
-    window.setHeaderAccessoryWidths([clear](Renderer& renderer) {
-      const auto width = [&](bool finished) {
-        return clear(finished)->measure(renderer, LayoutConstraints::available(1.0e6F, 1.0e6F)).width;
-      };
-      const float widest = std::max(width(false), width(true));
-      return AppWindow::HeaderAccessoryWidths{.floor = widest, .keep = widest};
     });
     return window;
   }
@@ -1511,7 +1530,7 @@ namespace linkapp {
     if (m_page == Page::Photos) return photos(renderer, width, height);
     if (m_page == Page::Files) return files(width, height);
     if (m_page == Page::Mirror) return mirror(width, height);
-    if (m_page == Page::Activity) return activity();
+    if (m_page == Page::Activity) return activity(renderer, width, height);
     if (m_page == Page::Settings && m_settingsView == SettingsView::Commands) return commands(presence, width, height);
     if (m_page == Page::Settings) return settings(presence);
     if (m_page != Page::Waiting) {
@@ -2648,18 +2667,90 @@ namespace linkapp {
     return split;
   }
 
-  // Activity (handoff.yaml): transfers since the app started; Link1 keeps no list.
-  std::unique_ptr<Node> LinkApp::activity() {
+  // Activity (pages.html B.activity): a bar "Today" | Clear finished, then two columns: Running, Waiting for you and
+  // Failed on the left, Done on the right. Each card is as tall as its rows up to the room left in its column; its rows
+  // scroll inside.
+  std::unique_ptr<Node> LinkApp::activity(Renderer& renderer, float width, float height) {
+    using Section = TransferAdapter::Section;
     const float s = m_scale;
-    if (m_client->activity().rowCount() == 0) {
+    std::array<std::size_t, 4> rows{};
+    for (std::size_t i = 0; i < rows.size(); ++i) rows[i] = m_transfers[i]->itemCount();
+    if (std::ranges::all_of(rows, [](std::size_t n) { return n == 0; })) {
       return emptyState("arrows-down-up", i18n::tr("link.activity.none-title"), i18n::tr("link.activity.none-body"), s);
     }
-    auto page = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-    page->setPadding(0.0F, Tokens::spaceP24 * s, Tokens::spaceP24 * s, Tokens::spaceP24 * s);
-    page->addChild(ui::virtualListView({.state = &m_transferScroll, .contentScale = s, .adapter = m_transfers.get(),
-                                        .flexGrow = 1.0F}));
+    const float gap = Tokens::spaceP24 * s;
+    const float barGap = Tokens::spaceP16 * s;
+    const float inset = Tokens::spaceP4 * s;
+    auto page = ui::column({.align = FlexAlign::Stretch, .gap = barGap, .width = width, .height = height});
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .minHeight = Tokens::sizeControlM * s});
+    auto today = text(i18n::tr("link.day.today"), Tokens::typeFootnote, ColorRole::Label2, s);
+    today->setFontWeight(FontWeight::SemiBold);
+    today->setFlexGrow(1.0F);
+    bar->addChild(std::move(today));
+    if (m_client->activity().finishedCount() > 0) {
+      bar->addChild(pill(i18n::tr("link.common.clear-finished"), std::nullopt, false, s, [this] { m_client->clearFinished(); }));
+    }
+    const float barHeight = bar->measure(renderer, LayoutConstraints::available(width, height)).height;
+    page->addChild(std::move(bar));
+    const float columnWidth = std::floor((width - gap) / 2.0F);
+    const float rowWidth = columnWidth - 2.0F * inset;
+    const float columnHeight = std::max(0.0F, height - barHeight - barGap);
+    const auto head = [&](const char* key) {
+      auto line = ui::row({.align = FlexAlign::Center});
+      line->setPadding(Tokens::spaceP12 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s);
+      auto title = text(i18n::tr(key), Tokens::typeFootnote, ColorRole::Label2, s);
+      title->setFontWeight(FontWeight::SemiBold);
+      line->addChild(std::move(title));
+      return line;
+    };
+    // One column of sections. The heads and card insets come first; the room left goes to the cards, the shortest
+    // first, each up to its rows' height and at least an equal share of what remains.
+    const auto column = [&](std::initializer_list<std::pair<Section, const char*>> sections) {
+      auto box = ui::column({.align = FlexAlign::Stretch, .width = columnWidth, .height = columnHeight});
+      float room = columnHeight;
+      struct Shown {
+        Section section;
+        const char* key;
+        float content = 0.0F;
+        float height = 0.0F;
+      };
+      std::vector<Shown> shown;
+      for (const auto& [section, key] : sections) {
+        const auto i = static_cast<std::size_t>(section);
+        if (rows[i] == 0) continue;
+        room -= head(key)->measure(renderer, LayoutConstraints::available(columnWidth, height)).height + 2.0F * inset;
+        float content = 0.0F;
+        for (std::size_t r = 0; r < rows[i] && content < columnHeight; ++r) content += m_transfers[i]->measureItem(renderer, r, rowWidth);
+        shown.push_back({.section = section, .key = key, .content = content});
+      }
+      std::vector<Shown*> byContent;
+      for (Shown& card : shown) byContent.push_back(&card);
+      std::ranges::sort(byContent, {}, &Shown::content);
+      for (std::size_t n = 0; n < byContent.size(); ++n) {
+        byContent[n]->height = std::min(byContent[n]->content, std::max(0.0F, room) / static_cast<float>(byContent.size() - n));
+        room -= byContent[n]->height;
+      }
+      for (const Shown& card : shown) {
+        const auto i = static_cast<std::size_t>(card.section);
+        box->addChild(head(card.key));
+        auto plate = ui::column({.align = FlexAlign::Stretch, .padding = inset, .fill = colorSpecFromRole(ColorRole::Card),
+                                 .radius = Style::scaledRadius(Tokens::radiusR16, s), .clipChildren = true});
+        auto rowsBox = ui::column({.align = FlexAlign::Stretch, .height = card.height});
+        rowsBox->addChild(ui::virtualListView({.state = &m_transferScroll[i], .contentScale = s, .adapter = m_transfers[i].get(),
+                                               .flexGrow = 1.0F}));
+        plate->addChild(std::move(rowsBox));
+        box->addChild(std::move(plate));
+      }
+      return box;
+    };
+    auto columns = ui::row({.align = FlexAlign::Start, .gap = gap, .flexGrow = 1.0F});
+    columns->addChild(column({{Section::Running, "link.activity.running"}, {Section::Waiting, "link.activity.waiting"},
+                              {Section::Failed, "link.activity.failed"}}));
+    columns->addChild(column({{Section::Done, "link.activity.done"}}));
+    page->addChild(std::move(columns));
     return page;
   }
+
 
   // Settings (handoff.yaml): max width 640; grouped cards (fill_1 r 12 p 4) of rows with a Toggle; Ghost destructive
   // "Forget <phone>…" that asks in place.

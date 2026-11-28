@@ -409,13 +409,8 @@ namespace linkapp {
     const Phone& phone = presence.phone;
     const std::string pid = phone.id;
     const PhonePlayer* p = player();
-    const auto streams = std::array{std::tuple{"camera", "link.home.webcam", "link.home.webcam-on", &phone.camera, kStarCamera},
-                                    std::tuple{"microphone", "link.home.mic", "link.home.mic-on", &phone.mic, kStarMic},
-                                    std::tuple{"volume", "link.home.sound", "link.home.sound-on", &phone.sound, kStarSound}};
-    const bool anyStream = std::ranges::any_of(streams, [](const auto& t) {
-      const std::string& state = *std::get<3>(t);
-      return state == "on" || state == "asking";
-    });
+    constexpr std::array stars{kStarCamera, kStarMic, kStarSound}; // by kStreams
+    const bool anyStream = std::ranges::any_of(kStreams, [&](const StreamKind& k) { return streamLive(phone.*k.state); });
     if (p == nullptr && !anyStream) return live;
     auto head = text(i18n::tr("link.home.running"), Tokens::typeFootnote, ColorRole::Label2, s);
     head->setFontWeight(FontWeight::SemiBold);
@@ -479,8 +474,11 @@ namespace linkapp {
     if (anyStream) {
       auto group = card();
       group->setPadding(2.0F * s, 6.0F * s, 2.0F * s, 6.0F * s);
-      for (const auto& [glyph, name, on, state, star] : streams) {
-        if (*state != "on" && *state != "asking") continue;
+      for (std::size_t k = 0; k < kStreams.size(); ++k) {
+        const auto& [glyph, name, on, field] = kStreams[k];
+        const std::string* const state = &(phone.*field);
+        const auto star = stars[k];
+        if (!streamLive(*state)) continue;
         const bool asking = *state == "asking";
         auto row = ui::row({.align = FlexAlign::Center, .gap = 10.0F * s, .minHeight = 44.0F * s});
         row->addChild(plate(glyph, 28.0F * s, *state, s));

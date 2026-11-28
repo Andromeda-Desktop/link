@@ -280,7 +280,7 @@ namespace {
   // Random Transfer* signals: one entry per id, newest first, only allowed moves, declined offers gone.
   void runActivity(unsigned seed) {
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> op(0, 6), idOf(0, 11), statusOf(0, 6);
+    std::uniform_int_distribution<int> op(0, 8), idOf(0, 11), statusOf(0, 6);
     const std::array<const char*, 7> statuses{"done", "failed", "declined", "no-space", "too-large", "busy", "cancelled"};
     Activity a;
     std::uint64_t clipId = 0;
@@ -315,9 +315,27 @@ namespace {
           expect(moved == was.has_value() && !after(), "a declined transfer leaves", seed, step);
         } else {
           const Transfer to = status == "done" ? Transfer::Done : Transfer::Failed;
-          expect(moved == (was && transferMayMove(*was, to)), "finish only by an allowed move", seed, step);
+          expect(moved == (!was || transferMayMove(*was, to)), "finish only by an allowed move", seed, step);
           if (moved) expect(after() == to, "finish sets the end state", seed, step);
         }
+        break;
+      }
+      case 7: {
+        const bool incoming = before != a.items().end() && before->incoming;
+        const std::uint64_t bytes = before == a.items().end() ? 0 : before->bytes;
+        a.sent(id, "p1", {{"s.pdf", 800}}, {"/home/u/s.pdf"}, now);
+        const auto it = std::ranges::find(a.items(), id, &TransferEntry::id);
+        expect(it != a.items().end(), "a sent transfer shows", seed, step);
+        expect(after() == (was ? *was : Transfer::Running), "a SendFiles reply never moves a state", seed, step);
+        if (it->state != Transfer::Done) expect(it->bytes == bytes, "a SendFiles reply keeps the progress", seed, step);
+        expect(incoming ? it->sources.empty() : it->sources.size() == 1 && it->files.size() == 1,
+               "only an outgoing transfer takes the names and sources", seed, step);
+        break;
+      }
+      case 8: {
+        const bool gone = a.forget(id);
+        expect(gone == (was == Transfer::Failed), "forget removes only a failed transfer", seed, step);
+        expect(gone ? !after() : after() == was, "forget leaves any other state", seed, step);
         break;
       }
       case 5:

@@ -303,19 +303,49 @@ namespace linkapp {
   }
 
   bool Activity::finished(const std::string& id, const std::string& status, std::vector<std::string> paths, std::int64_t nowMs) {
-    const auto it = std::ranges::find(m_items, id, &TransferEntry::id);
-    if (it == m_items.end()) return false;
+    auto it = std::ranges::find(m_items, id, &TransferEntry::id);
     if (status == "declined") {
+      if (it == m_items.end()) return false;
       m_items.erase(it);
       return true;
     }
     const Transfer to = status == "done" ? Transfer::Done : Transfer::Failed;
+    if (it == m_items.end()) {
+      m_items.insert(m_items.begin(), {.id = id, .incoming = false, .state = Transfer::Running, .atMs = nowMs});
+      it = m_items.begin();
+    }
     if (!transferMayMove(it->state, to)) return false;
     it->state = to;
     it->status = status;
     it->paths = std::move(paths);
     it->endMs = nowMs;
     if (to == Transfer::Done) it->bytes = it->total;
+    return true;
+  }
+
+  void Activity::sent(const std::string& id, const std::string& deviceId,
+                      std::vector<std::pair<std::string, std::uint64_t>> files, std::vector<std::string> sources,
+                      std::int64_t nowMs) {
+    auto it = std::ranges::find(m_items, id, &TransferEntry::id);
+    if (it == m_items.end()) {
+      m_items.insert(m_items.begin(), {.id = id, .incoming = false, .state = Transfer::Running, .atMs = nowMs});
+      it = m_items.begin();
+    } else if (it->incoming) {
+      return;
+    }
+    it->deviceId = deviceId;
+    it->files = std::move(files);
+    it->sources = std::move(sources);
+    if (it->total == 0) {
+      for (const auto& file : it->files) it->total += file.second;
+      if (it->state == Transfer::Done) it->bytes = it->total;
+    }
+  }
+
+  bool Activity::forget(const std::string& id) {
+    const auto it = std::ranges::find(m_items, id, &TransferEntry::id);
+    if (it == m_items.end() || it->state != Transfer::Failed) return false;
+    m_items.erase(it);
     return true;
   }
 

@@ -136,6 +136,8 @@ namespace linkapp {
     void acceptTransfer(const std::string& id);
     void declineTransfer(const std::string& id);
     void cancelTransfer(const std::string& id);
+    // Sends a failed outgoing transfer's files again (Activity::retryable); the new transfer replaces it.
+    void retryTransfer(const std::string& id);
     void clearFinished();
     // Opens the file manager on these files (org.freedesktop.FileManager1.ShowItems).
     void showInFolder(const std::vector<std::string>& paths);

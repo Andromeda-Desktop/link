@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <filesystem>
 #include <glib.h>
 #include <chrono>
@@ -1280,19 +1281,40 @@ namespace linkapp {
 
   void LinkClient::sendFiles(const std::string& deviceId, const std::vector<std::filesystem::path>& paths) {
     std::vector<bus::Struct<bus::UnixFd, std::string>> files;
+    std::vector<std::pair<std::string, std::uint64_t>> names;
+    std::vector<std::string> sources;
     for (const auto& path : paths) {
       const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY);
       if (fd < 0) {
         kLog.warn("SendFiles: open {}: {}", path.string(), std::strerror(errno));
         continue;
       }
+      struct stat st{};
+      names.emplace_back(path.filename().string(), ::fstat(fd, &st) == 0 ? static_cast<std::uint64_t>(st.st_size) : 0);
+      sources.push_back(path.string());
       files.emplace_back(bus::UnixFd{fd, bus::adopt_fd}, path.filename().string());
     }
     if (files.empty()) return;
     m_proxy->callMethodAsync("SendFiles").onInterface(kInterface).withArguments(deviceId, files)
-        .uponReplyInvoke([](std::optional<bus::Error> error, std::string /*transfer*/) {
-          if (error) kLog.warn("SendFiles: {}", error->getMessage());
+        .uponReplyInvoke([this, deviceId, names = std::move(names), sources = std::move(sources)](
+                             std::optional<bus::Error> error, std::string transfer) mutable {
+          if (error) {
+            kLog.warn("SendFiles: {}", error->getMessage());
+            return;
+          }
+          m_activity.sent(transfer, deviceId, std::move(names), std::move(sources), nowMs());
+          changed();
         });
+  }
+
+  void LinkClient::retryTransfer(const std::string& id) {
+    const auto it = std::ranges::find(m_activity.items(), id, &TransferEntry::id);
+    if (it == m_activity.items().end() || !Activity::retryable(*it)) return;
+    const std::string deviceId = it->deviceId;
+    const std::vector<std::filesystem::path> paths(it->sources.begin(), it->sources.end());
+    m_activity.forget(id);
+    changed();
+    sendFiles(deviceId, paths);
   }
 
   void LinkClient::setDnd(const std::string& deviceId, bool on) { sendSystemCommand(deviceId, "set-dnd", on ? 1 : 0); }

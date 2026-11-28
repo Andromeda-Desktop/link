@@ -209,29 +209,54 @@ namespace linkapp {
     Menu m_menu;
   };
 
-  // Activity: transfers and phone clips since the app started, newest first, with actions per state.
+  // A phone stream this desktop can run: the Home live card and the Activity Running card list it while live.
+  struct StreamKind {
+    const char* glyph;
+    const char* name; // i18n keys
+    const char* on;
+    std::string Phone::* state;
+  };
+  inline constexpr std::array kStreams{StreamKind{"camera", "link.home.webcam", "link.home.webcam-on", &Phone::camera},
+                                       StreamKind{"microphone", "link.home.mic", "link.home.mic-on", &Phone::mic},
+                                       StreamKind{"volume", "link.home.sound", "link.home.sound-on", &Phone::sound}};
+  [[nodiscard]] inline bool streamLive(const std::string& state) { return state == "on" || state == "asking"; }
+
   // A transfer's name: its one file, or the count of its files.
   [[nodiscard]] std::string transferName(const TransferEntry& e);
 
+  // One card of the Activity page as a virtual list: transfers and phone clips since the app started, newest first,
+  // and the phone's live streams in Running.
   class TransferAdapter final : public VirtualListAdapter {
   public:
-    TransferAdapter(LinkClient& client, const float& scale, std::function<void(const std::string&)> open)
-        : m_client(client), m_scale(scale), m_open(std::move(open)) {}
-    [[nodiscard]] std::size_t itemCount() const override { return m_client.activity().rowCount(); }
+    enum class Section : std::uint8_t { Running, Waiting, Failed, Done };
+    struct Hooks {
+      std::function<void(const std::string&)> open;                      // opens a local file with its default app
+      std::function<void(const std::string&, const std::string&)> stop; // stops a phone stream: device, glyph
+    };
+    TransferAdapter(LinkClient& client, const float& scale, Section section, Hooks hooks)
+        : m_client(client), m_scale(scale), m_section(section), m_hooks(std::move(hooks)) {}
+    // A cancelled transfer is Done: it needs nothing from the user.
+    [[nodiscard]] static Section sectionOf(const TransferEntry& e);
+    [[nodiscard]] std::size_t itemCount() const override;
     [[nodiscard]] std::uint64_t itemKey(std::size_t index) const override;
     [[nodiscard]] bool itemInteractive(std::size_t /*index*/) const override { return true; }
     [[nodiscard]] float measureItem(Renderer& renderer, std::size_t index, float width) override;
     [[nodiscard]] std::unique_ptr<Node> createItem() override;
     void bindItem(Renderer& renderer, Node& item, std::size_t index, float width, bool hovered) override;
+    void onActivate(std::size_t index) override;
 
   private:
-    [[nodiscard]] std::unique_ptr<Node> build(std::size_t index) const;
-    [[nodiscard]] std::unique_ptr<Node> buildTransfer(const TransferEntry& e) const;
-    [[nodiscard]] std::unique_ptr<Node> buildClip(const ClipEntry& e) const;
+    using Item = std::variant<const TransferEntry*, const ClipEntry*, const StreamKind*>;
+    [[nodiscard]] std::unique_ptr<Node> build(std::size_t index, bool hovered) const;
+    // A Done row's click: open its one file, show its files in the folder, or copy its clip. Null for other rows.
+    [[nodiscard]] std::function<void()> activation(std::size_t index) const;
 
     LinkClient& m_client;
     const float& m_scale;
-    std::function<void(const std::string&)> m_open; // opens a local file with its default app
+    Section m_section;
+    Hooks m_hooks;
+    mutable std::vector<Item> m_rows; // refreshed by itemCount
+    mutable Phone m_phone;            // the shown phone, for its stream rows
   };
 
   class LinkApp final : public DeskApp {
@@ -278,7 +303,7 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Node> messages(float width, float height);
     [[nodiscard]] std::unique_ptr<Node> compose(float s);
     [[nodiscard]] std::unique_ptr<Node> calls(Renderer& renderer, float width, float height);
-    [[nodiscard]] std::unique_ptr<Node> activity();
+    [[nodiscard]] std::unique_ptr<Node> activity(Renderer& renderer, float width, float height);
     [[nodiscard]] std::unique_ptr<Node> photos(Renderer& renderer, float width, float height);
     // PhotoLightbox (design-link-parity handoff.yaml) over the Photos card: the photo on the dark stage, the toolbar.
     [[nodiscard]] std::unique_ptr<Node> viewer(Renderer& renderer, float width, float height);
@@ -368,8 +393,8 @@ namespace linkapp {
     std::array<VirtualListView*, 2> m_feedList{}; // the Waiting cards of the last build, null off Waiting
     VirtualListView* m_conversationList = nullptr; // the open conversation of the last build, null off Messages
     VirtualGridView* m_photoGrid = nullptr; // the grid of the last build, null off the Photos page
-    std::unique_ptr<TransferAdapter> m_transfers;
-    ScrollViewState m_transferScroll;
+    std::array<std::unique_ptr<TransferAdapter>, 4> m_transfers; // by TransferAdapter::Section
+    std::array<ScrollViewState, 4> m_transferScroll;
     ScrollViewState m_settingsScroll;
     bool m_confirmForget = false; // Settings: the Forget row asks in place
     enum class SettingsView : std::uint8_t { Main, Commands };
