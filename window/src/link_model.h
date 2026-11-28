@@ -184,6 +184,15 @@ namespace linkapp {
     bool notificationsOff = false; // Link1 NotificationsOff: the phone's notification access is off
     bool inputBlocked = false;     // grant "input" held, but SessionCapabilities lacks "input"
   };
+  // Link1 Call: the phone's call while it rings or runs; none while idle.
+  struct PhoneCall {
+    enum class State : std::uint8_t { Ringing, Active };
+    State state = State::Ringing;
+    std::string number; // empty when the phone may not read it
+    std::string name;
+    std::string app;    // the app of a call without a number, such as Messenger
+    bool muted = false; // CallAction mute was sent: the ringer stays silent until the call ends
+  };
   // Link1 HotspotRequested: the phone asks to join its hotspot; the daemon declines after 30 s without an answer.
   struct HotspotAsk {
     std::string deviceId;

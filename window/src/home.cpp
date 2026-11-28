@@ -110,12 +110,78 @@ namespace linkapp {
     }
   } // namespace
 
+  // CallBar (handoff.yaml): who calls and the phone's call keys, centred over the sky; none without a call.
+  std::unique_ptr<Node> LinkApp::callBar(Renderer& renderer, float width, float top) {
+    const float s = m_scale;
+    const std::string shown = m_client->presence().phone.id;
+    const PhoneCall* call = m_client->call(shown);
+    std::string device = shown;
+    for (const Phone& phone : m_client->phones()) {
+      if (call != nullptr) break;
+      call = m_client->call(phone.id);
+      device = phone.id;
+    }
+    if (call == nullptr) return nullptr;
+    const float barWidth = std::min(Tokens::componentLinkCallbar * s, 0.7F * width);
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .padding = Tokens::spaceP8 * s,
+                        .fill = colorSpecFromRole(ColorRole::SolidRegular), .radius = Style::scaledRadius(Tokens::radiusR24, s),
+                        .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F, .width = barWidth});
+    bar->setParticipatesInLayout(false);
+    bar->setPosition((width - barWidth) / 2.0F, top);
+
+    const float pulse = Tokens::sizeControlL * s;
+    const float ring = Tokens::componentLinkCallRing * s;
+    auto mark = ui::row({.width = pulse, .height = pulse});
+    auto halo = ui::box({.fill = fixedColorSpec(rgbaHex(Tokens::componentLinkCallRingFill)), .radius = pulse / 2.0F + ring,
+                         .width = pulse + 2.0F * ring, .height = pulse + 2.0F * ring});
+    halo->setParticipatesInLayout(false);
+    halo->setPosition(-ring, -ring);
+    mark->addChild(std::move(halo));
+    auto disc = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = fixedColorSpec(rgbaHex(Tokens::componentLinkCall)),
+                         .radius = pulse / 2.0F, .width = pulse, .height = pulse});
+    disc->addChild(ui::glyph({.glyph = "phone-call", .glyphSize = Tokens::sizeSymbol * s,
+                              .color = fixedColorSpec(rgbaHex(Tokens::componentLinkCallInk))}));
+    mark->addChild(std::move(disc));
+    bar->addChild(std::move(mark));
+
+    const bool ringing = call->state == PhoneCall::State::Ringing;
+    const std::string who = !call->name.empty() ? call->name : !call->number.empty() ? call->number : !call->app.empty() ? call->app
+                                                                                                           : i18n::tr("link.call.unknown");
+    std::string sub = !call->name.empty() && !call->number.empty() ? call->number + " · " : std::string{};
+    sub += i18n::tr(ringing ? "link.call.answer-on-phone" : "link.call.on-phone");
+    auto lines = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    lines->setFlexShrink(1.0F);
+    lines->addChild(text(i18n::tr(ringing ? "link.call.calling" : "link.call.with", "who", who), Tokens::typeHeadline, ColorRole::Label1, s));
+    lines->addChild(text(std::move(sub), Tokens::typeFootnote, ColorRole::Label2, s));
+    bar->addChild(std::move(lines));
+    if (ringing && !call->muted) {
+      bar->addChild(pill(i18n::tr("link.call.mute"), std::string("volume-off"), false, s, [this, device] { m_client->callAction(device, "mute"); }));
+    }
+    auto end = pill(i18n::tr(ringing ? "link.call.decline" : "link.call.end"), std::string("phone-off"), false, s,
+                    [this, device] { m_client->callAction(device, "decline"); });
+    const Button::ButtonStateColors red{.bg = colorSpecFromRole(ColorRole::Danger), .border = clearColorSpec(),
+                                        .label = colorSpecFromRole(ColorRole::OnAccent)};
+    end->setCustomPalette({.normal = red, .hover = red, .pressed = red, .disabled = red});
+    bar->addChild(std::move(end));
+    // Over the sky's front: out of its layout, laid out alone.
+    bar->layout(renderer);
+    return bar;
+  }
+
+  std::unique_ptr<Node> LinkApp::skyWithCall(Renderer& renderer, const SkyLook& look, float width, float height, std::unique_ptr<Node> front,
+                                             std::vector<SkyAnchor> anchors) {
+    const float top = (look.mode == SkyMode::Hero ? Tokens::componentLinkCallbarTop : Tokens::componentLinkCallbarBandTop) * m_scale;
+    if (auto bar = callBar(renderer, width, top)) front->addChild(std::move(bar));
+    return m_sky->build(look, width, height, m_window->headerHeight(), std::move(front), std::move(anchors));
+  }
+
   SkyLife LinkApp::skyLife() const {
     if (m_client == nullptr) return SkyLife::Still;
     const Presence presence = m_client->presence();
     if (presence.kind != Presence::Kind::Connected && presence.kind != Presence::Kind::Locked) return SkyLife::Still;
     const PhonePlayer* p = player();
     if (p != nullptr && p->playing) return SkyLife::Music;
+    if (m_client->call(presence.phone.id) != nullptr) return SkyLife::Busy;
     const Phone& phone = presence.phone;
     const auto running = [](const std::string& state) { return state == "on"; };
     const bool transfer = std::ranges::any_of(m_client->activity().items(), [](const TransferEntry& e) { return e.state == Transfer::Running; });
@@ -159,7 +225,7 @@ namespace linkapp {
       look.forming = true;
       look.dim = 0.55F;
       look.camera = GalaxyCamera{.yaw = 0.9F, .pitch = 0.7F, .dist = 3.4F, .sx = 0.0F, .sy = 0.0F};
-      return m_sky->build(look, width, height, m_window->headerHeight(), pair(renderer, width, height), {});
+      return skyWithCall(renderer, look, width, height, pair(renderer, width, height), {});
     }
     if (m_page == Page::Mirror && (presence.kind == Presence::Kind::Connected || presence.kind == Presence::Kind::Locked)) {
       m_renderer = &renderer;
@@ -167,7 +233,7 @@ namespace linkapp {
       SkyLook look = skyLook(SkyMode::Full);
       look.camera = GalaxyCamera{.yaw = 0.55F, .pitch = 0.5F, .dist = 2.6F, .sx = Tokens::componentLinkMirrorCentre * 2.0F - 1.0F, .sy = 0.05F};
       if (m_client->mirror().kind != Mirror::Kind::Showing) look.dim = std::min(look.dim, 0.3F); // a message over the core, as on Away
-      return m_sky->build(look, width, height, m_window->headerHeight(), mirror(width, height), {});
+      return skyWithCall(renderer, look, width, height, mirror(width, height), {});
     }
     const float band = Tokens::componentLinkBand * s;
     const float overlap = Tokens::componentLinkBandOverlap * s;
@@ -175,7 +241,7 @@ namespace linkapp {
     auto column = ui::column({.align = FlexAlign::Stretch, .fill = skyFill(), .width = width, .height = height});
     std::vector<SkyAnchor> anchors;
     auto front = bandFront(width, band, anchors);
-    column->addChild(m_sky->build(skyLook(SkyMode::Band), width, band, m_window->headerHeight(), std::move(front), std::move(anchors)));
+    column->addChild(skyWithCall(renderer, skyLook(SkyMode::Band), width, band, std::move(front), std::move(anchors)));
     const float sheetHeight = height - band + overlap;
     const float padH = Tokens::spaceP24 * s;
     const float padTop = Tokens::spaceP20 * s;
@@ -305,7 +371,7 @@ namespace linkapp {
         actions->addChild(pill(i18n::tr("link.home.pair"), std::nullopt, true, s, [this] { m_client->startPairing(); }, Tokens::sizeControlL));
         front->addChild(std::move(actions));
       }
-      return m_sky->build(skyLook(SkyMode::Full), width, height, m_window->headerHeight(), std::move(front), {});
+      return skyWithCall(renderer, skyLook(SkyMode::Full), width, height, std::move(front), {});
     }
     const float overlap = Tokens::componentLinkSheetOverlap * s;
     const float hero = std::max(Tokens::componentLinkHeroMin * s, Tokens::componentLinkHeroShare * height);
@@ -323,7 +389,7 @@ namespace linkapp {
     front->addChild(homeLive(presence, liveWidth, s, anchors));
 
     auto page = ui::column({.align = FlexAlign::Stretch, .fill = skyFill(), .width = width, .height = total});
-    page->addChild(m_sky->build(skyLook(SkyMode::Hero), width, hero, m_window->headerHeight(), std::move(front), std::move(anchors)));
+    page->addChild(skyWithCall(renderer, skyLook(SkyMode::Hero), width, hero, std::move(front), std::move(anchors)));
     m_sky->setFollower(page->addChild(sheetHolder(std::move(sheet), width, sheetHeight, overlap, height, s)));
     if (total <= height) return page;
     auto scroll = ui::scrollView({.state = &m_homeScroll, .contentScale = s, .scrollbarAutoHide = true,

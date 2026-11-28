@@ -113,6 +113,24 @@ namespace linkapp {
           m_feed.upsert(std::move(item));
           changed();
         });
+    m_proxy->uponSignal("Call")
+        .onInterface(kInterface)
+        .call([this](const std::string& device, const std::string& state, const std::string& number, const std::string& name,
+                     const std::string& app) {
+          if (state == "idle") {
+            if (m_phoneCalls.erase(device) > 0) changed();
+            return;
+          }
+          if (state != "ringing" && state != "active") return;
+          const auto phone = std::ranges::find(m_phones, device, &Phone::id);
+          if (phone == m_phones.end() || !phone->connected) return;
+          PhoneCall& call = m_phoneCalls[device];
+          call.state = state == "ringing" ? PhoneCall::State::Ringing : PhoneCall::State::Active;
+          call.number = number;
+          call.name = name;
+          call.app = app;
+          changed();
+        });
     m_proxy->uponSignal("HotspotRequested")
         .onInterface(kInterface)
         .call([this](const std::string& device, const std::string& ssid) {
@@ -234,6 +252,7 @@ namespace linkapp {
           m_daemon = !error.has_value();
           m_phones.clear();
           if (error.has_value()) {
+            m_phoneCalls.clear();
             kLog.debug("link unavailable: {}", error->getMessage());
             changed();
             return;
@@ -289,6 +308,11 @@ namespace linkapp {
             phone.paused = std::ranges::find(paused, phone.id) != paused.end();
             m_phones.push_back(std::move(phone));
           }
+          // A phone that left takes its call with it: no idle Call comes for it.
+          std::erase_if(m_phoneCalls, [this](const auto& entry) {
+            const auto phone = std::ranges::find(m_phones, entry.first, &Phone::id);
+            return phone == m_phones.end() || !phone->connected;
+          });
           // Missed calls of the last day; the Calls page holds the rest.
           const std::int64_t since = nowMs() - 24LL * 3600 * 1000;
           using Call = bus::Struct<std::string, std::string, std::uint64_t, std::uint32_t, std::string>;
@@ -1244,6 +1268,31 @@ namespace linkapp {
     m_proxy->callMethodAsync("Dial").onInterface(kInterface).withArguments(deviceId, number)
         .uponReplyInvoke([](std::optional<bus::Error> error) {
           if (error) kLog.warn("Dial: {}", error->getMessage());
+        });
+  }
+
+  const PhoneCall* LinkClient::call(const std::string& deviceId) const {
+    const auto it = m_phoneCalls.find(deviceId);
+    return it != m_phoneCalls.end() ? &it->second : nullptr;
+  }
+
+  void LinkClient::callAction(const std::string& deviceId, const std::string& action) {
+    if (action == "mute") {
+      if (auto it = m_phoneCalls.find(deviceId); it != m_phoneCalls.end() && !it->second.muted) {
+        it->second.muted = true;
+        changed();
+      }
+    }
+    m_proxy->callMethodAsync("CallAction").onInterface(kInterface).withArguments(deviceId, action)
+        .uponReplyInvoke([this, alive = std::weak_ptr<bool>(m_alive), deviceId, action](std::optional<bus::Error> error) {
+          if (!error) return;
+          kLog.warn("CallAction {}: {}", action, error->getMessage());
+          if (alive.expired() || action != "mute") return;
+          // The ringer still rings: offer Mute again.
+          if (auto it = m_phoneCalls.find(deviceId); it != m_phoneCalls.end() && it->second.muted) {
+            it->second.muted = false;
+            changed();
+          }
         });
   }
 

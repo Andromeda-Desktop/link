@@ -109,6 +109,8 @@ def emit_sample():
     for (id_, _thread, address, body, _at, _status, _parts) in texts:
         if id_ in (5, 7, 8):
             emit("TextReceived", "(stss)", "p1", id_, address, body)
+    if os.environ.get("CALL"):  # ringing or active
+        emit("Call", "(sssss)", "p1", os.environ["CALL"], "+44 7700 900461", "Mum", "")
     if os.environ.get("HOTSPOT"):
         emit("HotspotRequested", "(ss)", "p1", "DIRECT-Link-4F2A")
     page = os.environ.get("PAGE", "waiting")
@@ -208,6 +210,8 @@ def stream_mirror(sock, codec="h264"):
 
 def call(_conn, _sender, _path, _iface, method, params, invocation):
     print("call", method, params, flush=True)
+    if method == "CallAction" and params[1] == "decline":
+        GLib.timeout_add(100, lambda: emit("Call", "(sssss)", params[0], "idle", "", "", "") and False)
     if method in ("OpenMirror", "OpenMirrorWith"):
         # MIRROR_CODEC: the codec of the MIRROR clip, returned whether or not the viewer offered it.
         codec = os.environ.get("MIRROR_CODEC", "h264") if method == "OpenMirrorWith" else "h264"

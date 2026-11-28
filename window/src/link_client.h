@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -143,6 +144,10 @@ namespace linkapp {
     void showInFolder(const std::vector<std::string>& paths);
     void connect(const std::string& deviceId);
     void ring(const std::string& deviceId);
+    // The call on a connected phone, or null.
+    [[nodiscard]] const PhoneCall* call(const std::string& deviceId) const;
+    // CallAction: "mute" silences the ringer until the call ends; "decline" ends a ringing or active call.
+    void callAction(const std::string& deviceId, const std::string& action);
     enum class PhoneAudio : std::uint8_t { Mic, Sound };
     // Starts or stops the phone's microphone as the default source, or its sound on the default sink.
     void setPhoneAudio(const std::string& deviceId, PhoneAudio audio, bool on);
@@ -252,6 +257,7 @@ namespace linkapp {
     std::uint64_t m_nearbySent = 0;    // serials of the Quick Share GetAll, as m_sent / m_applied
     std::uint64_t m_nearbyApplied = 0;
     std::vector<CallEntry> m_calls;
+    std::map<std::string, PhoneCall> m_phoneCalls; // by device id; only connected phones
     CallLog m_callLog = CallLog::Ready;
     std::set<std::string> m_dismissed; // missed calls the user cleared; Calls keeps reporting them
   };

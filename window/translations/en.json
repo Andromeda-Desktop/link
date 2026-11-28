@@ -179,6 +179,16 @@
     "send-here": "Send files here",
     "size": "Size"
   },
+  "call": {
+    "calling": "{who} is calling",
+    "with": "Call with {who}",
+    "unknown": "Unknown number",
+    "answer-on-phone": "answer on the phone",
+    "on-phone": "on the phone",
+    "mute": "Mute ring",
+    "decline": "Decline",
+    "end": "End call"
+  },
   "home": {
     "running": "Running on the phone",
     "connected": "Connected · {transport}",
