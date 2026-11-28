@@ -144,6 +144,44 @@ namespace linkapp {
       return bar;
     }
 
+    std::uint64_t callKey(const CallEntry& c) { return std::hash<std::string>{}(std::format("{}|{}", c.number, c.atMs)); }
+
+    // "Missed", "Outgoing · 4:02".
+    std::string callKind(const CallEntry& c) {
+      using K = CallEntry::Kind;
+      const std::string kind = c.kind == K::Missed     ? i18n::tr("link.calls.missed")
+                               : c.kind == K::Outgoing ? i18n::tr("link.calls.outgoing")
+                                                       : i18n::tr("link.calls.incoming");
+      return c.kind == K::Missed || c.seconds == 0 ? kind : std::format("{} · {}", kind, duration(c.seconds));
+    }
+
+    // A call in the .row form: direction glyph | title (danger_text when missed) and an optional sub line | time at the top.
+    std::unique_ptr<Flex> callRow(const CallEntry& c, const std::string& title, const std::string& sub, const std::string& time,
+                                  const ColorSpec& fill, Renderer& renderer, float width, float s) {
+      using K = CallEntry::Kind;
+      auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .padding = Tokens::spaceP8 * s, .fill = fill,
+                          .radius = Style::scaledRadius(Tokens::radiusR12, s)});
+      row->addChild(glyphAvatar(c.kind == K::Missed ? "phone-x" : c.kind == K::Outgoing ? "phone-outgoing" : "phone-incoming", s,
+                                ColorRole::Label1));
+      auto at = text(time, Tokens::typeFootnote, ColorRole::Label3, s);
+      const float atWidth = static_cast<Node&>(*at).measure(renderer, LayoutConstraints::available(width, 1.0e6F)).width;
+      const float bodyWidth = std::max(0.0F, width - 2.0F * Tokens::spaceP8 * s - Tokens::sizeControlM * s -
+                                                 2.0F * Tokens::spaceP12 * s - atWidth);
+      auto body = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+      auto name = text(title, Tokens::typeHeadline, c.kind == K::Missed ? ColorRole::DangerText : ColorRole::Label1, s);
+      name->setMaxWidth(bodyWidth);
+      body->addChild(std::move(name));
+      if (!sub.empty()) {
+        auto line = text(sub, Tokens::typeFootnote, ColorRole::Label2, s);
+        line->setMaxWidth(bodyWidth);
+        body->addChild(std::move(line));
+      }
+      row->addChild(std::move(body));
+      row->addChild(ui::column({.align = FlexAlign::End, .paddingV = Tokens::spaceP2 * s, .height = Tokens::sizeControlM * s},
+                               std::move(at)));
+      return row;
+    }
+
     std::string lockedText() { return i18n::tr("link.feed.locked"); }
 
   } // namespace
@@ -458,69 +496,54 @@ namespace linkapp {
     return block;
   }
 
-  std::uint64_t CallAdapter::itemKey(std::size_t index) const {
+  std::uint64_t CallAdapter::itemKey(std::size_t index) const { return callKey(m_client.calls()[at(index)]); }
+
+  std::uint64_t CallAdapter::itemRevision(std::size_t index) const {
     const CallEntry& c = m_client.calls()[at(index)];
-    return std::hash<std::string>{}(std::format("{}|{}", c.number, c.atMs));
+    return std::hash<std::string>{}(std::format("{}|{}|{}|{}|{}", c.name, c.seconds, static_cast<int>(c.kind), dayHead(index),
+                                                m_selected == callKey(c)));
+  }
+
+  std::string CallAdapter::dayHead(std::size_t index) const {
+    const auto& calls = m_client.calls();
+    const std::int64_t now = nowMs();
+    std::string day = dayLabel(calls[at(index)].atMs, now);
+    if (index > 0 && dayLabel(calls[at(index - 1)].atMs, now) == day) return {};
+    return day;
   }
 
   float CallAdapter::measureItem(Renderer& renderer, std::size_t index, float width) {
-    return build(index)->measure(renderer, LayoutConstraints::available(width, 1.0e6F)).height;
+    return build(renderer, index, width, false)->measure(renderer, LayoutConstraints::available(width, 1.0e6F)).height;
   }
 
   std::unique_ptr<Node> CallAdapter::createItem() { return ui::column({.align = FlexAlign::Stretch}); }
 
-  void CallAdapter::bindItem(Renderer& /*renderer*/, Node& item, std::size_t index, float /*width*/, bool /*hovered*/) {
+  void CallAdapter::bindItem(Renderer& renderer, Node& item, std::size_t index, float width, bool hovered) {
     auto& holder = static_cast<Flex&>(item);
     while (!holder.children().empty()) holder.removeChild(holder.children().back().get());
-    holder.addChild(build(index));
+    holder.addChild(build(renderer, index, width, hovered));
   }
 
-  // Call row (handoff.yaml): direction symbol | name + kind · duration | time | Call; missed in danger_text.
-  std::unique_ptr<Node> CallAdapter::build(std::size_t index) const {
-    using K = CallEntry::Kind;
+  void CallAdapter::onActivate(std::size_t index) { m_open(callKey(m_client.calls()[at(index)])); }
+
+  // Call row (pages.html .row, .sh): day head, then direction glyph | name (missed in danger_text) + kind · duration |
+  // time at the top; selected = card fill.
+  std::unique_ptr<Node> CallAdapter::build(Renderer& renderer, std::size_t index, float width, bool hovered) const {
     const float s = m_scale;
-    const auto& calls = m_client.calls();
-    const CallEntry& c = calls[at(index)];
-    const std::int64_t now = nowMs();
-    const auto today = [&](std::size_t row) { return daysAgo(calls[at(row)].atMs, now) == 0; };
-    const float indent = Tokens::sizeControlM * s + Tokens::spaceP12 * s;
+    const CallEntry& c = m_client.calls()[at(index)];
     auto block = ui::column({.align = FlexAlign::Stretch});
-    if (index == 0 || today(index - 1) != today(index)) {
-      auto head = text(today(index) ? i18n::tr("link.day.today") : i18n::tr("link.calls.earlier"), Tokens::typeFootnote, ColorRole::Label2, s);
+    if (const std::string day = dayHead(index); !day.empty()) {
+      auto head = text(day, Tokens::typeFootnote, ColorRole::Label3, s);
       head->setFontWeight(FontWeight::SemiBold);
-      auto line = ui::row({.paddingV = Tokens::spaceP8 * s}, std::move(head));
-      line->setPadding(Tokens::spaceP16 * s, 0.0F, Tokens::spaceP8 * s, indent);
+      auto line = ui::row({}, std::move(head));
+      line->setPadding(Tokens::spaceP12 * s, Tokens::spaceP8 * s, Tokens::spaceP4 * s, Tokens::spaceP8 * s);
       block->addChild(std::move(line));
-    } else {
-      auto rule = ui::column({.align = FlexAlign::Stretch});
-      rule->setPadding(0.0F, 0.0F, 0.0F, indent);
-      rule->addChild(ui::separator({}));
-      block->addChild(std::move(rule));
     }
-    const bool missed = c.kind == K::Missed;
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                        .minHeight = Tokens::componentLinkThreadRow * s});
-    row->addChild(missed ? glyphAvatar("phone-x", s, ColorRole::DangerText)
-                         : glyphAvatar(c.kind == K::Outgoing ? "arrow-up" : "arrow-down", s));
-    auto body = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-    auto name = text(c.name.empty() ? m_client.messages().nameFor(c.number) : c.name, Tokens::typeBody,
-                     missed ? ColorRole::DangerText : ColorRole::Label1, s);
-    name->setFontWeight(FontWeight::Medium);
-    body->addChild(std::move(name));
-    const std::string kind = missed                    ? i18n::tr("link.calls.missed")
-                             : c.kind == K::Outgoing ? i18n::tr("link.calls.outgoing")
-                                                     : i18n::tr("link.calls.incoming");
-    body->addChild(text(missed || c.seconds == 0 ? kind : std::format("{} · {}", kind, duration(c.seconds)),
-                        Tokens::typeFootnote, ColorRole::Label2, s));
-    row->addChild(std::move(body));
-    row->addChild(text(today(index) ? clock(c.atMs) : when(c.atMs) + " " + clock(c.atMs), Tokens::typeFootnote,
-                       ColorRole::Label2, s));
-    const std::string device = m_client.presence().phone.id;
-    const std::string number = c.number;
-    row->addChild(ui::button({.glyph = std::string("phone"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
-                              .tooltip = i18n::tr("link.common.call"),
-                              .onClick = [this, device, number] { m_client.dial(device, number); }}));
-    block->addChild(std::move(row));
+    const ColorSpec fill = m_selected == callKey(c) ? colorSpecFromRole(ColorRole::Card)
+                           : hovered                ? colorSpecFromRole(ColorRole::Fill1)
+                                                    : clearColorSpec();
+    block->addChild(callRow(c, c.name.empty() ? m_client.messages().nameFor(c.number) : c.name, callKind(c), clock(c.atMs), fill,
+                            renderer, width, s));
     return block;
   }
 
@@ -834,7 +857,10 @@ namespace linkapp {
       }
       m_threads = std::make_unique<ThreadAdapter>(*m_client, m_scale, m_thread, m_search, [this](std::uint64_t id) { openThread(id); });
       m_conversation = std::make_unique<ConversationAdapter>(*m_client, m_scale);
-      m_calls = std::make_unique<CallAdapter>(*m_client, m_scale, m_search);
+      m_calls = std::make_unique<CallAdapter>(*m_client, m_scale, m_call, m_search, [this](std::uint64_t key) {
+        m_call = key;
+        m_window->requestRebuild();
+      });
       m_photos = std::make_unique<PhotoAdapter>(*m_client, m_scale, m_search, [this](std::size_t item) {
         viewPhoto(m_client->photos().items()[item].path);
       });
@@ -1458,7 +1484,7 @@ namespace linkapp {
     case Presence::Kind::Locked: break;
     }
     if (m_page == Page::Messages) return messages(width, height);
-    if (m_page == Page::Calls) return calls();
+    if (m_page == Page::Calls) return calls(renderer, width, height);
     if (m_page == Page::Photos) return photos(renderer, width, height);
     if (m_page == Page::Files) return files(width, height);
     if (m_page == Page::Mirror) return mirror(width, height);
@@ -1514,7 +1540,8 @@ namespace linkapp {
   }
 
   bool LinkApp::splitPage() const {
-    if (m_page != Page::Messages || m_client == nullptr || pairShown()) return false;
+    if (m_client == nullptr || pairShown()) return false;
+    if (m_page != Page::Messages && (m_page != Page::Calls || m_client->callLog() != CallLog::Ready)) return false;
     const Presence::Kind kind = m_client->presence().kind;
     return kind == Presence::Kind::Connected || kind == Presence::Kind::Locked;
   }
@@ -2453,7 +2480,9 @@ namespace linkapp {
     return cards(std::move(page));
   }
 
-  std::unique_ptr<Node> LinkApp::calls() {
+  // Calls (pages.html B.calls): a pane with "Name or number" + Call and the log under day heads, a line, then the shown
+  // call's contact: avatar, name, number, Text + Call back, its newest calls, where the audio goes.
+  std::unique_ptr<Node> LinkApp::calls(Renderer& renderer, float width, float height) {
     const float s = m_scale;
     switch (m_client->callLog()) {
     case CallLog::Off:
@@ -2464,9 +2493,15 @@ namespace linkapp {
       return emptyState("alert-circle", i18n::tr("link.calls.failed-title"), i18n::tr("link.calls.failed-body"), s);
     case CallLog::Ready: break;
     }
-    auto page = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-    page->setPadding(0.0F, Tokens::spaceP24 * s, Tokens::spaceP24 * s, Tokens::spaceP24 * s);
+    const auto& log = m_client->calls();
     const std::string device = m_client->presence().phone.id;
+    const float line = s;
+    const float listWidth = std::clamp(width * Tokens::componentLinkThreadListShare, Tokens::componentLinkThreadListMin * s,
+                                       Tokens::componentLinkThreadList * s);
+    auto split = ui::row({.align = FlexAlign::Stretch, .gap = Tokens::spaceP16 * s, .width = width, .height = height});
+
+    auto pane = ui::column({.align = FlexAlign::Stretch, .width = listWidth - line, .height = height});
+    pane->setPadding(Tokens::spaceP16 * s, Tokens::spaceP12 * s, 0.0F, Tokens::spaceP12 * s);
     const auto dial = [this, device] {
       const std::string number = m_client->messages().numberFor(m_dial);
       if (number.empty()) return;
@@ -2475,24 +2510,91 @@ namespace linkapp {
       m_window->requestRebuild();
     };
     const float h = Tokens::sizeControlM * s;
-    auto field = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingH = Tokens::spaceP8 * s,
-                          .fill = colorSpecFromRole(ColorRole::Fill1), .radius = h / 2.0F, .height = h, .flexGrow = 1.0F});
-    field->addChild(ui::glyph({.glyph = std::string("phone"), .glyphSize = Tokens::sizeSymbol * s,
-                               .color = colorSpecFromRole(ColorRole::Label2)}));
+    auto field = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingH = Tokens::spaceP12 * s,
+                          .fill = colorSpecFromRole(ColorRole::Card), .radius = h / 2.0F, .border = colorSpecFromRole(ColorRole::Separator),
+                          .borderWidth = line, .height = h, .flexGrow = 1.0F});
+    field->addChild(ui::glyph({.glyph = std::string("phone"), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label3)}));
     field->addChild(ui::input({.value = m_dial, .placeholder = i18n::tr("link.messages.name-or-number"), .fontSize = Tokens::typeBody.size * s,
                                .frameVisible = false, .flexGrow = 1.0F,
                                .onChange = [this](const std::string& value) { m_dial = value; },
                                .onSubmit = [dial](const std::string&) { dial(); }}));
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingV = Tokens::spaceP8 * s});
-    row->addChild(std::move(field));
-    row->addChild(ui::button({.text = i18n::tr("link.common.call"), .variant = ButtonVariant::Primary, .onClick = dial}));
-    page->addChild(std::move(row));
-    if (m_client->calls().empty()) {
-      page->addChild(emptyState("phone", i18n::tr("link.calls.none-title"), i18n::tr("link.calls.none-body"), s));
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+    bar->setPadding(0.0F, Tokens::spaceP4 * s, Tokens::spaceP4 * s, Tokens::spaceP4 * s);
+    bar->addChild(std::move(field));
+    bar->addChild(pill(i18n::tr("link.common.call"), std::nullopt, true, s, dial));
+    pane->addChild(std::move(bar));
+    if (log.empty()) {
+      auto empty = emptyState("phone", i18n::tr("link.calls.none-title"), i18n::tr("link.calls.none-body"), s);
+      empty->setFlexGrow(1.0F);
+      pane->addChild(std::move(empty));
     } else {
-      page->addChild(ui::virtualListView({.state = &m_callScroll, .contentScale = s, .adapter = m_calls.get(), .flexGrow = 1.0F}));
+      pane->addChild(ui::virtualListView({.state = &m_callScroll, .contentScale = s, .adapter = m_calls.get(), .flexGrow = 1.0F}));
     }
-    return page;
+    auto edge = ui::row({.align = FlexAlign::Stretch, .width = listWidth, .height = height});
+    edge->addChild(std::move(pane));
+    edge->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .width = line, .height = height}));
+    split->addChild(std::move(edge));
+
+    auto shown = std::ranges::find_if(log, [this](const CallEntry& c) { return m_call == callKey(c); });
+    if (shown == log.end()) shown = log.begin();
+    if (shown == log.end()) {
+      split->addChild(ui::spacer());
+      return split;
+    }
+    m_call = callKey(*shown);
+    const CallEntry call = *shown;
+    const std::string name = call.name.empty() ? m_client->messages().nameFor(call.number) : call.name;
+    const float pad = Tokens::spaceP24 * s;
+    const float detailWidth = std::max(0.0F, width - listWidth - Tokens::spaceP16 * s - 2.0F * pad);
+    auto detail = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    detail->setPadding(pad, pad, 0.0F, pad);
+    auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP16 * s});
+    const float big = Tokens::spaceP64 * s;
+    const std::string letters = initials(name);
+    auto mark = text(letters.empty() ? "#" : letters, Tokens::typeTitle1, ColorRole::Label1, s);
+    head->addChild(ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
+                            .radius = big / 2.0F, .width = big, .height = big},
+                           std::move(mark)));
+    auto who = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    who->addChild(text(name, Tokens::typeTitle1, ColorRole::Label1, s));
+    if (name != call.number) who->addChild(text(call.number, Tokens::typeBody, ColorRole::Label2, s));
+    head->addChild(std::move(who));
+    const std::string number = call.number;
+    head->addChild(pill(i18n::tr("link.feed.text"), std::string("message"), false, s, [this, number] {
+      show(Page::Messages);
+      openCompose(number);
+    }));
+    head->addChild(pill(i18n::tr("link.client.call-back"), std::string("phone"), true, s,
+                        [this, device, number] { m_client->dial(device, number); }));
+    detail->addChild(std::move(head));
+
+    auto with = text(i18n::tr("link.calls.with", "name", name), Tokens::typeFootnote, ColorRole::Label3, s);
+    with->setFontWeight(FontWeight::SemiBold);
+    auto withLine = ui::row({}, std::move(with));
+    withLine->setPadding(Tokens::spaceP32 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s);
+    detail->addChild(std::move(withLine));
+    // The contact's newest calls; the whole log is in the list.
+    constexpr std::size_t kWithRows = 5;
+    const float inset = Tokens::spaceP4 * s;
+    auto card = ui::column({.align = FlexAlign::Stretch, .padding = inset, .fill = colorSpecFromRole(ColorRole::Card),
+                            .radius = Style::scaledRadius(Tokens::radiusR16, s)});
+    const std::int64_t now = nowMs();
+    std::size_t rows = 0;
+    for (const CallEntry& c : log) {
+      if (c.number != call.number) continue;
+      if (rows > 0) card->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .height = line}));
+      card->addChild(callRow(c, callKind(c), {}, dayLabel(c.atMs, now) + " " + clock(c.atMs), clearColorSpec(), renderer,
+                             detailWidth - 2.0F * inset, s));
+      if (++rows == kWithRows) break;
+    }
+    detail->addChild(std::move(card));
+    auto route = text(i18n::tr("link.calls.route"), Tokens::typeFootnote, ColorRole::Label3, s, 3);
+    route->setMaxWidth(detailWidth);
+    auto routeLine = ui::row({}, std::move(route));
+    routeLine->setPadding(Tokens::spaceP12 * s, 0.0F, 0.0F, 0.0F);
+    detail->addChild(std::move(routeLine));
+    split->addChild(std::move(detail));
+    return split;
   }
 
   // Activity (handoff.yaml): transfers since the app started; Link1 keeps no list.

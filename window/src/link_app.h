@@ -117,26 +117,33 @@ namespace linkapp {
     std::vector<ConversationRow> m_rows;
   };
 
-  // Calls: the phone's call log, newest first, grouped Today / Earlier.
+  // Calls: the phone's call log, newest first, under day heads; a click shows the call's contact beside the list.
   class CallAdapter final : public VirtualListAdapter {
   public:
-    CallAdapter(LinkClient& client, const float& scale, const std::optional<SearchHits>& search)
-        : m_client(client), m_scale(scale), m_search(search) {}
+    CallAdapter(LinkClient& client, const float& scale, const std::optional<std::uint64_t>& selected,
+                const std::optional<SearchHits>& search, std::function<void(std::uint64_t)> open)
+        : m_client(client), m_scale(scale), m_selected(selected), m_search(search), m_open(std::move(open)) {}
     [[nodiscard]] std::size_t itemCount() const override { return m_search ? m_search->calls.size() : m_client.calls().size(); }
     [[nodiscard]] std::uint64_t itemKey(std::size_t index) const override;
+    [[nodiscard]] std::uint64_t itemRevision(std::size_t index) const override;
     [[nodiscard]] bool itemInteractive(std::size_t /*index*/) const override { return true; }
     [[nodiscard]] float measureItem(Renderer& renderer, std::size_t index, float width) override;
     [[nodiscard]] std::unique_ptr<Node> createItem() override;
     void bindItem(Renderer& renderer, Node& item, std::size_t index, float width, bool hovered) override;
+    void onActivate(std::size_t index) override;
 
   private:
     // A shown row to its model index: the search hit, or the row itself while not searching.
     [[nodiscard]] std::size_t at(std::size_t row) const { return m_search ? m_search->calls[row] : row; }
-    [[nodiscard]] std::unique_ptr<Node> build(std::size_t index) const;
+    // The row's day head, or empty when the row above has the same day.
+    [[nodiscard]] std::string dayHead(std::size_t index) const;
+    [[nodiscard]] std::unique_ptr<Node> build(Renderer& renderer, std::size_t index, float width, bool hovered) const;
 
     LinkClient& m_client;
     const float& m_scale;
-    const std::optional<SearchHits>& m_search; // set while the sidebar search has a query
+    const std::optional<std::uint64_t>& m_selected; // the shown call's key
+    const std::optional<SearchHits>& m_search;      // set while the sidebar search has a query
+    std::function<void(std::uint64_t)> m_open;
   };
 
   // Photos: the phone's photos and videos page by page under day headers; a tile near the end asks for the next page.
@@ -270,7 +277,7 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Node> pair(Renderer& renderer, float s);
     [[nodiscard]] std::unique_ptr<Node> messages(float width, float height);
     [[nodiscard]] std::unique_ptr<Node> compose(float s);
-    [[nodiscard]] std::unique_ptr<Node> calls();
+    [[nodiscard]] std::unique_ptr<Node> calls(Renderer& renderer, float width, float height);
     [[nodiscard]] std::unique_ptr<Node> activity();
     [[nodiscard]] std::unique_ptr<Node> photos(Renderer& renderer, float width, float height);
     // PhotoLightbox (design-link-parity handoff.yaml) over the Photos card: the photo on the dark stage, the toolbar.
@@ -319,7 +326,7 @@ namespace linkapp {
     Surface* m_dropSurface = nullptr;
     // The pair view covers the page while this app pairs another phone (Pair Another Phone…).
     [[nodiscard]] bool pairShown() const;
-    // The page body fills the sheet edge to edge (pages.html .split): Messages while a phone is there.
+    // The page body fills the sheet edge to edge (pages.html .split): Messages and Calls while a phone is there.
     [[nodiscard]] bool splitPage() const;
     // Esc: cancels that pairing, else closes the Forget question.
     [[nodiscard]] bool dismissable() const;
@@ -384,6 +391,7 @@ namespace linkapp {
     CommandDrag m_commandDrag;
     std::string m_hotspotSheet;   // device id + ssid of the ask the sheet shows; empty while none shows
     std::string m_dial; // the "Name or number" field
+    std::optional<std::uint64_t> m_call; // the call whose contact Calls shows (CallAdapter key); the newest when unset
     AppWindow* m_window = nullptr;
     std::unique_ptr<Sky> m_sky;
     ScrollViewState m_homeScroll;

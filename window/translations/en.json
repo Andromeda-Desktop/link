@@ -28,7 +28,6 @@
   "calls": {
     "denied-body": "Allow Phone access for Link in the phone's settings.",
     "denied-title": "Link cannot read calls",
-    "earlier": "Earlier",
     "failed-body": "The phone could not read its call log.",
     "failed-title": "Calls did not load",
     "incoming": "Incoming",
@@ -37,7 +36,9 @@
     "none-title": "No calls",
     "off-body": "Turn on Calls in Link on your phone to see them here.",
     "off-title": "Calls are off",
-    "outgoing": "Outgoing"
+    "outgoing": "Outgoing",
+    "route": "Calls go through the phone; you talk on the phone or on this computer's speakers when Phone sound is on.",
+    "with": "With {name}"
   },
   "client": {
     "bad-video": "The phone sent a video format this desktop cannot play.",
