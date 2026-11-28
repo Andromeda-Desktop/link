@@ -319,6 +319,8 @@ namespace linkapp {
     Surface* m_dropSurface = nullptr;
     // The pair view covers the page while this app pairs another phone (Pair Another Phone…).
     [[nodiscard]] bool pairShown() const;
+    // The page body fills the sheet edge to edge (pages.html .split): Messages while a phone is there.
+    [[nodiscard]] bool splitPage() const;
     // Esc: cancels that pairing, else closes the Forget question.
     [[nodiscard]] bool dismissable() const;
     void dismiss();
@@ -336,8 +338,9 @@ namespace linkapp {
     ScrollViewState m_threadScroll;
     ScrollViewState m_conversationScroll;
     std::optional<std::uint64_t> m_thread; // the selected thread
-    std::string m_query;                   // the sidebar search field
+    std::string m_query;                   // the sidebar search field and the Messages "Search texts" field
     Input* m_searchInput = nullptr;
+    Input* m_threadSearchInput = nullptr;
     std::optional<SearchHits> m_search;    // the query's hits; set exactly while m_query is not empty
     struct Compose {
       std::string to;   // name or number as typed

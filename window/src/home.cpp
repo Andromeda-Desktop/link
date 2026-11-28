@@ -47,8 +47,6 @@ namespace linkapp {
     constexpr int kHomeWaiting = 4;
     constexpr int kCoolBattery = 15; // below it the core burns red (temp 1900 K)
 
-    ColorSpec core() { return fixedColorSpec(rgbaHex(Tokens::componentLinkCore)); }
-
     std::string transportName(std::string_view transport) {
       return transport == "bluetooth" ? i18n::tr("link.home.bluetooth") : i18n::tr("link.home.wifi");
     }
@@ -170,8 +168,12 @@ namespace linkapp {
     const float bodyWidth = std::max(0.0F, width - 2.0F * margin - 2.0F * padH);
     const float bodyHeight = std::max(0.0F, sheetHeight - padTop - padH);
     auto sheet = sheetPlane(width - 2.0F * margin, sheetHeight, false);
-    sheet->setPadding(padTop, padH, padH, padH);
-    sheet->addChild(pageBody(renderer, bodyWidth, bodyHeight));
+    if (splitPage()) {
+      sheet->addChild(pageBody(renderer, width - 2.0F * margin, sheetHeight));
+    } else {
+      sheet->setPadding(padTop, padH, padH, padH);
+      sheet->addChild(pageBody(renderer, bodyWidth, bodyHeight));
+    }
     m_sky->setFollower(column->addChild(sheetHolder(std::move(sheet), width, sheetHeight, overlap, height, s)));
     return column;
   }

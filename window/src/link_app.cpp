@@ -127,20 +127,21 @@ namespace linkapp {
                     s);
     }
 
-    // ReplyCapsule (handoff.yaml): a fill_1 capsule with the field and a round Primary send button.
-    std::unique_ptr<Flex> replyCapsule(const std::string& value, const std::string& placeholder, float height, float s,
-                                       std::function<void(const std::string&)> change, std::function<void()> send) {
-      const float key = height - 2.0F * Tokens::spaceP4 * s;
-      auto capsule = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::Fill1),
-                              .radius = height / 2.0F, .height = height, .flexGrow = 1.0F});
-      capsule->setPadding(0.0F, Tokens::spaceP4 * s, 0.0F, Tokens::spaceP12 * s);
-      capsule->addChild(ui::input({.value = value, .placeholder = placeholder, .fontSize = Tokens::typeBody.size * s,
-                                   .frameVisible = false, .flexGrow = 1.0F, .onChange = std::move(change),
-                                   .onSubmit = [send](const std::string&) { send(); }}));
-      capsule->addChild(ui::button({.glyph = std::string("send"), .glyphSize = Tokens::sizeSymbolInline * s,
-                                    .controlHeight = key, .variant = ButtonVariant::Primary, .tooltip = i18n::tr("link.common.send"), .radius = key / 2.0F,
-                                    .width = key, .onClick = std::move(send)}));
-      return capsule;
+    // Reply bar (pages.html .reply): a 40 field in card with a stroke, then the filled send key.
+    std::unique_ptr<Flex> replyBar(const std::string& value, const std::string& placeholder, float s,
+                                   std::function<void(const std::string&)> change, std::function<void()> send) {
+      const float height = Tokens::sizeControlL * s;
+      auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+      bar->setPadding(Tokens::spaceP8 * s, Tokens::spaceP20 * s, Tokens::spaceP16 * s, Tokens::spaceP20 * s);
+      auto field = ui::row({.align = FlexAlign::Center, .paddingH = Tokens::spaceP16 * s, .fill = colorSpecFromRole(ColorRole::Card),
+                            .radius = height / 2.0F, .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = s,
+                            .height = height, .flexGrow = 1.0F});
+      field->addChild(ui::input({.value = value, .placeholder = placeholder, .fontSize = Tokens::typeBody.size * s,
+                                 .frameVisible = false, .flexGrow = 1.0F, .onChange = std::move(change),
+                                 .onSubmit = [send](const std::string&) { send(); }}));
+      bar->addChild(std::move(field));
+      bar->addChild(iconKey("send", i18n::tr("link.common.send"), true, height, s, std::move(send)));
+      return bar;
     }
 
     std::string lockedText() { return i18n::tr("link.feed.locked"); }
@@ -336,50 +337,42 @@ namespace linkapp {
   }
 
   float ThreadAdapter::measureItem(Renderer& /*renderer*/, std::size_t /*index*/, float /*width*/) {
-    return Tokens::componentLinkThreadRow * m_scale;
+    return (Tokens::sizeControlM + 2.0F * Tokens::spaceP8) * m_scale;
   }
 
   std::unique_ptr<Node> ThreadAdapter::createItem() { return ui::column({.align = FlexAlign::Stretch}); }
 
-  // Thread row (handoff.yaml): avatar | name + time; last line + unread badge; selected = the selection tint.
-  void ThreadAdapter::bindItem(Renderer& /*renderer*/, Node& item, std::size_t index, float /*width*/, bool hovered) {
+  // Thread row (pages.html .row): avatar | name + core unread dot, last line | time at the top; selected = card fill.
+  void ThreadAdapter::bindItem(Renderer& renderer, Node& item, std::size_t index, float width, bool hovered) {
     const float s = m_scale;
     const Thread& t = m_client.messages().threads()[at(index)];
-    const bool selected = m_selected == t.id;
     const bool locked = m_client.presence().kind == Presence::Kind::Locked;
     auto& holder = static_cast<Flex&>(item);
     while (!holder.children().empty()) holder.removeChild(holder.children().back().get());
-    const ColorSpec fill = selected  ? colorSpecFromRole(ColorRole::Accent, SelectionList::selectionTintAlpha())
-                           : hovered ? colorSpecFromRole(ColorRole::Fill1)
-                                     : clearColorSpec();
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                        .paddingH = Tokens::spaceP12 * s, .fill = fill, .radius = Style::scaledRadius(Tokens::radiusR12, s),
-                        .height = Tokens::componentLinkThreadRow * s});
+    const ColorSpec fill = m_selected == t.id ? colorSpecFromRole(ColorRole::Card)
+                           : hovered          ? colorSpecFromRole(ColorRole::Fill1)
+                                              : clearColorSpec();
+    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .padding = Tokens::spaceP8 * s, .fill = fill,
+                        .radius = Style::scaledRadius(Tokens::radiusR12, s), .height = (Tokens::sizeControlM + 2.0F * Tokens::spaceP8) * s});
     row->addChild(initialsAvatar(t.name, s));
+    auto time = text(when(t.atMs), Tokens::typeFootnote, ColorRole::Label3, s);
+    const float timeWidth = static_cast<Node&>(*time).measure(renderer, LayoutConstraints::available(width, 1.0e6F)).width;
+    const float gap = Tokens::spaceP12 * s;
+    const float dot = Tokens::spaceP8 * s;
+    const float bodyWidth = std::max(0.0F, width - 2.0F * Tokens::spaceP8 * s - Tokens::sizeControlM * s - 2.0F * gap - timeWidth);
     auto body = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-    const ColorRole quiet = selected ? ColorRole::Label1 : ColorRole::Label2;
-    auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    auto name = text(t.name, Tokens::typeBody, ColorRole::Label1, s);
-    if (t.unread > 0) name->setFontWeight(FontWeight::SemiBold);
-    name->setFlexGrow(1.0F);
+    auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s});
+    auto name = text(t.name, Tokens::typeHeadline, ColorRole::Label1, s);
+    name->setMaxWidth(std::max(0.0F, bodyWidth - (t.unread > 0 ? dot + Tokens::spaceP4 * s : 0.0F)));
     head->addChild(std::move(name));
-    head->addChild(text(when(t.atMs), Tokens::typeFootnote, quiet, s));
+    if (t.unread > 0) head->addChild(ui::box({.fill = core(), .radius = dot / 2.0F, .width = dot, .height = dot}));
     body->addChild(std::move(head));
-    auto line = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    auto last = text(locked && t.unread > 0 ? lockedText() : t.last, Tokens::typeFootnote, quiet, s);
-    last->setFlexGrow(1.0F);
-    line->addChild(std::move(last));
-    if (t.unread > 0) {
-      const float h = Tokens::componentBadgeHeight * s;
-      auto badge = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .paddingH = Tokens::componentBadgePaddingX * s,
-                            .fill = colorSpecFromRole(ColorRole::Fill3), .radius = h / 2.0F, .minWidth = h, .height = h});
-      auto count = text(t.unread > 99 ? std::string("99+") : std::to_string(t.unread), Tokens::typeCaption, ColorRole::Label1, s);
-      count->setFontWeight(FontWeight::SemiBold);
-      badge->addChild(std::move(count));
-      line->addChild(std::move(badge));
-    }
-    body->addChild(std::move(line));
+    auto last = text(locked && t.unread > 0 ? lockedText() : t.last, Tokens::typeFootnote, ColorRole::Label2, s);
+    last->setMaxWidth(bodyWidth);
+    body->addChild(std::move(last));
     row->addChild(std::move(body));
+    row->addChild(ui::column({.align = FlexAlign::End, .paddingV = Tokens::spaceP2 * s, .height = Tokens::sizeControlM * s},
+                             std::move(time)));
     holder.addChild(std::move(row));
   }
 
@@ -411,28 +404,33 @@ namespace linkapp {
     if (m_rows[index].kind == ConversationRow::Kind::Failed) m_client.retryText(m_rows[index].serial);
   }
 
-  // Bubbles (handoff.yaml): in fill_1 left, out fill_2 right, r 16, paragraph, at most 72 % wide; the run's time
-  // below its last bubble; day lines as centred footnotes. An MMS image is a 240 x 160 cover inside a p4 bubble.
+  // Bubbles (pages.html .bub): in fill_2 left, out label_1 with view ink right, r16 with a r4 tail corner, at most
+  // bubble_max wide; the run's time or state under its last bubble; day lines as centred footnotes. An MMS image is
+  // a cover inside a p4 bubble.
   std::unique_ptr<Node> ConversationAdapter::build(std::size_t index, float width, Renderer* renderer) const {
     using K = ConversationRow::Kind;
     using N = ConversationRow::Note;
     const float s = m_scale;
     const ConversationRow& row = m_rows[index];
-    const float inset = Tokens::spaceP24 * s;
+    const float inset = Tokens::spaceP20 * s;
     if (row.kind == K::Day) {
-      return ui::row({.justify = FlexJustify::Center, .paddingV = Tokens::spaceP8 * s},
-                     text(row.text, Tokens::typeFootnote, ColorRole::Label2, s));
+      auto day = ui::row({.justify = FlexJustify::Center}, text(row.text, Tokens::typeFootnote, ColorRole::Label3, s));
+      day->setPadding(Tokens::spaceP8 * s, 0.0F, Tokens::spaceP2 * s, 0.0F);
+      return day;
     }
     const bool in = row.kind == K::In;
     const bool hidden = in && m_client.presence().kind == Presence::Kind::Locked;
     auto block = ui::column({.align = in ? FlexAlign::Start : FlexAlign::End, .gap = Tokens::spaceP4 * s, .paddingH = inset});
     const float padH = Tokens::spaceP12 * s;
-    const ColorSpec fill = colorSpecFromRole(in ? ColorRole::Fill1 : ColorRole::Fill2);
-    const float radius = Style::scaledRadius(Tokens::componentLinkBubbleRadius, s);
+    const ColorSpec fill = colorSpecFromRole(in ? ColorRole::Fill2 : ColorRole::Label1);
+    const float r = Style::scaledRadius(Tokens::componentLinkBubbleRadius, s);
+    const float tail = Style::scaledRadius(Tokens::radiusR4, s);
+    const Radii radii = in ? Radii{r, r, r, tail} : Radii{r, r, tail, r};
     if (row.image != 0 && !hidden) {
       const float pad = Tokens::spaceP4 * s;
       const float inner = Style::scaledRadius(Tokens::componentLinkBubbleRadius - Tokens::spaceP4, s);
-      auto bubble = ui::column({.padding = pad, .fill = fill, .radius = radius});
+      auto bubble = ui::column({.padding = pad, .fill = fill});
+      bubble->setRadii(radii);
       Image* image = nullptr;
       bubble->addChild(ui::image({.out = &image, .fit = ImageFit::Cover, .radius = inner,
                                   .width = Tokens::componentLinkMmsImageW * s, .height = Tokens::componentLinkMmsImageH * s}));
@@ -440,10 +438,11 @@ namespace linkapp {
       if (png != nullptr) (void)image->setSourceBytes(*renderer, png->data(), png->size());
       block->addChild(std::move(bubble));
     } else {
-      auto bubble = ui::column({.paddingV = Tokens::spaceP8 * s, .paddingH = padH, .fill = fill, .radius = radius});
+      auto bubble = ui::column({.paddingV = Tokens::spaceP8 * s, .paddingH = padH, .fill = fill});
+      bubble->setRadii(radii);
       bubble->addChild(ui::label({.text = hidden ? lockedText() : row.text, .fontSize = Tokens::typeParagraph.size * s,
                                   .fontWeight = static_cast<FontWeight>(Tokens::typeParagraph.weight),
-                                  .color = colorSpecFromRole(hidden ? ColorRole::Label2 : ColorRole::Label1),
+                                  .color = colorSpecFromRole(hidden ? ColorRole::Label2 : in ? ColorRole::Label1 : ColorRole::View),
                                   .maxWidth = std::max(0.0F, (width - 2.0F * inset) * Tokens::componentLinkBubbleMax - 2.0F * padH)}));
       block->addChild(std::move(bubble));
     }
@@ -454,8 +453,7 @@ namespace linkapp {
                                : row.note == N::NotSent                        ? i18n::tr("link.messages.not-sent")
                                : row.note == N::Delivered                      ? i18n::tr("link.messages.delivered")
                                                                                : clock(row.atMs);
-      block->addChild(ui::row({.paddingV = Tokens::spaceP2 * s, .paddingH = padH},
-                              text(meta, Tokens::typeFootnote, failed ? ColorRole::DangerText : ColorRole::Label2, s)));
+      block->addChild(text(meta, Tokens::typeCaption, failed ? ColorRole::DangerText : ColorRole::Label3, s));
     }
     return block;
   }
@@ -1515,62 +1513,101 @@ namespace linkapp {
     return box;
   }
 
-  // Messages (handoff.yaml): thread list card 320 | conversation card with the reply capsule.
+  bool LinkApp::splitPage() const {
+    if (m_page != Page::Messages || m_client == nullptr || pairShown()) return false;
+    const Presence::Kind kind = m_client->presence().kind;
+    return kind == Presence::Kind::Connected || kind == Presence::Kind::Locked;
+  }
+
+  // Messages (pages.html .split): the thread pane with "Search texts" and new message, a line, then the conversation:
+  // head (avatar, name, number, call), bubbles, reply bar. The split fills the sheet edge to edge.
   std::unique_ptr<Node> LinkApp::messages(float width, float height) {
     const float s = m_scale;
     const Messages& messages = m_client->messages();
-    auto cards = ui::row({.align = FlexAlign::Stretch, .gap = Tokens::componentWindowCardGap * s, .width = width, .height = height});
-    const float listWidth = Tokens::componentLinkThreadList * s;
+    const float line = s;
+    const float listWidth = std::clamp(width * Tokens::componentLinkThreadListShare, Tokens::componentLinkThreadListMin * s,
+                                       Tokens::componentLinkThreadList * s);
+    auto split = ui::row({.align = FlexAlign::Stretch, .gap = Tokens::spaceP16 * s, .width = width, .height = height});
 
-    std::vector<std::unique_ptr<Node>> listCaption;
-    listCaption.push_back(text(i18n::tr("link.pages.messages"), Tokens::typeHeadline, ColorRole::Label1, s));
-    listCaption.back()->setFlexGrow(1.0F);
-    listCaption.push_back(ui::button({.glyph = std::string("plus"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
-                                      .tooltip = i18n::tr("link.messages.new-tooltip"), .onClick = [this] { openCompose({}); }}));
-    std::unique_ptr<Node> list;
+    auto pane = ui::column({.align = FlexAlign::Stretch, .width = listWidth - line, .height = height});
+    pane->setPadding(Tokens::spaceP16 * s, Tokens::spaceP12 * s, 0.0F, Tokens::spaceP12 * s);
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+    bar->setPadding(0.0F, Tokens::spaceP4 * s, Tokens::spaceP16 * s, Tokens::spaceP4 * s);
+    auto field = ui::searchCapsule({.out = &m_threadSearchInput, .placeholder = i18n::tr("link.messages.search"), .height = Tokens::sizeControlM,
+                                    .scale = s, .value = m_query, .flexGrow = 1.0F, .clearButton = true,
+                                    .onChange = [this](const std::string& query) {
+                                      m_searchCaret = m_threadSearchInput != nullptr ? m_threadSearchInput->caret() : query.size();
+                                      setQuery(query);
+                                    },
+                                    .onKeyEvent = [this](std::uint32_t sym, std::uint32_t) {
+                                      if (sym != XKB_KEY_Escape || m_query.empty()) return false;
+                                      setQuery({});
+                                      return true;
+                                    }});
+    field->setFill(colorSpecFromRole(ColorRole::Card));
+    field->setBorder(colorSpecFromRole(ColorRole::Separator), line);
+    m_threadSearchInput->inputArea()->setTabFocusKey("link-thread-search");
+    m_threadSearchInput->selectRange(m_searchCaret, m_searchCaret);
+    bar->addChild(std::move(field));
+    bar->addChild(iconKey("edit", i18n::tr("link.messages.new-tooltip"), false, Tokens::sizeControlM * s, s, [this] { openCompose({}); }));
+    pane->addChild(std::move(bar));
     if (messages.load() == Messages::Load::Loading) {
-      list = ui::spacer();
+      pane->addChild(ui::spacer());
     } else if (messages.threads().empty()) {
-      list = emptyState("message", i18n::tr("link.messages.empty-title"), i18n::tr("link.messages.empty-body"), s);
+      auto empty = emptyState("message", i18n::tr("link.messages.empty-title"), i18n::tr("link.messages.empty-body"), s);
+      empty->setFlexGrow(1.0F);
+      pane->addChild(std::move(empty));
     } else {
-      auto padded = ui::column({.align = FlexAlign::Stretch, .padding = Tokens::spaceP4 * s, .flexGrow = 1.0F});
       if (m_search) {
-        auto scope = ui::row({.paddingV = Tokens::spaceP4 * s, .paddingH = Tokens::spaceP12 * s});
+        auto scope = ui::row({.paddingV = Tokens::spaceP4 * s, .paddingH = Tokens::spaceP8 * s});
         scope->addChild(text(i18n::tr("link.messages.search-scope", "count", messages.threads().size()), Tokens::typeFootnote,
                              ColorRole::Label2, s));
-        padded->addChild(std::move(scope));
+        pane->addChild(std::move(scope));
       }
-      padded->addChild(ui::virtualListView({.state = &m_threadScroll, .contentScale = s, .adapter = m_threads.get(),
-                                            .flexGrow = 1.0F}));
-      list = std::move(padded);
+      pane->addChild(ui::virtualListView({.state = &m_threadScroll, .contentScale = s, .adapter = m_threads.get(), .flexGrow = 1.0F}));
     }
-    list->setFlexGrow(1.0F);
-    cards->addChild(card(std::move(listCaption), std::move(list), listWidth, false));
+    auto edge = ui::row({.align = FlexAlign::Stretch, .width = listWidth, .height = height});
+    edge->addChild(std::move(pane));
+    edge->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .width = line, .height = height}));
+    split->addChild(std::move(edge));
 
-    const float convWidth = std::max(0.0F, width - listWidth - Tokens::componentWindowCardGap * s);
+    auto conv = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
     const Thread* thread = m_thread ? messages.thread(*m_thread) : nullptr;
-    std::vector<std::unique_ptr<Node>> head;
-    head.push_back(text(thread ? thread->name : m_compose ? i18n::tr("link.messages.new-title") : std::string(), Tokens::typeHeadline,
-                        ColorRole::Label1, s));
-    head.back()->setFlexGrow(1.0F);
-    std::unique_ptr<Node> body;
+    if (m_compose || thread != nullptr) {
+      auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s});
+      head->setPadding(Tokens::spaceP16 * s, Tokens::spaceP20 * s, Tokens::spaceP12 * s, Tokens::spaceP20 * s);
+      if (m_compose) {
+        head->addChild(text(i18n::tr("link.messages.new-title"), Tokens::typeTitle3, ColorRole::Label1, s));
+      } else {
+        head->addChild(initialsAvatar(thread->name, s));
+        auto who = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+        who->addChild(text(thread->name, Tokens::typeTitle3, ColorRole::Label1, s));
+        if (thread->address != thread->name) who->addChild(text(thread->address, Tokens::typeFootnote, ColorRole::Label2, s));
+        head->addChild(std::move(who));
+        const std::string number = thread->address;
+        const std::string device = m_client->presence().phone.id;
+        head->addChild(iconKey("phone", i18n::tr("link.common.call"), false, Tokens::sizeControlM * s, s,
+                               [this, device, number] { m_client->dial(device, number); }));
+      }
+      conv->addChild(std::move(head));
+      conv->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .height = line}));
+    }
     if (m_compose) {
-      body = compose(s);
+      conv->addChild(compose(s));
     } else if (thread == nullptr) {
-      body = emptyState("message", i18n::tr("link.messages.none-title"), i18n::tr("link.messages.none-body"), s);
+      auto empty = emptyState("message", i18n::tr("link.messages.none-title"), i18n::tr("link.messages.none-body"), s);
+      empty->setFlexGrow(1.0F);
+      conv->addChild(std::move(empty));
     } else {
-      const std::string number = thread->address;
-      const std::string device = m_client->presence().phone.id;
-      head.push_back(ui::button({.glyph = std::string("phone"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
-                                 .tooltip = i18n::tr("link.common.call"), .onClick = [this, device, number] { m_client->dial(device, number); }}));
       m_conversation->setRows(messages.conversation(thread->id, nowMs()));
-      auto column = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-      VirtualListView* log = nullptr;
-      column->addChild(ui::virtualListView({.out = &log, .state = &m_conversationScroll, .contentScale = s,
-                                            .itemGap = Tokens::spaceP4 * s, .adapter = m_conversation.get(), .flexGrow = 1.0F}));
-      m_conversationList = log;
-      log->scrollView().setStickToBottom(true);
-      log->setAnchorBottom(true);
+      auto log = ui::column({.align = FlexAlign::Stretch, .paddingV = Tokens::spaceP12 * s, .flexGrow = 1.0F});
+      VirtualListView* list = nullptr;
+      log->addChild(ui::virtualListView({.out = &list, .state = &m_conversationScroll, .contentScale = s,
+                                         .itemGap = Tokens::spaceP4 * s, .adapter = m_conversation.get(), .flexGrow = 1.0F}));
+      m_conversationList = list;
+      list->scrollView().setStickToBottom(true);
+      list->setAnchorBottom(true);
+      conv->addChild(std::move(log));
       const std::uint64_t id = thread->id;
       const auto send = [this, id] {
         const std::string value = m_threadDrafts[id];
@@ -1578,15 +1615,11 @@ namespace linkapp {
         m_threadDrafts.erase(id);
         m_client->sendText(id, value);
       };
-      auto reply = ui::row({.align = FlexAlign::Center, .padding = Tokens::spaceP8 * s});
-      reply->addChild(replyCapsule(m_threadDrafts[id], i18n::tr("link.messages.placeholder"), Tokens::sizeControlL * s, s,
-                                   [this, id](const std::string& value) { m_threadDrafts[id] = value; }, send));
-      column->addChild(std::move(reply));
-      body = std::move(column);
+      conv->addChild(replyBar(m_threadDrafts[id], i18n::tr("link.messages.placeholder"), s,
+                              [this, id](const std::string& value) { m_threadDrafts[id] = value; }, send));
     }
-    body->setFlexGrow(1.0F);
-    cards->addChild(card(std::move(head), std::move(body), convWidth, true));
-    return cards;
+    split->addChild(std::move(conv));
+    return split;
   }
 
   // New message: a "To" field with contact matches under it, the text capsule at the bottom.
@@ -1594,7 +1627,7 @@ namespace linkapp {
     const Messages& messages = m_client->messages();
     auto column = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
     auto to = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingV = Tokens::spaceP8 * s,
-                       .paddingH = Tokens::spaceP16 * s});
+                       .paddingH = Tokens::spaceP20 * s});
     to->addChild(text(i18n::tr("link.messages.to"), Tokens::typeBody, ColorRole::Label2, s));
     to->addChild(ui::input({.value = m_compose->to, .placeholder = i18n::tr("link.messages.name-or-number"), .fontSize = Tokens::typeBody.size * s,
                             .frameVisible = false, .flexGrow = 1.0F,
@@ -1635,10 +1668,8 @@ namespace linkapp {
       m_compose->sent = number;
       m_window->requestRebuild();
     };
-    auto reply = ui::row({.align = FlexAlign::Center, .padding = Tokens::spaceP8 * s});
-    reply->addChild(replyCapsule(m_compose->body, i18n::tr("link.messages.placeholder"), Tokens::sizeControlL * s, s,
-                                 [this](const std::string& value) { m_compose->body = value; }, send));
-    column->addChild(std::move(reply));
+    column->addChild(replyBar(m_compose->body, i18n::tr("link.messages.placeholder"), s,
+                              [this](const std::string& value) { m_compose->body = value; }, send));
     return column;
   }
 

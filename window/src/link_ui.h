@@ -47,17 +47,33 @@ namespace linkapp {
     return {.normal = rest, .hover = hot, .pressed = hot, .disabled = rest};
   }
 
-  // Pill (pages.html .pill, padding snapped): a 32 capsule in fill_2, or filled neutral (playPalette) for the main act.
-  inline std::unique_ptr<Button> pill(std::string label, std::optional<std::string> glyph, bool filled, float s,
-                                      std::function<void()> click) {
+  // The galaxy core gold: running things, progress, unread marks.
+  inline ColorSpec core() { return fixedColorSpec(rgbaHex(Tokens::componentLinkCore)); }
+
+  // A key in fill_2 (pages.html .pill, .ib), or filled neutral (playPalette) for the main act.
+  inline Button::ButtonPalette keyPalette(bool filled) {
+    if (filled) return playPalette();
     const Button::ButtonStateColors rest{.bg = colorSpecFromRole(ColorRole::Fill2), .border = clearColorSpec(),
                                          .label = colorSpecFromRole(ColorRole::Label1)};
     const Button::ButtonStateColors hot{.bg = colorSpecFromRole(ColorRole::Fill3), .border = clearColorSpec(),
                                         .label = colorSpecFromRole(ColorRole::Label1)};
+    return {.normal = rest, .hover = hot, .pressed = hot, .disabled = rest};
+  }
+
+  // Round glyph key (pages.html .ib, .send).
+  inline std::unique_ptr<Button> iconKey(std::string glyph, std::string tooltip, bool filled, float size, float s,
+                                         std::function<void()> click) {
+    return ui::button({.glyph = std::move(glyph), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = size,
+                       .customPalette = keyPalette(filled), .tooltip = std::move(tooltip), .radius = size / 2.0F, .width = size,
+                       .onClick = std::move(click)});
+  }
+
+  // Pill (pages.html .pill, padding snapped): a 32 capsule in fill_2, or filled neutral for the main act.
+  inline std::unique_ptr<Button> pill(std::string label, std::optional<std::string> glyph, bool filled, float s,
+                                      std::function<void()> click) {
     const float height = Tokens::sizeControlM * s;
     return ui::button({.text = std::move(label), .glyph = std::move(glyph), .fontSize = Tokens::typeHeadline.size * s,
-                       .glyphSize = Tokens::sizeSymbol * s, .controlHeight = height,
-                       .customPalette = filled ? playPalette() : Button::ButtonPalette{.normal = rest, .hover = hot, .pressed = hot, .disabled = rest},
+                       .glyphSize = Tokens::sizeSymbol * s, .controlHeight = height, .customPalette = keyPalette(filled),
                        .paddingH = Tokens::spaceP12 * s, .gap = Tokens::spaceP8 * s, .radius = height / 2.0F, .onClick = std::move(click)});
   }
 
