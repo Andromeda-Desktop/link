@@ -160,12 +160,14 @@
     "empty-title": "Empty folder",
     "in-downloads": "In Downloads",
     "modified": "Modified",
+    "more": "More",
     "name": "Name",
     "not-saved": "Not saved",
     "open-failed": "This folder did not open",
     "phone-root": "Phone",
     "saving": "Saving…",
     "saving-percent": "Saving {percent} %",
+    "send-here": "Send files here",
     "size": "Size"
   },
   "home": {

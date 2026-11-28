@@ -304,6 +304,8 @@ namespace linkapp {
     void sync();
     // Shows the hotspot sheet while the client holds an ask, and closes it when the ask ends.
     void syncHotspotSheet();
+    // The file chooser; done gets the picked paths, never an empty list.
+    void chooseFiles(std::function<void(std::vector<std::filesystem::path>)> done);
     void chooseAndSend(const std::string& deviceId);
     void openLocalFile(const std::string& path);
     // Drags a phone photo out: saved into the cache, offered as a file URI once there.

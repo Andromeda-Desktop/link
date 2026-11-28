@@ -144,6 +144,25 @@ namespace linkapp {
       return bar;
     }
 
+    // The columns of a Files row and its header (pages.html .tbl): padding 12, gap 8.
+    std::unique_ptr<Flex> fileColumns(float s, const ColorSpec& fill, float height) {
+      return ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .paddingH = Tokens::spaceP12 * s, .fill = fill,
+                      .radius = Style::scaledRadius(Tokens::radiusR8, s), .height = height});
+    }
+
+    // A file's glyph by its extension.
+    const char* fileGlyph(std::string_view name) {
+      const auto dot = name.rfind('.');
+      std::string ext(dot == std::string_view::npos ? std::string_view() : name.substr(dot + 1));
+      std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "heic" || ext == "webp" || ext == "gif") return "photo";
+      if (ext == "mp4" || ext == "mkv" || ext == "webm" || ext == "mov" || ext == "3gp") return "video";
+      if (ext == "mp3" || ext == "m4a" || ext == "ogg" || ext == "opus" || ext == "flac" || ext == "wav") return "music";
+      if (ext == "zip" || ext == "7z" || ext == "rar" || ext == "tar" || ext == "gz") return "file-zip";
+      if (ext == "txt" || ext == "pdf" || ext == "md" || ext == "doc" || ext == "docx" || ext == "odt") return "file-text";
+      return "file";
+    }
+
     std::uint64_t callKey(const CallEntry& c) { return std::hash<std::string>{}(std::format("{}|{}", c.number, c.atMs)); }
 
     // "Missed", "Outgoing · 4:02".
@@ -1051,14 +1070,18 @@ namespace linkapp {
                           .actions = DropCopy | DropMove});
   }
 
-  void LinkApp::chooseAndSend(const std::string& deviceId) {
+  void LinkApp::chooseFiles(std::function<void(std::vector<std::filesystem::path>)> done) {
     if (m_window == nullptr || bus() == nullptr) return;
     if (m_chooser == nullptr) m_chooser = std::make_unique<desk::FileChooser>(bus());
-    m_window->exportHandle([this, deviceId](const std::string& parent) {
-      m_chooser->openFiles(parent, i18n::tr("link.common.send-files-title"), [this, deviceId](std::vector<std::filesystem::path> paths) {
-        if (!paths.empty()) m_client->sendFiles(deviceId, paths);
+    m_window->exportHandle([this, done = std::move(done)](const std::string& parent) {
+      m_chooser->openFiles(parent, i18n::tr("link.common.send-files-title"), [done](std::vector<std::filesystem::path> paths) {
+        if (!paths.empty()) done(std::move(paths));
       });
     });
+  }
+
+  void LinkApp::chooseAndSend(const std::string& deviceId) {
+    chooseFiles([this, deviceId](std::vector<std::filesystem::path> paths) { m_client->sendFiles(deviceId, paths); });
   }
 
   void LinkApp::choosePhone(const std::string& deviceId) {
@@ -1717,23 +1740,21 @@ namespace linkapp {
 
   std::unique_ptr<Node> FileAdapter::createItem() { return ui::column({.align = FlexAlign::Stretch}); }
 
-  // File row (flow.html .tr2): symbol 32 | name | size 112 | modified 112, h 40, r 8, fill_1 on hover.
+  // File row (pages.html .tbl .tr2): glyph | name | size | modified | more, h 40, r 8, every other row in card.
   void FileAdapter::bindItem(Renderer& /*renderer*/, Node& item, std::size_t index, float /*width*/, bool hovered) {
     const float s = m_scale;
     const Files& files = m_client.files();
     const FileEntry& entry = files.entries()[at(index)];
-    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s,
-                        .fill = hovered ? colorSpecFromRole(ColorRole::Fill1) : clearColorSpec(),
-                        .radius = Style::scaledRadius(Tokens::radiusR8, s), .height = Tokens::sizeControlL * s});
-    auto symbol = ui::row({.align = FlexAlign::Center, .width = Tokens::componentLinkFileSymbol * s});
-    symbol->setPadding(0.0F, 0.0F, 0.0F, Tokens::spaceP8 * s);
-    symbol->addChild(ui::glyph({.glyph = std::string(entry.folder ? "folder" : "file"), .glyphSize = Tokens::sizeSymbol * s,
-                                .color = colorSpecFromRole(ColorRole::Label2)}));
-    row->addChild(std::move(symbol));
+    const ColorSpec fill = hovered ? colorSpecFromRole(ColorRole::Fill1) : index % 2 == 0 ? colorSpecFromRole(ColorRole::Card) : clearColorSpec();
+    auto row = fileColumns(s, fill, Tokens::sizeControlL * s);
+    const ColorSpec folderInk = isResolvedLightTheme() ? fixedColorSpec(rgbaHex(Tokens::componentLinkCoreTextLight)) : core();
+    row->addChild(ui::row({.align = FlexAlign::Center, .width = Tokens::componentLinkFileSymbol * s},
+                          ui::glyph({.glyph = std::string(entry.folder ? "folder" : fileGlyph(entry.name)), .glyphSize = Tokens::sizeSymbol * s,
+                                     .color = entry.folder ? folderInk : colorSpecFromRole(ColorRole::Label2)})));
     auto name = text(entry.name, Tokens::typeBody, ColorRole::Label1, s);
     name->setFlexGrow(1.0F);
     row->addChild(std::move(name));
-    std::string size = entry.folder ? std::string() : byteSize(entry.size);
+    std::string size = entry.folder ? std::string("—") : byteSize(entry.size);
     ColorRole sizeRole = ColorRole::Label2;
     if (const FileSave* save = entry.folder ? nullptr : files.save(files.childPath(entry.name))) {
       switch (save->state) {
@@ -1747,15 +1768,24 @@ namespace linkapp {
         break;
       }
     }
-    for (auto [value, role] : {std::pair{size, sizeRole}, std::pair{entry.mtimeS > 0 ? when(entry.mtimeS * 1000) : std::string(),
-                                                                       ColorRole::Label2}}) {
+    const std::string modified = entry.mtimeS > 0 ? dayLabel(entry.mtimeS * 1000, nowMs()) + " " + clock(entry.mtimeS * 1000) : std::string();
+    for (auto [value, role, column] : {std::tuple{size, sizeRole, Tokens::componentLinkFileColumn},
+                                       std::tuple{modified, ColorRole::Label2, Tokens::componentLinkFileModified}}) {
       auto cell = text(value, Tokens::typeFootnote, role, s);
       cell->setTextAlign(TextAlign::End);
-      auto box = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End, .width = Tokens::componentLinkFileColumn * s});
-      box->setPadding(0.0F, Tokens::spaceP12 * s, 0.0F, 0.0F);
-      box->addChild(std::move(cell));
-      row->addChild(std::move(box));
+      row->addChild(ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End, .width = column * s}, std::move(cell)));
     }
+    Button* more = nullptr;
+    row->addChild(ui::button({.out = &more, .glyph = std::string("dots"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = Tokens::sizeControlM * s,
+                              .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.files.more"), .radius = Tokens::sizeControlM * s / 2.0F,
+                              .width = Tokens::sizeControlL * s}));
+    const std::size_t entryIndex = at(index);
+    more->setOnClick([this, more, entryIndex] {
+      float x = 0.0F;
+      float y = 0.0F;
+      Node::mapToScene(more, 0.0F, more->height(), x, y);
+      m_menu(entryIndex, x, y);
+    });
     auto& holder = static_cast<Flex&>(item);
     while (!holder.children().empty()) holder.removeChild(holder.children().back().get());
     holder.addChild(std::move(row));
@@ -1779,36 +1809,40 @@ namespace linkapp {
     }
   }
 
-  // Files (flow.html#page=files): caption Back + breadcrumb; header Name | Size | Modified; the folder's rows.
+  // Files (pages.html B.files): bar Back, breadcrumb, Send files here; the table Name | Size | Modified with the folder's
+  // rows; a copy into the folder shows its progress under it.
   std::unique_ptr<Node> LinkApp::files(float width, float height) {
     const float s = m_scale;
     const Files& files = m_client->files();
-    std::vector<std::unique_ptr<Node>> caption;
-    caption.push_back(ui::button({.glyph = std::string("chevron-left"), .enabled = files.path() != "/", .variant = ButtonVariant::Ghost,
-                                  .tooltip = i18n::tr("link.common.back"), .onClick = [this] { m_client->openFolder(m_client->files().parent()); }}));
+    auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .minHeight = Tokens::sizeControlM * s});
+    bar->setPadding(0.0F, 0.0F, Tokens::spaceP12 * s, 0.0F);
+    if (files.path() != "/") {
+      bar->addChild(iconKey("arrow-left", i18n::tr("link.common.back"), false, Tokens::sizeControlM * s, s,
+                            [this] { m_client->openFolder(m_client->files().parent()); }));
+    }
     auto crumbs = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP4 * s, .clipChildren = true, .flexGrow = 1.0F});
     const std::vector<std::string> names = files.crumbs();
     for (std::size_t i = 0; i < names.size(); ++i) {
       if (i > 0) {
-        crumbs->addChild(ui::glyph({.glyph = std::string("chevron-right"), .glyphSize = Tokens::sizeSymbol * s * 0.75F,
-                                    .color = colorSpecFromRole(ColorRole::Label3)}));
+        crumbs->addChild(ui::glyph({.glyph = std::string("chevron-right"), .glyphSize = Tokens::sizeSymbol * s,
+                                    .color = colorSpecFromRole(ColorRole::Label2)}));
       }
       if (i + 1 == names.size()) {
-        crumbs->addChild(text(names[i], Tokens::typeHeadline, ColorRole::Label1, s));
+        crumbs->addChild(text(names[i], Tokens::typeTitle3, ColorRole::Label1, s));
       } else {
         const Button::ButtonStateColors rest{.bg = clearColorSpec(), .border = clearColorSpec(), .label = colorSpecFromRole(ColorRole::Label2)};
         const Button::ButtonStateColors hot{.bg = clearColorSpec(), .border = clearColorSpec(), .label = colorSpecFromRole(ColorRole::Label1)};
-        auto crumb = ui::button({.text = names[i], .fontSize = Tokens::typeHeadline.size * s, .variant = ButtonVariant::Ghost,
-                                 .customPalette = Button::ButtonPalette{.normal = rest, .hover = hot, .pressed = hot, .disabled = rest},
-                                 .paddingV = 0.0F, .paddingH = 0.0F,
-                                 .onClick = [this, i] { m_client->openFolder(m_client->files().crumbPath(i)); }});
-        crumbs->addChild(std::move(crumb));
+        crumbs->addChild(ui::button({.text = names[i], .fontSize = Tokens::typeTitle3.size * s,
+                                     .variant = ButtonVariant::Ghost,
+                                     .customPalette = Button::ButtonPalette{.normal = rest, .hover = hot, .pressed = hot, .disabled = rest},
+                                     .paddingV = 0.0F, .paddingH = 0.0F,
+                                     .onClick = [this, i] { m_client->openFolder(m_client->files().crumbPath(i)); }}));
       }
     }
-    caption.push_back(std::move(crumbs));
-    caption.push_back(ui::button({.text = i18n::tr("link.phone-card.send-files"), .glyph = std::string("arrow-up"),
-                                  .variant = ButtonVariant::Tonal,
-                                  .onClick = [this] { chooseAndSend(m_client->presence().phone.id); }}));
+    bar->addChild(std::move(crumbs));
+    bar->addChild(pill(i18n::tr("link.files.send-here"), std::string("upload"), true, s, [this] {
+      chooseFiles([this](std::vector<std::filesystem::path> paths) { m_client->copyIntoFolder(paths); });
+    }));
 
     std::unique_ptr<Node> body;
     if (files.load() == Files::Load::Failed) {
@@ -1818,30 +1852,28 @@ namespace linkapp {
     } else if (files.load() == Files::Load::Ready && files.entries().empty()) {
       body = emptyState("folder", i18n::tr("link.files.empty-title"), i18n::tr("link.files.empty-body"), s);
     } else {
-      auto page = ui::column({.align = FlexAlign::Stretch});
-      page->setPadding(Tokens::spaceP8 * s, Tokens::spaceP24 * s, 0.0F, Tokens::spaceP24 * s);
-      auto head = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .height = Tokens::sizeControlM * s});
+      auto table = ui::column({.align = FlexAlign::Stretch});
+      auto head = fileColumns(s, clearColorSpec(), Tokens::sizeControlM * s);
       head->addChild(ui::row({.width = Tokens::componentLinkFileSymbol * s}));
-      for (const char* label : {"link.files.name", "link.files.size", "link.files.modified"}) {
-        auto cell = ui::label({.text = i18n::tr(label), .fontSize = Tokens::typeFootnote.size * s,
-                               .fontWeight = static_cast<FontWeight>(500), .color = colorSpecFromRole(ColorRole::Label2)});
-        if (std::string_view(label) == "link.files.name") {
-          cell->setFlexGrow(1.0F);
-          head->addChild(std::move(cell));
-          continue;
-        }
+      const auto heading = [s](const char* key) { return text(i18n::tr(key), Tokens::typeFootnote, ColorRole::Label3, s); };
+      auto name = heading("link.files.name");
+      name->setFlexGrow(1.0F);
+      head->addChild(std::move(name));
+      for (auto [key, column] : {std::pair{"link.files.size", Tokens::componentLinkFileColumn},
+                                 std::pair{"link.files.modified", Tokens::componentLinkFileModified}}) {
+        auto cell = heading(key);
         cell->setTextAlign(TextAlign::End);
-        auto box = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End, .width = Tokens::componentLinkFileColumn * s});
-        box->setPadding(0.0F, Tokens::spaceP12 * s, 0.0F, 0.0F);
-        box->addChild(std::move(cell));
-        head->addChild(std::move(box));
+        head->addChild(ui::row({.align = FlexAlign::Center, .justify = FlexJustify::End, .width = column * s}, std::move(cell)));
       }
-      page->addChild(std::move(head));
-      page->addChild(ui::separator({.color = colorSpecFromRole(ColorRole::Separator), .thickness = s}));
+      head->addChild(ui::row({.width = Tokens::sizeControlL * s}));
+      table->addChild(std::move(head));
+      table->addChild(ui::box({.fill = colorSpecFromRole(ColorRole::Separator), .height = s}));
       if (!files.entries().empty()) {
-        page->addChild(ui::virtualListView({.state = &m_fileScroll, .contentScale = s, .adapter = m_files.get(), .flexGrow = 1.0F}));
+        auto rows = ui::column({.align = FlexAlign::Stretch, .paddingV = Tokens::spaceP4 * s, .flexGrow = 1.0F});
+        rows->addChild(ui::virtualListView({.state = &m_fileScroll, .contentScale = s, .adapter = m_files.get(), .flexGrow = 1.0F}));
+        table->addChild(std::move(rows));
       }
-      body = std::move(page);
+      body = std::move(table);
     }
     body->setFlexGrow(1.0F);
     if (const FileOp& op = m_client->fileOp(); op.kind != FileOp::Kind::Idle) {
@@ -1849,7 +1881,7 @@ namespace linkapp {
       column->addChild(std::move(body));
       column->addChild(ui::separator({.color = colorSpecFromRole(ColorRole::Separator), .thickness = s}));
       auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                          .paddingH = Tokens::spaceP24 * s, .minHeight = Tokens::sizeControlL * s});
+                          .paddingH = Tokens::spaceP12 * s, .minHeight = Tokens::sizeControlL * s});
       const bool copying = op.kind == FileOp::Kind::Copying;
       std::string line = op.error;
       if (copying) {
@@ -1865,9 +1897,10 @@ namespace linkapp {
       column->addChild(std::move(bar));
       body = std::move(column);
     }
-    auto cards = ui::row({.align = FlexAlign::Stretch, .width = width, .height = height});
-    cards->addChild(card(std::move(caption), std::move(body), width, true));
-    return cards;
+    auto page = ui::column({.align = FlexAlign::Stretch, .width = width, .height = height});
+    page->addChild(std::move(bar));
+    page->addChild(std::move(body));
+    return page;
   }
 
   std::string LinkApp::mirrorStat() const {
