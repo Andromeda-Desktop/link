@@ -37,6 +37,8 @@ namespace linkapp {
     std::string transport;     // wifi or bluetooth while connected
     int battery = -1;          // percent, -1 unknown
     bool charging = false;
+    std::optional<int> signal;               // cellular bars 0..4, -1 without service; none until the phone reports
+    std::optional<std::uint64_t> storageFree; // bytes of shared storage free, as last reported
     std::int64_t lastSeen = 0; // unix seconds of its last session
     int locked = -1;           // 1, 0, or -1 when the phone does not say
     int dnd = -1;              // same values as locked

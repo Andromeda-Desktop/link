@@ -143,6 +143,8 @@ namespace linkapp {
     // Opens the file manager on these files (org.freedesktop.FileManager1.ShowItems).
     void showInFolder(const std::vector<std::string>& paths);
     void connect(const std::string& deviceId);
+    // Ends the phone's session and refuses it until connect(); it stays paired.
+    void disconnect(const std::string& deviceId);
     void ring(const std::string& deviceId);
     // The call on a connected phone, or null.
     [[nodiscard]] const PhoneCall* call(const std::string& deviceId) const;

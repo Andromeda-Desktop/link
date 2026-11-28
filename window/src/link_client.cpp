@@ -281,10 +281,12 @@ namespace linkapp {
               phone.mic = value<std::string>(it->second, "mic", "");
               phone.sound = value<std::string>(it->second, "sound", "");
               phone.camera = value<std::string>(it->second, "camera", "");
+              if (it->second.contains("storage_free")) phone.storageFree = value<std::uint64_t>(it->second, "storage_free", 0);
             }
             if (const auto it = status.find(phone.id); it != status.end()) {
               phone.battery = static_cast<int>(it->second.get<0>());
               phone.charging = it->second.get<1>();
+              phone.signal = it->second.get<3>();
             }
             if (const auto it = controls.find(phone.id); it != controls.end()) {
               phone.mediaVolume = it->second.get<0>();
@@ -1227,6 +1229,13 @@ namespace linkapp {
       });
     }
     changed();
+  }
+
+  void LinkClient::disconnect(const std::string& deviceId) {
+    m_proxy->callMethodAsync("Disconnect").onInterface(kInterface).withArguments(deviceId)
+        .uponReplyInvoke([](std::optional<bus::Error> error) {
+          if (error) kLog.warn("Disconnect: {}", error->getMessage());
+        });
   }
 
   void LinkClient::connect(const std::string& deviceId) {

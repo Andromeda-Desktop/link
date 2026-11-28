@@ -413,6 +413,13 @@ namespace linkapp {
       confirm->setCustomPalette(dangerPalette());
       forget->addChild(std::move(confirm));
     } else {
+      // Disconnect holds the phone off until Connect, also across restarts; it stays paired.
+      if (presence.phone.paused) {
+        forget->addChild(pill(i18n::tr("link.away.connect"), std::string("plug-connected"), false, s, [this, id] { m_client->connect(id); }));
+      } else if (presence.phone.connected) {
+        forget->addChild(pill(i18n::tr("link.settings.disconnect"), std::string("plug-connected-x"), false, s,
+                              [this, id] { m_client->disconnect(id); }));
+      }
       auto button = pill(i18n::tr("link.settings.forget-phone", "phone", presence.phone.name), std::string("link-off"), false, s, [this] {
         m_confirmForget = true;
         m_window->requestRebuild();

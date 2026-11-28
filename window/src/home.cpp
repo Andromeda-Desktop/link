@@ -453,7 +453,9 @@ namespace linkapp {
     } else {
       facts = i18n::tr(phone.locked == 1 ? "link.home.locked" : "link.home.unlocked");
       if (phone.battery >= 0) facts += std::format(" · {}%", phone.battery) + (phone.charging ? i18n::tr("link.home.charging") : std::string());
+      if (phone.signal) facts += " · " + (*phone.signal < 0 ? i18n::tr("link.home.no-service") : i18n::tr("link.home.signal", "bars", *phone.signal));
     }
+    if (phone.storageFree) facts += (facts.empty() ? "" : " · ") + i18n::tr("link.home.storage-free", "size", byteSize(*phone.storageFree));
     if (!facts.empty()) {
       auto row = ui::row({.align = FlexAlign::Center});
       row->setPadding(2.0F * s, 0.0F, 0.0F, 0.0F);
