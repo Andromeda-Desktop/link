@@ -38,7 +38,8 @@ dbus-run-session -- bash -euo pipefail -c '
   owned() { dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.NameHasOwner \
     string:org.andromeda.Link1 | grep -q "boolean true"; }
   wait_for "andromeda-linkd did not take org.andromeda.Link1" owned
-  andromeda-link-app > "$out/window.log" 2>&1 &
+  # Home shows no code; another page starts pairing once linkd answers.
+  andromeda-link-app --action=page -- waiting > "$out/window.log" 2>&1 &
   qr() { grim "$out/pairing.png" && zbarimg -q --raw "$out/pairing.png" > "$out/uri.txt"; }
   wait_for "the window showed no pairing QR code" qr
   echo "pairing QR: $(cut -d"&" -f1 "$out/uri.txt")"

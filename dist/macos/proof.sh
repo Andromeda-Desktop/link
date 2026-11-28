@@ -26,7 +26,8 @@ wait_for() {
   tail -n 30 "$out"/*.log >&2 || true
   exit 1
 }
-"$app/Contents/MacOS/andromeda-link-app" > "$out/window.log" 2>&1 &
+# Home shows no code; another page starts pairing once linkd answers.
+"$app/Contents/MacOS/andromeda-link-app" --action=page -- waiting > "$out/window.log" 2>&1 &
 window=$!
 wait_for "the window loaded no linkd agent" launchctl print "gui/$(id -u)/org.andromeda.linkd"
 wait_for "andromeda-linkd made no socket" test -S "$HOME/Library/Application Support/Andromeda Link/link.sock"
