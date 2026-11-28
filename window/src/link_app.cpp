@@ -138,8 +138,8 @@ namespace linkapp {
                                    .frameVisible = false, .flexGrow = 1.0F, .onChange = std::move(change),
                                    .onSubmit = [send](const std::string&) { send(); }}));
       capsule->addChild(ui::button({.glyph = std::string("send"), .glyphSize = Tokens::sizeSymbolInline * s,
-                                    .variant = ButtonVariant::Primary, .tooltip = i18n::tr("link.common.send"), .radius = key / 2.0F,
-                                    .width = key, .height = key, .onClick = std::move(send)}));
+                                    .controlHeight = key, .variant = ButtonVariant::Primary, .tooltip = i18n::tr("link.common.send"), .radius = key / 2.0F,
+                                    .width = key, .onClick = std::move(send)}));
       return capsule;
     }
 
@@ -1402,7 +1402,7 @@ namespace linkapp {
     const float s = m_scale;
     const float radius = Style::scaledRadius(Tokens::componentWindowCardRadius, s);
     const float height = Tokens::componentWindowCaption * s;
-    auto box = ui::column({.align = FlexAlign::Stretch, .fill = colorSpecFromRole(panelMaterialRole(), Style::windowGlassTint()),
+    auto box = ui::column({.align = FlexAlign::Stretch, .fill = Style::windowGlassFill(),
                            .radius = radius, .border = colorSpecFromRole(ColorRole::Stroke),
                            .borderWidth = Tokens::componentSplitStroke * s, .minWidth = width, .maxWidth = width, .width = width});
     box->setClipRadii(Radii{radius, radius, radius, radius});

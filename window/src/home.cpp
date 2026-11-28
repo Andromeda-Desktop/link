@@ -73,15 +73,15 @@ namespace linkapp {
       std::optional<std::string> symbol;
       if (!glyph.empty()) symbol = std::move(glyph);
       return ui::button({.text = std::move(label), .glyph = std::move(symbol),
-                         .fontSize = Tokens::typeBody.size * s, .glyphSize = Tokens::sizeSymbol * s, .enabled = enabled,
+                         .fontSize = Tokens::typeBody.size * s, .glyphSize = Tokens::sizeSymbol * s, .controlHeight = height, .enabled = enabled,
                          .customPalette = chipPalette(on), .paddingH = Tokens::componentButtonInsetM * s, .gap = Tokens::spaceP8 * s,
-                         .radius = height / 2.0F, .height = height, .onClick = std::move(click)});
+                         .radius = height / 2.0F, .onClick = std::move(click)});
     }
 
     std::unique_ptr<Button> roundKey(const char* glyph, bool filled, float size, float s, std::function<void()> click, bool enabled = true) {
-      return ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .enabled = enabled,
+      return ui::button({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = size, .enabled = enabled,
                          .customPalette = filled ? playPalette() : chipPalette(false), .radius = size / 2.0F, .width = size,
-                         .height = size, .onClick = std::move(click)});
+                         .onClick = std::move(click)});
     }
 
     // A round glyph plate: core fill while on, a core ring while asking, fill_2 otherwise.
@@ -261,9 +261,8 @@ namespace linkapp {
     const auto& items = m_client->activity().items();
     if (const auto t = std::ranges::find_if(items, [&](const TransferEntry& e) { return e.state == Transfer::Running; });
         t != items.end()) {
-      auto cancel = ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
-                                .radius = 14.0F * s, .width = 28.0F * s, .height = 28.0F * s,
-                                .onClick = [this, id = t->id] { m_client->cancelTransfer(id); }});
+      auto cancel = ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = 28.0F * s, .variant = ButtonVariant::Ghost,
+                                .radius = 14.0F * s, .width = 28.0F * s, .onClick = [this, id = t->id] { m_client->cancelTransfer(id); }});
       chip(plate(t->incoming ? "file-download" : "file-upload", art, "on", s), std::format("{}%", t->total > 0 ? t->bytes * 100 / t->total : 0),
            transferName(*t), std::move(cancel), kStarTransfer);
     }
@@ -329,9 +328,9 @@ namespace linkapp {
       tab->addChild(std::move(name));
       tabs->addChild(std::move(tab));
     }
-    tabs->addChild(ui::button({.glyph = std::string("plus"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
+    tabs->addChild(ui::button({.glyph = std::string("plus"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = 28.0F * s, .variant = ButtonVariant::Ghost,
                                .tooltip = i18n::tr("link.phone-card.pair-another"), .radius = 14.0F * s, .width = 28.0F * s,
-                               .height = 28.0F * s, .onClick = [this] { m_client->startPairing(); }}));
+                               .onClick = [this] { m_client->startPairing(); }}));
     id->addChild(std::move(tabs));
     id->addChild(ui::box({.height = 14.0F * s}));
 
@@ -340,17 +339,21 @@ namespace linkapp {
     name->setLineHeight(Tokens::componentLinkNameLine * s);
     id->addChild(std::move(name));
 
+    // The status lines take title3's size and line at weight 400 (handoff "via", "facts").
+    const auto line = [s](std::string value, ColorRole role) {
+      auto label = text(std::move(value), Tokens::typeTitle3, role, s);
+      label->setFontWeight(FontWeight::Normal);
+      return label;
+    };
     auto via = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     via->setPadding(Tokens::spaceP8 * s, 0.0F, 0.0F, 0.0F);
     const ColorSpec green = fixedColorSpec(rgbaHex(Tokens::componentLinkConnected));
     via->addChild(dot(away ? colorSpecFromRole(ColorRole::Label2) : green, away, 8.0F * s, s));
     if (away) {
-      via->addChild(text(i18n::tr("link.home.away", "seen", lastSeenText(phone.lastSeen, nowMs() / 1000)), Tokens::typeTitle3,
-                         ColorRole::Label1, s));
+      via->addChild(line(i18n::tr("link.home.away", "seen", lastSeenText(phone.lastSeen, nowMs() / 1000)), ColorRole::Label1));
       via->addChild(capsule(i18n::tr("link.away.connect"), {}, false, 26.0F * s, s, [this, pid = phone.id] { m_client->connect(pid); }));
     } else {
-      via->addChild(text(i18n::tr("link.home.connected", "transport", transportName(phone.transport)), Tokens::typeTitle3,
-                         ColorRole::Label1, s));
+      via->addChild(line(i18n::tr("link.home.connected", "transport", transportName(phone.transport)), ColorRole::Label1));
     }
     id->addChild(std::move(via));
 
@@ -362,10 +365,10 @@ namespace linkapp {
       if (phone.battery >= 0) facts += std::format(" · {}%", phone.battery) + (phone.charging ? i18n::tr("link.home.charging") : std::string());
     }
     if (!facts.empty()) {
-      auto line = ui::row({.align = FlexAlign::Center});
-      line->setPadding(2.0F * s, 0.0F, 0.0F, 0.0F);
-      line->addChild(text(facts, Tokens::typeTitle3, ColorRole::Label2, s));
-      id->addChild(std::move(line));
+      auto row = ui::row({.align = FlexAlign::Center});
+      row->setPadding(2.0F * s, 0.0F, 0.0F, 0.0F);
+      row->addChild(line(facts, ColorRole::Label2));
+      id->addChild(std::move(row));
     }
 
     // Phone switches; the transport Link uses is locked on.
@@ -586,8 +589,7 @@ namespace linkapp {
 
     // Waiting: the newest items that fit; a card that would not fit whole is left out.
     const auto& items = m_client->feed().items();
-    auto seeAll = ui::button({.text = i18n::tr("link.home.see-all"), .variant = ButtonVariant::Ghost, .height = 24.0F * s,
-                              .onClick = [this] { show(Page::Waiting); }});
+    auto seeAll = ui::button({.text = i18n::tr("link.home.see-all"), .controlHeight = 24.0F * s, .variant = ButtonVariant::Ghost, .onClick = [this] { show(Page::Waiting); }});
     auto waiting = column(i18n::tr("link.home.waiting", "count", items.size()), widths[1], std::move(seeAll));
     // Wide, the sheet keeps its height and a card that would not fit whole is left out; narrow, the sheet grows.
     float room = height - grid->paddingTop() - waiting->measure(renderer, LayoutConstraints::available(widths[1], 1.0e6F)).height;
@@ -616,9 +618,9 @@ namespace linkapp {
         row->addChild(capsule(action->label, {}, false, Tokens::sizeControlM * s, s,
                               [this, item, id = action->id] { m_client->action(item, id); }));
       }
-      row->addChild(ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
+      row->addChild(ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = 28.0F * s, .variant = ButtonVariant::Ghost,
                                 .tooltip = i18n::tr("link.home.dismiss-tip"), .radius = 14.0F * s, .width = 28.0F * s,
-                                .height = 28.0F * s, .onClick = [this, item] { m_client->dismiss(item); }}));
+                                .onClick = [this, item] { m_client->dismiss(item); }}));
       room -= row->measure(renderer, LayoutConstraints::available(widths[1], 1.0e6F)).height + Tokens::spaceP8 * s;
       if (wide && room < 0.0F) break;
       waiting->addChild(std::move(row));

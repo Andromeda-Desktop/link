@@ -46,9 +46,11 @@ namespace linkapp {
   }
 
   inline std::unique_ptr<Label> text(std::string value, const Tokens::Type& type, ColorRole role, float s, int lines = 1) {
-    return ui::label({.text = std::move(value), .fontSize = type.size * s,
-                      .fontWeight = static_cast<FontWeight>(type.weight), .color = colorSpecFromRole(role),
-                      .maxLines = lines, .ellipsize = TextEllipsize::End});
+    auto label = ui::label({.text = std::move(value), .fontSize = type.size * s,
+                            .fontWeight = static_cast<FontWeight>(type.weight), .color = colorSpecFromRole(role),
+                            .maxLines = lines, .ellipsize = TextEllipsize::End});
+    label->setLineHeight(type.line * s);
+    return label;
   }
 
 } // namespace linkapp
