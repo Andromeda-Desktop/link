@@ -49,10 +49,10 @@ namespace linkapp {
     constexpr float kBandDotShare = 0.875F;
 
     float lifeSpin(SkyLife life) {
-      return life == SkyLife::Music ? Tokens::componentLinkSpinMusic : life == SkyLife::Busy ? Tokens::componentLinkSpinBusy : 0.0F;
+      return life == SkyLife::Music ? Tokens::componentLinkSpinMusic : life != SkyLife::Still ? Tokens::componentLinkSpinBusy : 0.0F;
     }
     float lifeGlow(SkyLife life) {
-      return life == SkyLife::Music ? Tokens::componentLinkGlowMusic : life == SkyLife::Busy ? Tokens::componentLinkGlowBusy : 0.0F;
+      return life == SkyLife::Music ? Tokens::componentLinkGlowMusic : life != SkyLife::Still ? Tokens::componentLinkGlowBusy : 0.0F;
     }
     bool motionAllowed() { return MotionService::instance().enabled() && !MotionService::instance().reduced(); }
 
@@ -338,6 +338,7 @@ namespace linkapp {
   // Runs each life tick: it resizes only for paint (setFrameSize), so a tick never lays out the window.
   void Sky::placeLeaders() {
     if (m_layer == nullptr || m_galaxy == nullptr) return;
+    placeRings();
     const float s = m_scale;
     const float t = m_lifeTime;
     const bool alive = m_loop != 0;
@@ -379,6 +380,24 @@ namespace linkapp {
       leader.dot->setRadius(dot);
       leader.dot->setPosition(px - dot, py - dot);
     }
+  }
+
+  // A call (pages.html "rings leave the core"): 3 rings from the projected core, phased by the life clock.
+  void Sky::placeRings() {
+    const auto core = m_life == SkyLife::Call ? m_galaxy->project({0.0F, 0.0F, 0.0F}) : std::nullopt;
+    if (!core) {
+      m_galaxy->setRings({});
+      return;
+    }
+    const float s = m_scale;
+    const bool band = m_look.mode == SkyMode::Band;
+    const Color call = rgbaHex(Tokens::componentLinkCall);
+    const float cycle = static_cast<float>(Tokens::componentLinkCallWaveMs) / 1000.0F;
+    m_galaxy->setRings({.centre = *core, .color = {call.r, call.g, call.b}, .phase = std::fmod(m_lifeTime / cycle, 1.0F),
+                        .start = (band ? Tokens::componentLinkCallWaveBandStart : Tokens::componentLinkCallWaveStart) * s,
+                        .end = (band ? Tokens::componentLinkCallWaveBandEnd : Tokens::componentLinkCallWaveEnd) * s,
+                        .ratio = band ? Tokens::componentLinkCallWaveBandRatio : Tokens::componentLinkCallWaveRatio,
+                        .width = Tokens::componentLinkCallWaveWidth * s, .alpha = Tokens::componentLinkCallWaveAlpha});
   }
 
   void Sky::setLife(SkyLife life) {

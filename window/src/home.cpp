@@ -182,8 +182,8 @@ namespace linkapp {
     const Presence presence = m_client->presence();
     if (presence.kind != Presence::Kind::Connected && presence.kind != Presence::Kind::Locked) return SkyLife::Still;
     const PhonePlayer* p = player();
+    if (m_client->call(presence.phone.id) != nullptr) return SkyLife::Call;
     if (p != nullptr && p->playing) return SkyLife::Music;
-    if (m_client->call(presence.phone.id) != nullptr) return SkyLife::Busy;
     const Phone& phone = presence.phone;
     const auto running = [](const std::string& state) { return state == "on"; };
     const bool transfer = std::ranges::any_of(m_client->activity().items(), [](const TransferEntry& e) { return e.state == Transfer::Running; });

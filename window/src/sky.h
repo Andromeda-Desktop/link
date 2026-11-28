@@ -21,7 +21,7 @@ namespace linkapp {
   enum class SkyMode : std::uint8_t { Hero, Band, Full };
   // What runs on the phone: music turns the galaxy and breathes its core; a stream, transfer or call turns it slowly;
   // Still draws no frames.
-  enum class SkyLife : std::uint8_t { Still, Busy, Music };
+  enum class SkyLife : std::uint8_t { Still, Busy, Music, Call };
 
   struct SkyLook {
     SkyMode mode = SkyMode::Hero;
@@ -73,6 +73,7 @@ namespace linkapp {
     [[nodiscard]] GalaxyCamera camera() const;
     void applyCamera();
     void placeLeaders();
+    void placeRings();
     void startMorph();
     void endMorph();
     void applyMorph();
