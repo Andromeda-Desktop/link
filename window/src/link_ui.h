@@ -9,6 +9,7 @@
 #include "ui/controls/flex.h"
 #include "render/scene/input_area.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -139,7 +140,10 @@ namespace linkapp {
   // first. A click, when given, covers the row.
   inline void settingRow(Flex& card, const std::string& glyph, std::string label, std::string sub, std::unique_ptr<Node> control,
                          float s, std::function<void()> click = nullptr) {
-    if (!card.children().empty()) card.addChild(ui::separator({}));
+    // The card's own fill and shadow nodes are children too: only laid-out children are rows.
+    if (std::ranges::any_of(card.children(), [](const auto& child) { return child->participatesInLayout(); })) {
+      card.addChild(ui::separator({}));
+    }
     auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
                         .paddingH = Tokens::spaceP12 * s, .minHeight = Tokens::sizeControlXl * s});
     row->addChild(ui::glyph({.glyph = glyph, .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));

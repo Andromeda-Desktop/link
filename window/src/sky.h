@@ -19,8 +19,8 @@ namespace linkapp {
   // Hero: Home, the sky over the sheet. Band: every other page, a low strip. Full: the whole column (Mirror, Pair,
   // Home with no phone).
   enum class SkyMode : std::uint8_t { Hero, Band, Full };
-  // What runs on the phone: music turns the galaxy and breathes its core; a stream, transfer or call turns it slowly;
-  // Still draws no frames.
+  // What runs on the phone: a call turns the galaxy slowly and sends rings from its core (it wins over music); music
+  // turns it and breathes its core; a stream or transfer turns it slowly; Still draws no frames.
   enum class SkyLife : std::uint8_t { Still, Busy, Music, Call };
 
   struct SkyLook {

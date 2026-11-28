@@ -571,14 +571,15 @@ namespace linkapp {
       media->setPadding(Tokens::spaceP8 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s, 10.0F * s);
       auto top = ui::row({.align = FlexAlign::Center, .gap = 10.0F * s});
       auto art = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
-                          .radius = Tokens::spaceP8 * s, .width = 36.0F * s, .height = 36.0F * s});
+                          .radius = Tokens::spaceP8 * s, .width = Tokens::componentLinkLiveArt * s, .height = Tokens::componentLinkLiveArt * s});
       art->addChild(ui::glyph({.glyph = std::string("music"), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
       if (!p->art.empty()) {
         // Over the glyph tile: a missing or unreadable file leaves the glyph.
         Image* cover = nullptr;
-        art->addChild(ui::image({.out = &cover, .fit = ImageFit::Cover, .radius = Tokens::spaceP8 * s, .width = 36.0F * s, .height = 36.0F * s,
+        art->addChild(ui::image({.out = &cover, .fit = ImageFit::Cover, .radius = Tokens::spaceP8 * s, .width = Tokens::componentLinkLiveArt * s,
+                                 .height = Tokens::componentLinkLiveArt * s,
                                  .participatesInLayout = false}));
-        (void)cover->setSourceFileAsync(renderer, m_viewCache, p->art, static_cast<int>(std::ceil(36.0F * s)));
+        (void)cover->setSourceFileAsync(renderer, m_viewCache, p->art, static_cast<int>(std::ceil(Tokens::componentLinkLiveArt * s)));
       }
       top->addChild(std::move(art));
       top->addChild(twoLines(p->title, p->artist.empty() ? p->app : p->artist + " · " + p->app, ColorRole::Label2, s));

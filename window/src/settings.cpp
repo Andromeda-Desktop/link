@@ -205,7 +205,10 @@ namespace linkapp {
                                        m_commands.editName(v);
                                        if (m_commands.invalid() != before) m_window->requestRebuild();
                                      },
-                                     .onSubmit = [this](const std::string&) { commandsChanged(m_commands.close()); }}),
+                                     .onSubmit = [this](const std::string&) { commandsChanged(m_commands.close()); },
+                                     .configure = [](Input& input) {
+                                   if (input.inputArea() != nullptr) input.inputArea()->setTabFocusKey("link-command-name");
+                                 }}),
                           invalid == CommandsEditor::Invalid::Name
                               ? (ed.draft().name.size() > CommandsEditor::kMaxName ? "link.commands.name-long" : "link.commands.name-hint")
                               : nullptr));
@@ -224,6 +227,7 @@ namespace linkapp {
                                        input.setMultiline(true);
                                        input.setSubmitOnEnter(true);
                                        input.setFontFamily(std::string(Tokens::fontMono));
+                                       if (input.inputArea() != nullptr) input.inputArea()->setTabFocusKey("link-command-line");
                                      }}),
                           invalid == CommandsEditor::Invalid::Line ? "link.commands.line-missing" : nullptr));
       auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});

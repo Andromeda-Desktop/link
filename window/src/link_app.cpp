@@ -121,7 +121,10 @@ namespace linkapp {
                             .height = height, .flexGrow = 1.0F});
       field->addChild(ui::input({.value = value, .placeholder = placeholder, .fontSize = Tokens::typeBody.size * s,
                                  .frameVisible = false, .flexGrow = 1.0F, .onChange = std::move(change),
-                                 .onSubmit = [send](const std::string&) { send(); }}));
+                                 .onSubmit = [send](const std::string&) { send(); },
+                                 .configure = [](Input& input) {
+                                   if (input.inputArea() != nullptr) input.inputArea()->setTabFocusKey("link-reply-bar");
+                                 }}));
       bar->addChild(std::move(field));
       bar->addChild(iconKey("send", i18n::tr("link.common.send"), true, height, s, std::move(send)));
       return bar;
@@ -312,7 +315,10 @@ namespace linkapp {
       field->addChild(ui::input({.value = m_drafts[key], .placeholder = i18n::tr("link.feed.reply"), .fontSize = Tokens::typeBody.size * s,
                                  .frameVisible = false, .flexGrow = 1.0F,
                                  .onChange = [this, key](const std::string& value) { m_drafts[key] = value; },
-                                 .onSubmit = [send](const std::string&) { send(); }}));
+                                 .onSubmit = [send](const std::string&) { send(); },
+                                 .configure = [key](Input& input) {
+                                   if (input.inputArea() != nullptr) input.inputArea()->setTabFocusKey("link-reply-" + key);
+                                 }}));
       const float key24 = Tokens::sizeControlS * s;
       field->addChild(ui::button({.glyph = std::string("send"), .glyphSize = Tokens::sizeSymbol * s, .controlHeight = key24,
                                   .variant = ButtonVariant::Ghost, .tooltip = i18n::tr("link.common.send"), .radius = key24 / 2.0F,
@@ -2269,7 +2275,10 @@ namespace linkapp {
     field->addChild(ui::input({.value = m_dial, .placeholder = i18n::tr("link.messages.name-or-number"), .fontSize = Tokens::typeBody.size * s,
                                .frameVisible = false, .flexGrow = 1.0F,
                                .onChange = [this](const std::string& value) { m_dial = value; },
-                               .onSubmit = [dial](const std::string&) { dial(); }}));
+                               .onSubmit = [dial](const std::string&) { dial(); },
+                               .configure = [](Input& input) {
+                                   if (input.inputArea() != nullptr) input.inputArea()->setTabFocusKey("link-dial");
+                                 }}));
     auto bar = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
     bar->setPadding(0.0F, Tokens::spaceP4 * s, Tokens::spaceP4 * s, Tokens::spaceP4 * s);
     bar->addChild(std::move(field));

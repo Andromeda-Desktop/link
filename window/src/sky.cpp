@@ -390,13 +390,16 @@ namespace linkapp {
       return;
     }
     const float s = m_scale;
+    // A Hero <-> Band morph blends the ring sizes with the camera.
     const bool band = m_look.mode == SkyMode::Band;
+    const float b = m_morph ? (band ? m_morph->eased : 1.0F - m_morph->eased) : (band ? 1.0F : 0.0F);
+    const auto mix = [b](float hero, float onBand) { return hero + (onBand - hero) * b; };
     const Color call = rgbaHex(Tokens::componentLinkCall);
     const float cycle = static_cast<float>(Tokens::componentLinkCallWaveMs) / 1000.0F;
     m_galaxy->setRings({.centre = *core, .color = {call.r, call.g, call.b}, .phase = std::fmod(m_lifeTime / cycle, 1.0F),
-                        .start = (band ? Tokens::componentLinkCallWaveBandStart : Tokens::componentLinkCallWaveStart) * s,
-                        .end = (band ? Tokens::componentLinkCallWaveBandEnd : Tokens::componentLinkCallWaveEnd) * s,
-                        .ratio = band ? Tokens::componentLinkCallWaveBandRatio : Tokens::componentLinkCallWaveRatio,
+                        .start = mix(Tokens::componentLinkCallWaveStart, Tokens::componentLinkCallWaveBandStart) * s,
+                        .end = mix(Tokens::componentLinkCallWaveEnd, Tokens::componentLinkCallWaveBandEnd) * s,
+                        .ratio = mix(Tokens::componentLinkCallWaveRatio, Tokens::componentLinkCallWaveBandRatio),
                         .width = Tokens::componentLinkCallWaveWidth * s, .alpha = Tokens::componentLinkCallWaveAlpha});
   }
 
