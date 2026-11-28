@@ -142,14 +142,12 @@ namespace linkapp {
     auto head = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP4 * s});
     head->setPadding(30.0F * s, 0.0F, 0.0F, 32.0F * s);
     head->addChild(text(pageTitle(Page::Mirror), Tokens::typeLarge, ColorRole::Label1, s));
-    auto line = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP16 * s});
-    line->addChild(text(phone.name, Tokens::typeBody, ColorRole::Label2, s));
+    std::unique_ptr<Label> stat;
     if (mirror.kind == Mirror::Kind::Showing) {
-      auto stat = text(mirrorStat(), Tokens::typeBody, ColorRole::Label2, s);
+      stat = text(mirrorStat(), Tokens::typeBody, ColorRole::Label2, s);
       m_mirrorStat = stat.get();
-      line->addChild(std::move(stat));
     }
-    head->addChild(std::move(line));
+    head->addChild(phoneLine(std::move(stat)));
     const float headH = measure(*head).height;
     front->addChild(std::move(head));
 

@@ -837,6 +837,22 @@ namespace linkapp {
     g_clear_error(&error);
   }
 
+  // The phone menu: every paired phone, then Pair another phone.
+  void LinkApp::phoneMenu(float sceneX, float sceneY) {
+    const std::vector<Phone> phones = m_client->phones();
+    std::vector<ContextMenuControlEntry> entries;
+    for (std::size_t i = 0; i < phones.size(); ++i) entries.push_back({.id = static_cast<std::int32_t>(i), .label = phones[i].name});
+    entries.push_back({.separator = true});
+    entries.push_back({.id = kPairEntry, .label = i18n::tr("link.settings.pair-another")});
+    m_window->openContextMenu(std::move(entries), sceneX, sceneY, [this, phones](std::int32_t id) {
+      if (id == kPairEntry) {
+        m_client->startPairing();
+      } else if (id >= 0 && static_cast<std::size_t>(id) < phones.size()) {
+        choosePhone(phones[static_cast<std::size_t>(id)].id);
+      }
+    });
+  }
+
   void LinkApp::fileMenu(std::size_t index, float sceneX, float sceneY) {
     const Files& files = m_client->files();
     if (index >= files.entries().size()) return;

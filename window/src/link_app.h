@@ -290,6 +290,8 @@ namespace linkapp {
     // The column under the sky and the sheet: the sky's own colour.
     [[nodiscard]] ColorSpec skyFill() const;
     [[nodiscard]] std::unique_ptr<Node> skyColumn(Renderer& renderer, float width, float height);
+    [[nodiscard]] std::unique_ptr<Flex> phoneLine(std::unique_ptr<Node> stat);
+    void phoneMenu(float sceneX, float sceneY);
     [[nodiscard]] std::unique_ptr<Node> callBar(Renderer& renderer, float width, float top);
     // The sky with the call bar on `front`: every sky build goes through here.
     [[nodiscard]] std::unique_ptr<Node> skyWithCall(Renderer& renderer, const SkyLook& look, float width, float height, std::unique_ptr<Node> front,

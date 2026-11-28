@@ -282,6 +282,38 @@ namespace linkapp {
   }
 
   // The band of a page: its title and the phone, then a chip per running item, each tied to its star.
+  // PhoneMenuButton (pages.html .bt .phn): the phone's dot, its name with a chevron that opens the phone menu, then
+  // `stat`.
+  std::unique_ptr<Flex> LinkApp::phoneLine(std::unique_ptr<Node> stat) {
+    const float s = m_scale;
+    const Phone& phone = m_client->presence().phone;
+    auto line = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+    line->setPadding(Tokens::spaceP4 * s, 0.0F, 0.0F, 0.0F);
+    const ColorSpec green = fixedColorSpec(rgbaHex(Tokens::componentLinkConnected));
+    line->addChild(dot(phone.connected ? (phone.locked == 1 ? core() : green) : colorSpecFromRole(ColorRole::Label2), !phone.connected,
+                       6.0F * s, s));
+    const float height = 26.0F * s;
+    // A context menu centres under its point: under the button's middle.
+    auto at = std::make_shared<Flex*>(nullptr);
+    auto menu = ui::row({.out = at.get(), .align = FlexAlign::Center, .gap = Tokens::spaceP4 * s, .paddingH = Tokens::spaceP8 * s,
+                         .radius = height / 2.0F, .minHeight = height,
+                         .onClick = [this, at] {
+                           float x = 0.0F;
+                           float y = 0.0F;
+                           Node::absolutePosition(*at, x, y);
+                           phoneMenu(x + (*at)->width() / 2.0F, y + (*at)->height());
+                         },
+                         .hoverFill = colorSpecFromRole(ColorRole::Fill2)});
+    auto name = text(phone.name, Tokens::typeBody, ColorRole::Label1, s);
+    name->setFontWeight(FontWeight::SemiBold);
+    name->setMaxWidth(260.0F * s);
+    menu->addChild(std::move(name));
+    menu->addChild(ui::glyph({.glyph = "chevron-down", .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
+    line->addChild(std::move(menu));
+    if (stat) line->addChild(std::move(stat));
+    return line;
+  }
+
   std::unique_ptr<Node> LinkApp::bandFront(float width, float height, std::vector<SkyAnchor>& anchors) {
     const float s = m_scale;
     auto front = ui::row({.align = FlexAlign::Start, .gap = Tokens::spaceP16 * s, .width = width, .height = height});
@@ -290,14 +322,15 @@ namespace linkapp {
     title->addChild(text(pageTitle(m_page), Tokens::typeLarge, ColorRole::Label1, s));
     const Presence presence = m_client->presence();
     const Phone& phone = presence.phone;
-    std::string line = phone.name;
+    std::string line;
     if (presence.kind == Presence::Kind::Away) {
-      line += " · " + i18n::tr("link.home.away", "seen", lastSeenText(phone.lastSeen, nowMs() / 1000));
+      line = i18n::tr("link.home.away", "seen", lastSeenText(phone.lastSeen, nowMs() / 1000));
     } else if (!phone.transport.empty()) {
-      line += " · " + transportName(phone.transport);
+      line = transportName(phone.transport);
       if (phone.battery >= 0) line += std::format(" · {}%", phone.battery) + (phone.charging ? i18n::tr("link.home.charging") : std::string());
     }
-    title->addChild(text(line, Tokens::typeBody, ColorRole::Label2, s));
+    auto stat = text(std::move(line), Tokens::typeBody, ColorRole::Label2, s);
+    title->addChild(phoneLine(std::move(stat)));
     front->addChild(std::move(title));
     if (presence.kind != Presence::Kind::Connected && presence.kind != Presence::Kind::Locked) return front;
 
