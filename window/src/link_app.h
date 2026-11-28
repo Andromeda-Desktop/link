@@ -191,6 +191,9 @@ namespace linkapp {
   };
 
   // Activity: transfers and phone clips since the app started, newest first, with actions per state.
+  // A transfer's name: its one file, or the count of its files.
+  [[nodiscard]] std::string transferName(const TransferEntry& e);
+
   class TransferAdapter final : public VirtualListAdapter {
   public:
     TransferAdapter(LinkClient& client, const float& scale, std::function<void(const std::string&)> open)
@@ -241,7 +244,8 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Flex> homeSheet(Renderer& renderer, const Presence& presence, float width, float height);
     // The column under the sky and the sheet: the sky's own colour.
     [[nodiscard]] ColorSpec skyFill() const;
-    [[nodiscard]] std::unique_ptr<Node> bandFront(float width, float height);
+    [[nodiscard]] std::unique_ptr<Node> skyColumn(Renderer& renderer, float width, float height);
+    [[nodiscard]] std::unique_ptr<Node> bandFront(float width, float height, std::vector<SkyAnchor>& anchors);
     [[nodiscard]] std::unique_ptr<Flex> sheetPlane(float width, float height, bool grab);
     [[nodiscard]] SkyLife skyLife() const;
     [[nodiscard]] SkyLook skyLook(SkyMode mode) const;

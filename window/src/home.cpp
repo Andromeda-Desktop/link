@@ -20,11 +20,30 @@
 namespace linkapp {
 
   namespace {
+    // The sheet over the sky's bottom edge. A solid tail of `tail` px continues it below the column, so a sheet that
+    // rides up with a morphing sky leaves no gap.
+    std::unique_ptr<Flex> sheetHolder(std::unique_ptr<Flex> sheet, float width, float height, float overlap, float tail, float s) {
+      const float margin = Tokens::spaceP12 * s;
+      auto below = ui::box({.fill = colorSpecFromRole(ColorRole::SolidRegular), .width = width - 2.0F * margin, .height = tail});
+      below->setParticipatesInLayout(false);
+      below->setPosition(margin, height);
+      auto holder = ui::row({.width = width, .height = height});
+      holder->setPadding(0.0F, margin, 0.0F, margin);
+      holder->setTranslation(0.0F, -overlap);
+      holder->addChild(std::move(sheet));
+      holder->addChild(std::move(below));
+      return holder;
+    }
+
     // Star anchors of the running things (handoff.yaml home StarLeaders).
     constexpr std::array<float, 3> kStarMedia{0.58F, 0.02F, 0.58F};
     constexpr std::array<float, 3> kStarCamera{0.72F, 0.02F, -0.12F};
     constexpr std::array<float, 3> kStarMic{-0.5F, 0.02F, 0.5F};
     constexpr std::array<float, 3> kStarSound{-0.66F, 0.02F, -0.2F};
+    constexpr std::array<float, 3> kStarTransfer{-0.4F, 0.02F, 0.4F};
+    // Band chips show their labels from this window width; a label is at most kBandChipLabel wide (pages.html .ch).
+    constexpr float kBandChipLabels = 1240.0F;
+    constexpr float kBandChipLabel = 120.0F;
     constexpr int kHomeWaiting = 4;
     constexpr int kCoolBattery = 15; // below it the core burns red (temp 1900 K)
 
@@ -116,21 +135,35 @@ namespace linkapp {
   }
 
   std::unique_ptr<Node> LinkApp::content(Renderer& renderer, float width, float height) {
+    // The live card's nodes die with the old tree; only the new build may hand them to the tick.
+    m_liveView = {};
+    auto column = skyColumn(renderer, width, height);
+    syncLiveTick();
+    return column;
+  }
+
+  std::unique_ptr<Node> LinkApp::skyColumn(Renderer& renderer, float width, float height) {
     const float s = m_scale = m_window->uiScale();
     if (m_sky == nullptr) m_sky = std::make_unique<Sky>(*m_window);
     m_sky->setLife(skyLife());
-    if (m_client == nullptr) return pageBody(renderer, width, height);
+    if (m_client == nullptr) {
+      m_sky->hide();
+      return pageBody(renderer, width, height);
+    }
     const Presence presence = m_client->presence();
     if (m_page == Page::Home && presence.kind != Presence::Kind::NotPaired && !pairShown()) return home(renderer, width, height);
     if (presence.kind == Presence::Kind::NotPaired || pairShown() || m_page == Page::Mirror) {
       // Full sky pages draw their own content for now (step 5 moves Pair and Mirror onto the sky).
+      m_sky->hide();
       return pageBody(renderer, width, height);
     }
     const float band = Tokens::componentLinkBand * s;
     const float overlap = Tokens::componentLinkBandOverlap * s;
     const float margin = Tokens::spaceP12 * s;
     auto column = ui::column({.align = FlexAlign::Stretch, .fill = skyFill(), .width = width, .height = height});
-    column->addChild(m_sky->build(skyLook(SkyMode::Band), width, band, m_window->headerHeight(), bandFront(width, band), {}));
+    std::vector<SkyAnchor> anchors;
+    auto front = bandFront(width, band, anchors);
+    column->addChild(m_sky->build(skyLook(SkyMode::Band), width, band, m_window->headerHeight(), std::move(front), std::move(anchors)));
     const float sheetHeight = height - band + overlap;
     const float padH = Tokens::spaceP24 * s;
     const float padTop = Tokens::spaceP20 * s;
@@ -139,11 +172,7 @@ namespace linkapp {
     auto sheet = sheetPlane(width - 2.0F * margin, sheetHeight, false);
     sheet->setPadding(padTop, padH, padH, padH);
     sheet->addChild(pageBody(renderer, bodyWidth, bodyHeight));
-    auto holder = ui::row({.width = width, .height = sheetHeight});
-    holder->setPadding(0.0F, margin, 0.0F, margin);
-    holder->setTranslation(0.0F, -overlap);
-    holder->addChild(std::move(sheet));
-    column->addChild(std::move(holder));
+    m_sky->setFollower(column->addChild(sheetHolder(std::move(sheet), width, sheetHeight, overlap, height, s)));
     return column;
   }
 
@@ -169,12 +198,13 @@ namespace linkapp {
     return sheet;
   }
 
-  // The band of a page: its title and the phone, over the zoomed galaxy.
-  std::unique_ptr<Node> LinkApp::bandFront(float width, float height) {
+  // The band of a page: its title and the phone, then a chip per running item, each tied to its star.
+  std::unique_ptr<Node> LinkApp::bandFront(float width, float height, std::vector<SkyAnchor>& anchors) {
     const float s = m_scale;
-    auto front = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP4 * s, .width = width, .height = height});
+    auto front = ui::row({.align = FlexAlign::Start, .gap = Tokens::spaceP16 * s, .width = width, .height = height});
     front->setPadding(30.0F * s, 20.0F * s, 40.0F * s, 32.0F * s);
-    front->addChild(text(pageTitle(m_page), Tokens::typeLarge, ColorRole::Label1, s));
+    auto title = ui::column({.align = FlexAlign::Start, .gap = Tokens::spaceP4 * s, .flexGrow = 1.0F});
+    title->addChild(text(pageTitle(m_page), Tokens::typeLarge, ColorRole::Label1, s));
     const Presence presence = m_client->presence();
     const Phone& phone = presence.phone;
     std::string line = phone.name;
@@ -184,14 +214,66 @@ namespace linkapp {
       line += " · " + transportName(phone.transport);
       if (phone.battery >= 0) line += std::format(" · {}%", phone.battery) + (phone.charging ? i18n::tr("link.home.charging") : std::string());
     }
-    front->addChild(text(line, Tokens::typeBody, ColorRole::Label2, s));
+    title->addChild(text(line, Tokens::typeBody, ColorRole::Label2, s));
+    front->addChild(std::move(title));
+    if (presence.kind != Presence::Kind::Connected && presence.kind != Presence::Kind::Locked) return front;
+
+    auto chips = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
+    chips->setPadding(14.0F * s, 0.0F, 0.0F, 0.0F);
+    // The mockup's breakpoint is the window's width: narrower, a chip keeps only its glyph and its action.
+    const bool labels = width + Tokens::componentSidebarWidth * s >= kBandChipLabels * s;
+    const float h = Tokens::componentLinkBandChip * s;
+    const auto chip = [&](std::unique_ptr<Node> glyph, std::string label, std::string sub, std::unique_ptr<Node> action,
+                          const std::array<float, 3>& star) {
+      auto c = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s, .fill = colorSpecFromRole(ColorRole::SolidRegular),
+                        .radius = h / 2.0F, .border = colorSpecFromRole(ColorRole::Separator), .borderWidth = 1.0F, .height = h});
+      c->setPadding(0.0F, 6.0F * s, 0.0F, 6.0F * s);
+      c->addChild(std::move(glyph));
+      if (labels) {
+        auto name = text(std::move(label), Tokens::typeBody, ColorRole::Label1, s);
+        name->setFontWeight(FontWeight::SemiBold);
+        name->setMaxWidth(kBandChipLabel * s);
+        c->addChild(std::move(name));
+        if (!sub.empty()) {
+          auto small = text(std::move(sub), Tokens::typeCaption, ColorRole::Label2, s);
+          small->setMaxWidth(kBandChipLabel * s);
+          c->addChild(std::move(small));
+        }
+      }
+      c->addChild(std::move(action));
+      anchors.push_back({.card = c.get(), .star = star});
+      chips->addChild(std::move(c));
+    };
+    const std::string pid = phone.id;
+    const float art = 32.0F * s;
+    if (const PhonePlayer* p = player(); p != nullptr) {
+      auto cover = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
+                            .radius = art / 2.0F, .width = art, .height = art});
+      cover->addChild(ui::glyph({.glyph = std::string("music"), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
+      chip(std::move(cover), p->title, {},
+           roundKey(p->playing ? "player-pause" : "player-play", true, art, s, [this, pid] { m_client->playerCommand(pid, "play-pause"); }),
+           kStarMedia);
+    }
+    if (phone.camera == "on") {
+      chip(plate("camera", art, "on", s), i18n::tr("link.home.webcam"), {},
+           capsule(i18n::tr("link.home.stop"), {}, false, Tokens::sizeControlM * s, s, [this, pid] { stopStream(pid, "camera"); }), kStarCamera);
+    }
+    const auto& items = m_client->activity().items();
+    if (const auto t = std::ranges::find_if(items, [&](const TransferEntry& e) { return e.state == Transfer::Running; });
+        t != items.end()) {
+      auto cancel = ui::button({.glyph = std::string("x"), .glyphSize = Tokens::sizeSymbol * s, .variant = ButtonVariant::Ghost,
+                                .radius = 14.0F * s, .width = 28.0F * s, .height = 28.0F * s,
+                                .onClick = [this, id = t->id] { m_client->cancelTransfer(id); }});
+      chip(plate(t->incoming ? "file-download" : "file-upload", art, "on", s), std::format("{}%", t->total > 0 ? t->bytes * 100 / t->total : 0),
+           transferName(*t), std::move(cancel), kStarTransfer);
+    }
+    front->addChild(std::move(chips));
     return front;
   }
 
   std::unique_ptr<Node> LinkApp::home(Renderer& renderer, float width, float height) {
     const float s = m_scale;
     const Presence presence = m_client->presence();
-    m_liveView = {};
     if (presence.kind == Presence::Kind::NoDaemon) {
       auto front = ui::column({.align = FlexAlign::Center, .justify = FlexJustify::Center, .gap = Tokens::spaceP12 * s,
                                .width = width, .height = height});
@@ -219,11 +301,7 @@ namespace linkapp {
 
     auto page = ui::column({.align = FlexAlign::Stretch, .fill = skyFill(), .width = width, .height = total});
     page->addChild(m_sky->build(skyLook(SkyMode::Hero), width, hero, m_window->headerHeight(), std::move(front), std::move(anchors)));
-    auto holder = ui::row({.width = width, .height = sheetHeight});
-    holder->setPadding(0.0F, margin, 0.0F, margin);
-    holder->setTranslation(0.0F, -overlap);
-    holder->addChild(std::move(sheet));
-    page->addChild(std::move(holder));
+    m_sky->setFollower(page->addChild(sheetHolder(std::move(sheet), width, sheetHeight, overlap, height, s)));
     if (total <= height) return page;
     auto scroll = ui::scrollView({.state = &m_homeScroll, .contentScale = s, .scrollbarAutoHide = true,
                                   .contentAlign = ScrollView::ContentAlign::Start, .viewportPaddingV = 0.0F, .flexGrow = 1.0F});
@@ -413,7 +491,6 @@ namespace linkapp {
       }
       live->addChild(std::move(group));
     }
-    syncLiveTick();
     return live;
   }
 

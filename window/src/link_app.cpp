@@ -576,6 +576,12 @@ namespace linkapp {
 
   // Transfer row (handoff.yaml): direction symbol | name, status line, ProgressBar | actions: offered Decline + Save,
   // running Cancel, done Open (one received file) and "Show in Folder"; a failed one says why in danger_text.
+  std::string transferName(const TransferEntry& e) {
+    return e.files.size() == 1 ? e.files.front().first
+           : e.files.empty()   ? i18n::tr("link.activity.desktop-files")
+                               : i18n::trp("link.common.files-count", static_cast<long>(e.files.size()));
+  }
+
   std::unique_ptr<Node> TransferAdapter::buildTransfer(const TransferEntry& e) const {
     const float s = m_scale;
     const std::int64_t now = nowMs();
@@ -588,9 +594,7 @@ namespace linkapp {
                         .minHeight = Tokens::componentLinkThreadRow * s});
     row->addChild(std::move(symbol));
 
-    const std::string name = e.files.size() == 1 ? e.files.front().first
-                             : e.files.empty()   ? i18n::tr("link.activity.desktop-files")
-                                                 : i18n::trp("link.common.files-count", static_cast<long>(e.files.size()));
+    const std::string name = transferName(e);
     std::string status;
     switch (e.state) {
     case Transfer::Offered: status = i18n::tr("link.activity.offered", "size", byteSize(e.total)); break;

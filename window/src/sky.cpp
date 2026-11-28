@@ -35,6 +35,10 @@ namespace linkapp {
     constexpr float kLeaderFloor = 30.0F;
     // A leader meets its card this far below the card's top at most (the card's first line).
     constexpr float kLeaderReach = 26.0F;
+    // The band draws its leaders smaller and fainter than the hero (handoff.yaml StarLeaders).
+    constexpr float kBandLeaderAlpha = 0.35F;
+    constexpr float kBandHaloShare = 0.8F;
+    constexpr float kBandDotShare = 0.875F;
 
     float lifeSpin(SkyLife life) {
       return life == SkyLife::Music ? Tokens::componentLinkSpinMusic : life == SkyLife::Busy ? Tokens::componentLinkSpinBusy : 0.0F;
@@ -65,6 +69,7 @@ namespace linkapp {
       m_sky.m_galaxy = nullptr;
       m_sky.m_leaders.clear();
       m_sky.m_anchors.clear();
+      m_sky.m_follower = nullptr;
     }
     Node* front = nullptr;
     Node* buttons = nullptr;
@@ -87,6 +92,8 @@ namespace linkapp {
 
   Sky::~Sky() {
     stopLoop();
+    m_window.animations().cancelForOwner(&m_morph);
+    m_window.animations().cancelForOwner(&m_arrivals);
     if (m_layer != nullptr) m_layer->front = nullptr;
     m_layer = nullptr;
   }
@@ -109,12 +116,18 @@ namespace linkapp {
   }
 
   GalaxyCamera Sky::camera() const {
-    if (m_look.mode == SkyMode::Band) return kBand;
-    GalaxyCamera c = kHero;
-    c.yaw += m_yaw;
-    c.pitch = std::clamp(c.pitch + m_pitch, kPitchMin, kPitchMax);
-    c.dist = std::clamp(c.dist * m_zoom, kDistMin, kDistMax);
-    return c;
+    GalaxyCamera c = kBand;
+    if (m_look.mode != SkyMode::Band) {
+      c = kHero;
+      c.yaw += m_yaw;
+      c.pitch = std::clamp(c.pitch + m_pitch, kPitchMin, kPitchMax);
+      c.dist = std::clamp(c.dist * m_zoom, kDistMin, kDistMax);
+    }
+    if (!m_morph) return c;
+    const float e = m_morph->eased;
+    const auto mix = [e](float a, float b) { return a + (b - a) * e; };
+    const GalaxyCamera& f = m_morph->from;
+    return {.yaw = mix(f.yaw, c.yaw), .pitch = mix(f.pitch, c.pitch), .dist = mix(f.dist, c.dist), .sx = mix(f.sx, c.sx), .sy = mix(f.sy, c.sy)};
   }
 
   void Sky::applyCamera() {
@@ -125,7 +138,13 @@ namespace linkapp {
 
   std::unique_ptr<Node> Sky::build(const SkyLook& look, float width, float height, float top, std::unique_ptr<Node> front,
                                    std::vector<SkyAnchor> anchors) {
+    const std::optional<SkyMode> before = m_shown;
+    const GalaxyCamera shownCamera = camera();
+    const float shownHeight = m_morph ? m_morph->fromHeight + (m_height - m_morph->fromHeight) * m_morph->eased : m_height;
     m_look = look;
+    m_shown = look.mode;
+    m_height = height;
+    m_follower = nullptr;
     m_scale = m_window.uiScale();
     const float s = m_scale;
     startPoints(look.cool);
@@ -149,7 +168,7 @@ namespace linkapp {
       area->setOnPress([this](const InputArea::PointerData& data) {
         m_dragging = data.pressed;
         m_dragAt = {data.sceneX, data.sceneY};
-        if (m_galaxy != nullptr) m_galaxy->setMoving(m_dragging);
+        if (m_galaxy != nullptr) m_galaxy->setMoving(m_dragging || m_morph.has_value());
       });
       area->setOnMotion([this](const InputArea::PointerData& data) {
         if (!m_dragging) return;
@@ -162,7 +181,7 @@ namespace linkapp {
       });
       area->setOnCancel([this] {
         m_dragging = false;
-        if (m_galaxy != nullptr) m_galaxy->setMoving(false);
+        if (m_galaxy != nullptr) m_galaxy->setMoving(m_morph.has_value());
       });
       area->setOnAxisHandler([this](const InputArea::PointerData& data) {
         const float steps = data.scrollSteps();
@@ -173,7 +192,7 @@ namespace linkapp {
         AnimationManager& animations = m_window.animations();
         animations.cancelForOwner(&m_zoom);
         animations.animateTimer(0.0F, 1.0F, kWheelRestMs, Easing::Linear, [](float) {}, [this] {
-          if (m_galaxy != nullptr && !m_dragging) m_galaxy->setMoving(false);
+          if (m_galaxy != nullptr && !m_dragging && !m_morph) m_galaxy->setMoving(false);
         }, &m_zoom);
         return true;
       });
@@ -200,7 +219,98 @@ namespace linkapp {
     }
     layer->buttons = layer->addChild(m_window.buildWindowButtons());
     if (m_life != SkyLife::Still && m_loop == 0) startLoop();
+    const auto morphs = [](SkyMode mode) { return mode == SkyMode::Hero || mode == SkyMode::Band; };
+    if (before && *before != look.mode && morphs(*before) && morphs(look.mode) && motionAllowed()) {
+      m_morph = Morph{.from = shownCamera, .fromHeight = shownHeight};
+      startMorph();
+    } else if (before != look.mode || !morphs(look.mode)) {
+      endMorph();
+    }
+    syncArrivals(before.has_value() && motionAllowed());
+    applyMorph();
     return layer;
+  }
+
+  void Sky::setFollower(Node* node) {
+    m_follower = node;
+    m_followerY = node != nullptr ? node->translationY() : 0.0F;
+    applyMorph();
+  }
+
+  void Sky::hide() {
+    m_shown.reset();
+    endMorph();
+  }
+
+  void Sky::startMorph() {
+    AnimationManager& animations = m_window.animations();
+    animations.cancelForOwner(&m_morph);
+    m_morph->id = animations.animateTimer(
+        0.0F, 1.0F, static_cast<float>(Tokens::componentLinkMorphMs), Easing::EaseOutQuad,
+        [this](float eased) {
+          if (!m_morph) return;
+          m_morph->eased = eased;
+          applyMorph();
+        },
+        [this] {
+          m_morph.reset();
+          applyMorph();
+        },
+        &m_morph);
+  }
+
+  void Sky::endMorph() {
+    if (!m_morph) return;
+    m_window.animations().cancelForOwner(&m_morph);
+    m_morph.reset();
+  }
+
+  // The sky at the morph's progress: galaxy height and camera, the front fading in, the follower on the sky's bottom.
+  void Sky::applyMorph() {
+    if (m_layer == nullptr || m_galaxy == nullptr) return;
+    const float e = m_morph ? m_morph->eased : 1.0F;
+    const float height = m_morph ? m_morph->fromHeight + (m_height - m_morph->fromHeight) * e : m_height;
+    m_galaxy->setSize(m_layer->width(), height);
+    m_galaxy->setMoving(m_morph.has_value() || m_dragging);
+    m_galaxy->setCamera(camera());
+    if (m_layer->front != nullptr) m_layer->front->setOpacity(e);
+    if (m_follower != nullptr) m_follower->setTranslation(m_follower->translationX(), m_followerY + height - m_height);
+    placeLeaders();
+  }
+
+  void Sky::syncArrivals(bool fade) {
+    AnimationManager& animations = m_window.animations();
+    std::vector<Arrival> next;
+    next.reserve(m_anchors.size());
+    for (const SkyAnchor& anchor : m_anchors) {
+      const auto it = std::ranges::find(m_arrivals, anchor.star, &Arrival::star);
+      next.push_back(it != m_arrivals.end() ? *it : Arrival{.star = anchor.star, .t = fade ? 0.0F : 1.0F});
+    }
+    for (const Arrival& old : m_arrivals) {
+      if (old.id != 0 && std::ranges::find(next, old.star, &Arrival::star) == next.end()) animations.cancel(old.id);
+    }
+    m_arrivals = std::move(next);
+    for (Arrival& a : m_arrivals) {
+      if (a.t >= 1.0F || a.id != 0) continue;
+      const auto star = a.star;
+      const auto find = [this, star] { return std::ranges::find(m_arrivals, star, &Arrival::star); };
+      a.id = animations.animateTimer(
+          0.0F, 1.0F, static_cast<float>(Tokens::componentLinkLeaderInMs), Easing::EaseOutQuad,
+          [this, find](float t) {
+            if (const auto it = find(); it != m_arrivals.end()) it->t = t;
+            placeLeaders();
+          },
+          [this, find] {
+            if (const auto it = find(); it != m_arrivals.end()) *it = {.star = it->star};
+            placeLeaders();
+          },
+          &m_arrivals);
+    }
+  }
+
+  float Sky::arrival(const std::array<float, 3>& star) const {
+    const auto it = std::ranges::find(m_arrivals, star, &Arrival::star);
+    return it != m_arrivals.end() ? it->t : 1.0F;
   }
 
   void Sky::placeLeaders() {
@@ -208,10 +318,13 @@ namespace linkapp {
     const float s = m_scale;
     const float t = m_lifeTime;
     const bool alive = m_loop != 0;
-    const float floor = m_layer->height() - kLeaderFloor * s;
+    const bool band = m_look.mode == SkyMode::Band;
+    const float floor = m_galaxy->height() - kLeaderFloor * s;
     for (std::size_t i = 0; i < m_leaders.size() && i < m_anchors.size(); ++i) {
       const Leader& leader = m_leaders[i];
       const SkyAnchor& anchor = m_anchors[i];
+      const float in = arrival(anchor.star);
+      if (anchor.card != nullptr) anchor.card->setOpacity(in);
       const auto star = m_galaxy->project(anchor.star);
       const bool shown = anchor.card != nullptr && star && (*star)[1] <= floor;
       leader.line->setVisible(shown);
@@ -223,17 +336,22 @@ namespace linkapp {
       const float cy = cy0 + std::min(anchor.card->height() / 2.0F, kLeaderReach * s);
       const float dx = cx - px;
       const float dy = cy - py;
-      const float length = std::hypot(dx, dy);
+      // While the card fades in, the line grows from the star toward it.
+      const float length = std::hypot(dx, dy) * in;
+      const float ex = px + dx * in;
+      const float ey = py + dy * in;
       leader.line->setSize(length, s);
-      leader.line->setPosition((px + cx - length) / 2.0F, (py + cy - s) / 2.0F);
+      leader.line->setPosition((px + ex - length) / 2.0F, (py + ey - s) / 2.0F);
       leader.line->setRotation(std::atan2(dy, dx));
+      leader.line->setOpacity(band ? kBandLeaderAlpha / Tokens::componentLinkLeaderAlpha : 1.0F);
+      leader.dot->setOpacity(in);
       const float k = alive ? 1.0F + 0.35F * std::sin(t * 3.0F + anchor.star[0] * 7.0F) : 1.0F;
-      const float halo = Tokens::componentLinkLeaderHalo * s * k;
+      const float halo = Tokens::componentLinkLeaderHalo * (band ? kBandHaloShare : 1.0F) * s * k;
       leader.halo->setSize(2.0F * halo, 2.0F * halo);
       leader.halo->setRadius(halo);
       leader.halo->setPosition(px - halo, py - halo);
-      leader.halo->setOpacity(alive ? 0.22F / k : 0.2F);
-      const float dot = Tokens::componentLinkLeaderDot * s;
+      leader.halo->setOpacity(in * (alive ? 0.22F / k : 0.2F));
+      const float dot = Tokens::componentLinkLeaderDot * (band ? kBandDotShare : 1.0F) * s;
       leader.dot->setSize(2.0F * dot, 2.0F * dot);
       leader.dot->setRadius(dot);
       leader.dot->setPosition(px - dot, py - dot);

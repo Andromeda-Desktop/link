@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class AppWindow;
@@ -49,6 +50,10 @@ namespace linkapp {
     // the window, where the galaxy takes no drag. Anchors point into `front`.
     [[nodiscard]] std::unique_ptr<Node> build(const SkyLook& look, float width, float height, float top, std::unique_ptr<Node> front,
                                               std::vector<SkyAnchor> anchors);
+    // The node under the sky (the sheet): while the sky morphs between Hero and Band it moves with the sky's bottom.
+    void setFollower(Node* node);
+    // This build draws no sky: the next build starts without a morph or card fade-in.
+    void hide();
     void setLife(SkyLife life);
 
   private:
@@ -60,6 +65,11 @@ namespace linkapp {
     [[nodiscard]] GalaxyCamera camera() const;
     void applyCamera();
     void placeLeaders();
+    void startMorph();
+    void endMorph();
+    void applyMorph();
+    void syncArrivals(bool fade);
+    [[nodiscard]] float arrival(const std::array<float, 3>& star) const;
 
     AppWindow& m_window;
     std::shared_ptr<int> m_alive = std::make_shared<int>(0);
@@ -88,6 +98,26 @@ namespace linkapp {
     };
     std::vector<Leader> m_leaders;
     float m_scale = 1.0F;
+    // The mode of the last build that drew the sky; none after hide().
+    std::optional<SkyMode> m_shown;
+    // Hero <-> Band: the camera and height tween from where the sky was. `eased` runs 0..1.
+    struct Morph {
+      GalaxyCamera from;
+      float fromHeight = 0.0F;
+      float eased = 0.0F;
+      std::uint32_t id = 0;
+    };
+    std::optional<Morph> m_morph;
+    Node* m_follower = nullptr;
+    float m_followerY = 0.0F;     // the follower's own translation
+    float m_height = 0.0F;        // the sky's height at rest (this build)
+    // A card that appears fades in and its leader draws from the star; `t` runs 0..1, 1 = shown.
+    struct Arrival {
+      std::array<float, 3> star{};
+      float t = 1.0F;
+      std::uint32_t id = 0;
+    };
+    std::vector<Arrival> m_arrivals;
   };
 
 } // namespace linkapp
