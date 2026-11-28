@@ -5,6 +5,9 @@
 #include "ui/controls/button.h"
 #include "ui/controls/label.h"
 #include "ui/palette.h"
+#include "ui/style.h"
+#include "ui/controls/flex.h"
+#include "render/scene/input_area.h"
 
 #include <chrono>
 #include <ctime>
@@ -60,6 +63,13 @@ namespace linkapp {
     return {.normal = rest, .hover = hot, .pressed = hot, .disabled = rest};
   }
 
+  // A fill_2 key with danger_text ink (pages.html .pill.danger).
+  inline Button::ButtonPalette dangerPalette() {
+    Button::ButtonPalette palette = keyPalette(false);
+    for (auto* state : {&palette.normal, &palette.hover, &palette.pressed, &palette.disabled}) state->label = colorSpecFromRole(ColorRole::DangerText);
+    return palette;
+  }
+
   // Round glyph key (pages.html .ib, .send).
   inline std::unique_ptr<Button> iconKey(std::string glyph, std::string tooltip, bool filled, float size, float s,
                                          std::function<void()> click) {
@@ -99,6 +109,39 @@ namespace linkapp {
     box->addChild(std::move(paragraph));
     if (action) box->addChild(std::move(action));
     return box;
+  }
+
+  // A section head over a card (pages.html .sh): footnote semibold in label_2.
+  inline std::unique_ptr<Flex> sectionHead(std::string title, float s) {
+    auto line = ui::row({.align = FlexAlign::Center});
+    line->setPadding(Tokens::spaceP12 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s, Tokens::spaceP8 * s);
+    auto label = text(std::move(title), Tokens::typeFootnote, ColorRole::Label2, s);
+    label->setFontWeight(FontWeight::SemiBold);
+    line->addChild(std::move(label));
+    return line;
+  }
+
+  // A card of setting rows (pages.html .card): card fill, r16, inset 4.
+  inline std::unique_ptr<Flex> rowCard(float s) {
+    return ui::column({.align = FlexAlign::Stretch, .padding = Tokens::spaceP4 * s, .fill = colorSpecFromRole(ColorRole::Card),
+                       .radius = Style::scaledRadius(Tokens::radiusR16, s)});
+  }
+
+  // A setting row (pages.html .sr): glyph in label_2 | label over its line | control; a line above every row but the
+  // first. A click, when given, covers the row.
+  inline void settingRow(Flex& card, const std::string& glyph, std::string label, std::string sub, std::unique_ptr<Node> control,
+                         float s, std::function<void()> click = nullptr) {
+    if (!card.children().empty()) card.addChild(ui::separator({}));
+    auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
+                        .paddingH = Tokens::spaceP12 * s, .minHeight = Tokens::sizeControlXl * s});
+    row->addChild(ui::glyph({.glyph = glyph, .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
+    auto lines = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
+    lines->addChild(text(std::move(label), Tokens::typeBody, ColorRole::Label1, s, 2));
+    if (!sub.empty()) lines->addChild(text(std::move(sub), Tokens::typeFootnote, ColorRole::Label2, s, 2));
+    row->addChild(std::move(lines));
+    if (control) row->addChild(std::move(control));
+    if (click) row->setCover(ui::inputArea({.onClick = [click = std::move(click)](const InputArea::PointerData&) { click(); }}));
+    card.addChild(std::move(row));
   }
 
 } // namespace linkapp

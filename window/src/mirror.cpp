@@ -283,39 +283,23 @@ namespace linkapp {
     stage->addChild(std::move(frame));
     stage->addChild(std::move(bar));
 
-    // The switch column (pages.html .side .sr): glyph 20 | label over its line | switch or key, rows 48 in r16 cards.
-    const auto sideCard = [&] {
-      return ui::column({.align = FlexAlign::Stretch, .padding = Tokens::spaceP4 * s, .fill = colorSpecFromRole(ColorRole::Card),
-                         .radius = Style::scaledRadius(Tokens::radiusR16, s)});
-    };
-    const auto sideRow = [&](Flex& card, const char* glyph, const char* label, const char* sub, std::unique_ptr<Node> control) {
-      if (!card.children().empty()) card.addChild(ui::separator({}));
-      auto row = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                          .paddingH = Tokens::spaceP12 * s, .minHeight = Tokens::sizeControlXl * s});
-      row->addChild(ui::glyph({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
-      auto lines = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP2 * s, .flexGrow = 1.0F});
-      lines->addChild(text(i18n::tr(label), Tokens::typeBody, ColorRole::Label1, s));
-      if (sub != nullptr) lines->addChild(text(i18n::tr(sub), Tokens::typeFootnote, ColorRole::Label2, s));
-      row->addChild(std::move(lines));
-      row->addChild(std::move(control));
-      card.addChild(std::move(row));
-    };
+    // The switch column (pages.html .side).
     const std::string pid = phone.id;
     auto column = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP8 * s, .width = side});
-    auto switches = sideCard();
-    sideRow(*switches, "hand-finger", "link.mirror.control", "link.mirror.control-sub",
-            ui::toggle({.checked = m_client->phoneSettings().input, .scale = s, .onChange = [this, pid](bool on) { m_client->setGrant(pid, "input", on); }}));
+    auto switches = rowCard(s);
+    settingRow(*switches, "hand-finger", i18n::tr("link.mirror.control"), i18n::tr("link.mirror.control-sub"),
+               ui::toggle({.checked = m_client->phoneSettings().input, .scale = s, .onChange = [this, pid](bool on) { m_client->setGrant(pid, "input", on); }}), s);
     if (!phone.sound.empty()) {
-      sideRow(*switches, "volume", "link.mirror.sound", "link.mirror.sound-sub",
-              ui::toggle({.checked = phone.sound == "on", .scale = s,
-                          .onChange = [this, pid](bool on) { m_client->setPhoneAudio(pid, LinkClient::PhoneAudio::Sound, on); }}));
+      settingRow(*switches, "volume", i18n::tr("link.mirror.sound"), i18n::tr("link.mirror.sound-sub"),
+                 ui::toggle({.checked = phone.sound == "on", .scale = s,
+                             .onChange = [this, pid](bool on) { m_client->setPhoneAudio(pid, LinkClient::PhoneAudio::Sound, on); }}), s);
     }
-    sideRow(*switches, "sun-off", "link.mirror.screen-off", "link.mirror.screen-off-sub",
-            ui::toggle({.checked = m_client->mirrorScreenOff(), .scale = s, .onChange = [this](bool on) { m_client->setMirrorScreenOff(on); }}));
+    settingRow(*switches, "sun-off", i18n::tr("link.mirror.screen-off"), i18n::tr("link.mirror.screen-off-sub"),
+               ui::toggle({.checked = m_client->mirrorScreenOff(), .scale = s, .onChange = [this](bool on) { m_client->setMirrorScreenOff(on); }}), s);
     column->addChild(std::move(switches));
-    auto actions = sideCard();
-    sideRow(*actions, "player-stop", "link.mirror.stop", nullptr,
-            iconKey("x", i18n::tr("link.mirror.stop"), false, Tokens::sizeControlM * s, s, [this] { m_client->stopMirror(); }));
+    auto actions = rowCard(s);
+    settingRow(*actions, "player-stop", i18n::tr("link.mirror.stop"), {},
+               iconKey("x", i18n::tr("link.mirror.stop"), false, Tokens::sizeControlM * s, s, [this] { m_client->stopMirror(); }), s);
     column->addChild(std::move(actions));
     column->setPadding(bezel + edge, 0.0F, 0.0F, 0.0F);
 

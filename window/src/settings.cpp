@@ -14,8 +14,6 @@
 
 namespace linkapp {
 
-  // Settings (handoff.yaml): max width 640; grouped cards (fill_1 r 12 p 4) of rows with a Toggle; Ghost destructive
-  // "Forget <phone>…" that asks in place.
   void LinkApp::commandsChanged(bool changed) {
     if (auto send = m_commands.takeSend()) {
       m_client->setCommands(send->second, [this, serial = send->first](std::optional<std::string> error) {
@@ -328,154 +326,132 @@ namespace linkapp {
     return cards;
   }
 
+  // Settings (pages.html B.settings): two columns of setting cards. Left: what the phone may do here, the files rule and
+  // Forget, which asks in place. Right: this computer, the paired phones and Pair another phone.
   std::unique_ptr<Node> LinkApp::settings(const Presence& presence) {
     const float s = m_scale;
     const PhoneSettings& phone = m_client->phoneSettings();
     const DesktopSettings& desk = m_client->desktopSettings();
     const std::string id = presence.phone.id;
-    const auto header = [&](const std::string& title) {
-      auto label = text(title, Tokens::typeFootnote, ColorRole::Label2, s);
-      label->setFontWeight(FontWeight::SemiBold);
-      auto line = ui::row({}, std::move(label));
-      line->setPadding(Tokens::spaceP16 * s, 0.0F, Tokens::spaceP8 * s, Tokens::componentListRowInset * s);
-      return line;
-    };
-    const auto group = [&] {
-      return ui::column({.align = FlexAlign::Stretch, .padding = Tokens::componentListCardPadding * s,
-                         .fill = colorSpecFromRole(ColorRole::Fill1),
-                         .radius = Style::scaledRadius(Tokens::componentListCardRadius, s)});
-    };
-    const float inset = Tokens::componentListRowInset * s;
-    std::set<const Flex*> started; // cards that hold a row: the next row gets a rule above it
-    const auto row = [&](Flex& card, const char* glyph, const std::string& title, const std::string& hint,
-                         std::unique_ptr<Node> trail, std::function<void()> click = nullptr) {
-      if (!started.insert(&card).second) {
-        auto rule = ui::column({.align = FlexAlign::Stretch});
-        rule->setPadding(0.0F, inset, 0.0F, inset + Tokens::sizeSymbol * s + Tokens::spaceP12 * s);
-        rule->addChild(ui::separator({}));
-        card.addChild(std::move(rule));
-      }
-      auto r = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP12 * s, .paddingV = Tokens::spaceP8 * s,
-                        .paddingH = inset, .minHeight = Tokens::sizeControlL * s});
-      r->addChild(ui::glyph({.glyph = std::string(glyph), .glyphSize = Tokens::sizeSymbol * s,
-                             .color = colorSpecFromRole(ColorRole::Label1)}));
-      auto words = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
-      words->addChild(text(title, Tokens::typeBody, ColorRole::Label1, s, 2));
-      if (!hint.empty()) words->addChild(text(hint, Tokens::typeFootnote, ColorRole::Label2, s, 2));
-      r->addChild(std::move(words));
-      if (trail) r->addChild(std::move(trail));
-      if (click) {
-        r->setCover(ui::inputArea({.onClick = [click = std::move(click)](const InputArea::PointerData&) { click(); }}));
-      }
-      card.addChild(std::move(r));
-    };
     const auto toggle = [&](bool on, std::function<void(bool)> change) {
       return ui::toggle({.checked = on, .scale = s, .onChange = std::move(change)});
     };
-
-    auto page = ui::column({.align = FlexAlign::Stretch, .fillWidth = true});
-    page->setPadding(0.0F, 0.0F, Tokens::spaceP24 * s, 0.0F);
-    // The app's own settings: they need no Link service.
-    const auto finish = [&] {
-      auto scroll = ui::scrollView({.state = &m_settingsScroll, .contentScale = s, .viewportPaddingH = Tokens::spaceP24 * s,
-                                    .maxContentWidth = Tokens::componentLinkSettingsWidth * s,
-                                    .contentAlign = ScrollView::ContentAlign::Start, .flexGrow = 1.0F});
+    const auto chevron = [&](std::function<void()> click) {
+      return iconKey("chevron-right", {}, false, Tokens::sizeControlM * s, s, std::move(click));
+    };
+    // The page scrolls as a whole; the sheet gives its padding.
+    const auto finish = [&](std::unique_ptr<Node> page) {
+      auto scroll = ui::scrollView({.state = &m_settingsScroll, .contentScale = s, .viewportPaddingH = 0.0F, .contentAlign = ScrollView::ContentAlign::Start,
+                                    .flexGrow = 1.0F});
       scroll->content()->addChild(std::move(page));
       return scroll;
     };
     if (presence.kind == Presence::Kind::NoDaemon) {
-      page->addChild(header(i18n::tr("link.settings.phone")));
-      auto card = group();
-      row(*card, "plug-connected-x", i18n::tr("link.phone-card.not-running"), i18n::tr("link.settings.start-service"), nullptr);
+      auto page = ui::column({.align = FlexAlign::Stretch, .fillWidth = true});
+      page->addChild(sectionHead(i18n::tr("link.settings.phone"), s));
+      auto card = rowCard(s);
+      settingRow(*card, "plug-connected-x", i18n::tr("link.phone-card.not-running"), i18n::tr("link.settings.start-service"), nullptr, s);
       page->addChild(std::move(card));
-      return finish();
+      return finish(std::move(page));
     }
-    page->addChild(header(presence.phone.name));
-    const auto grant = [&](Flex& card, const char* glyph, const char* title, const char* hint, bool held,
-                           const char* feature) {
-      row(card, glyph, i18n::tr(title), *hint != 0 ? i18n::tr(hint) : std::string(), 
-          toggle(held, [this, id, feature](bool on) { m_client->setGrant(id, feature, on); }));
+
+    // Left (pages.html B.settings): what the phone may do here, the files rule, Forget.
+    auto left = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    left->addChild(sectionHead(i18n::tr("link.settings.may", "phone", presence.phone.name), s));
+    const auto grant = [&](Flex& card, const char* glyph, const char* title, const char* hint, bool held, const char* feature) {
+      settingRow(card, glyph, i18n::tr(title), *hint != 0 ? i18n::tr(hint) : std::string(),
+                 toggle(held, [this, id, feature](bool on) { m_client->setGrant(id, feature, on); }), s);
     };
-    auto phoneCard = group();
+    auto may = rowCard(s);
     if (phone.notificationsOff) {
-      row(*phoneCard, "alert-triangle", i18n::tr("link.settings.notif-off-title"),
-          i18n::tr("link.settings.notif-off-hint"), nullptr);
+      settingRow(*may, "alert-triangle", i18n::tr("link.settings.notif-off-title"), i18n::tr("link.settings.notif-off-hint"), nullptr, s);
     }
-    grant(*phoneCard, "bell", "link.settings.notifications", "link.settings.notifications-hint", phone.notifications,
-          "notifications");
-    grant(*phoneCard, "phone", "link.settings.calls", "link.settings.calls-hint", phone.calls, "calls");
-    grant(*phoneCard, "clipboard", "link.settings.clipboard", "link.settings.clipboard-hint", phone.clipboard, "clipboard");
-    grant(*phoneCard, "file", "link.settings.files", "link.settings.files-hint", phone.files, "files");
-    row(*phoneCard, "arrow-down", i18n::tr("link.settings.auto-accept"), i18n::tr("link.settings.auto-accept-hint"),
-        toggle(phone.autoAccept, [this, id](bool on) { m_client->setAutoAccept(id, on); }));
-    grant(*phoneCard, "device-mobile", "link.settings.screen", "", phone.screen, "screen");
-    grant(*phoneCard, "access-point", "link.settings.hotspot", "link.settings.hotspot-hint",
-          phone.nearby, "nearby");
-    page->addChild(std::move(phoneCard));
-
-    page->addChild(header(i18n::tr("link.settings.control")));
-    auto controlCard = group();
+    grant(*may, "bell", "link.settings.notifications", "link.settings.notifications-hint", phone.notifications, "notifications");
+    settingRow(*may, "lock", i18n::tr("link.settings.locked-notifications"), i18n::tr("link.settings.locked-notifications-hint"),
+               toggle(desk.notificationsWhileLocked, [this](bool on) { m_client->setNotificationsWhileLocked(on); }), s);
+    grant(*may, "clipboard", "link.settings.clipboard", "link.settings.clipboard-hint", phone.clipboard, "clipboard");
+    grant(*may, "folder", "link.settings.files", "link.settings.files-hint", phone.files, "files");
+    grant(*may, "phone", "link.settings.calls", "link.settings.calls-hint", phone.calls, "calls");
+    grant(*may, "device-mobile", "link.settings.screen", "", phone.screen, "screen");
+    grant(*may, "access-point", "link.settings.hotspot", "link.settings.hotspot-hint", phone.nearby, "nearby");
     if (phone.inputBlocked) {
-      row(*controlCard, "alert-triangle", i18n::tr("link.settings.input-blocked-title"),
-          i18n::tr("link.settings.input-blocked-hint"), nullptr);
+      settingRow(*may, "alert-triangle", i18n::tr("link.settings.input-blocked-title"), i18n::tr("link.settings.input-blocked-hint"), nullptr, s);
     }
-    grant(*controlCard, "player-play", "link.settings.media", "link.settings.media-hint",
-          phone.media, "media");
-    grant(*controlCard, "keyboard", "link.settings.input", "", phone.input, "input");
-    grant(*controlCard, "adjustments", "link.settings.system", "link.settings.system-hint", phone.system,
-          "system");
-    grant(*controlCard, "bell-ringing", "link.settings.ring", "link.settings.ring-hint", phone.ring, "ring");
-    page->addChild(std::move(controlCard));
+    grant(*may, "hand-click", "link.settings.input", "link.settings.input-hint", phone.input, "input");
+    grant(*may, "player-play", "link.settings.media", "link.settings.media-hint", phone.media, "media");
+    grant(*may, "adjustments", "link.settings.system", "link.settings.system-hint", phone.system, "system");
+    grant(*may, "bell-ringing", "link.settings.ring", "link.settings.ring-hint", phone.ring, "ring");
+    const auto openCommands = [this] {
+      m_settingsView = SettingsView::Commands;
+      sync();
+      m_window->requestRebuild();
+    };
+    settingRow(*may, "terminal-2", i18n::tr("link.settings.commands"),
+               i18n::trp("link.settings.commands-count", static_cast<long>(desk.commands.size())), chevron(openCommands), s, openCommands);
+    left->addChild(std::move(may));
 
-    page->addChild(header(i18n::tr("link.settings.this-computer")));
-    auto deskCard = group();
-    row(*deskCard, "lock", i18n::tr("link.settings.locked-notifications"), i18n::tr("link.settings.locked-notifications-hint"),
-        toggle(desk.notificationsWhileLocked, [this](bool on) { m_client->setNotificationsWhileLocked(on); }));
-    row(*deskCard, "device-laptop", i18n::tr("link.settings.nearby"),
-        desk.nearbyName.empty() ? i18n::tr("link.settings.quick-share") : i18n::tr("link.settings.nearby-as", "name", desk.nearbyName),
-        toggle(desk.nearbyVisible, [this](bool on) { m_client->setNearbyVisible(on); }));
-    row(*deskCard, "share", i18n::tr("link.settings.localsend"), i18n::tr("link.settings.localsend-hint"),
-        toggle(desk.localSendVisible, [this](bool on) { m_client->setLocalSendVisible(on); }));
-    const std::size_t commandCount = desk.commands.size();
-    row(*deskCard, "terminal-2", i18n::tr("link.settings.commands"),
-        i18n::trp("link.settings.commands-count", static_cast<long>(commandCount)),
-        ui::glyph({.glyph = std::string("chevron-right"), .glyphSize = Tokens::sizeSymbolInline * s,
-                   .color = colorSpecFromRole(ColorRole::Label2)}),
-        [this] {
-          m_settingsView = SettingsView::Commands;
-          sync();
-          m_window->requestRebuild();
-        });
-    page->addChild(std::move(deskCard));
+    left->addChild(sectionHead(i18n::tr("link.settings.files-sent"), s));
+    auto files = rowCard(s);
+    settingRow(*files, "download", i18n::tr("link.settings.auto-accept"), i18n::tr("link.settings.auto-accept-hint"),
+               toggle(phone.autoAccept, [this, id](bool on) { m_client->setAutoAccept(id, on); }), s);
+    left->addChild(std::move(files));
 
     auto forget = ui::row({.align = FlexAlign::Center, .gap = Tokens::spaceP8 * s});
-    forget->setPadding(Tokens::spaceP24 * s, 0.0F, 0.0F, 0.0F);
+    forget->setPadding(Tokens::spaceP16 * s, 0.0F, 0.0F, 0.0F);
     if (m_confirmForget) {
-      auto ask = text(i18n::tr("link.settings.forget-ask", "phone", presence.phone.name), Tokens::typeBody,
-                      ColorRole::Label1, s, 2);
+      auto ask = text(i18n::tr("link.settings.forget-ask", "phone", presence.phone.name), Tokens::typeBody, ColorRole::Label1, s, 2);
       ask->setFlexGrow(1.0F);
       forget->addChild(std::move(ask));
-      forget->addChild(ui::button({.text = i18n::tr("common.actions.cancel"), .variant = ButtonVariant::Tonal, .onClick = [this] {
-                                     m_confirmForget = false;
-                                     m_window->requestRebuild();
-                                   }}));
-      forget->addChild(ui::button({.text = i18n::tr("link.settings.forget"), .variant = ButtonVariant::Destructive, .onClick = [this, id] {
-                                     m_confirmForget = false;
-                                     m_client->unpair(id);
-                                   }}));
+      forget->addChild(pill(i18n::tr("common.actions.cancel"), std::nullopt, false, s, [this] {
+        m_confirmForget = false;
+        m_window->requestRebuild();
+      }));
+      auto confirm = pill(i18n::tr("link.settings.forget"), std::nullopt, false, s, [this, id] {
+        m_confirmForget = false;
+        m_client->unpair(id);
+      });
+      confirm->setCustomPalette(dangerPalette());
+      forget->addChild(std::move(confirm));
     } else {
-      Button* button = nullptr;
-      forget->addChild(ui::button({.out = &button, .text = i18n::tr("link.settings.forget-phone", "phone", presence.phone.name),
-                                   .variant = ButtonVariant::Ghost, .onClick = [this] {
-                                     m_confirmForget = true;
-                                     m_window->requestRebuild();
-                                   }}));
-      auto palette = Button::defaultPalette(ButtonVariant::Ghost);
-      for (auto* state : {&palette.normal, &palette.hover, &palette.pressed}) state->label = colorSpecFromRole(ColorRole::DangerText);
-      button->setCustomPalette(palette);
+      auto button = pill(i18n::tr("link.settings.forget-phone", "phone", presence.phone.name), std::string("link-off"), false, s, [this] {
+        m_confirmForget = true;
+        m_window->requestRebuild();
+      });
+      button->setCustomPalette(dangerPalette());
+      forget->addChild(std::move(button));
     }
-    page->addChild(std::move(forget));
-    return finish();
+    left->addChild(std::move(forget));
+
+    // Right: this computer, then every paired phone and Pair another phone.
+    auto right = ui::column({.align = FlexAlign::Stretch, .flexGrow = 1.0F});
+    right->addChild(sectionHead(i18n::tr("link.settings.this-computer"), s));
+    auto deskCard = rowCard(s);
+    if (!desk.nearbyName.empty()) settingRow(*deskCard, "device-laptop", i18n::tr("link.settings.name"), desk.nearbyName, nullptr, s);
+    settingRow(*deskCard, "radar", i18n::tr("link.settings.nearby"), i18n::tr("link.settings.quick-share"),
+               toggle(desk.nearbyVisible, [this](bool on) { m_client->setNearbyVisible(on); }), s);
+    settingRow(*deskCard, "share", i18n::tr("link.settings.localsend"), i18n::tr("link.settings.localsend-hint"),
+               toggle(desk.localSendVisible, [this](bool on) { m_client->setLocalSendVisible(on); }), s);
+    right->addChild(std::move(deskCard));
+
+    right->addChild(sectionHead(i18n::tr("link.settings.paired"), s));
+    auto phones = rowCard(s);
+    const std::int64_t nowS = nowMs() / 1000;
+    for (const Phone& p : m_client->phones()) {
+      const std::string status = !p.connected   ? lastSeenText(p.lastSeen, nowS)
+                                 : p.locked == 1 ? i18n::tr("link.settings.connected-locked")
+                                                 : i18n::tr("link.settings.connected");
+      const auto open = [this, pid = p.id] { choosePhone(pid); };
+      settingRow(*phones, "device-mobile", p.name, status, chevron(open), s, open);
+    }
+    const auto pairNew = [this] { m_client->startPairing(); };
+    settingRow(*phones, "plus", i18n::tr("link.settings.pair-another"), {}, nullptr, s, pairNew);
+    right->addChild(std::move(phones));
+
+    auto page = ui::row({.align = FlexAlign::Start, .gap = Tokens::spaceP24 * s, .fillWidth = true});
+    page->setPadding(0.0F, 0.0F, Tokens::spaceP24 * s, 0.0F);
+    page->addChild(std::move(left));
+    page->addChild(std::move(right));
+    return finish(std::move(page));
   }
 
 } // namespace linkapp
