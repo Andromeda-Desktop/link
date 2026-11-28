@@ -513,7 +513,10 @@ namespace linkapp {
                                   .selectedIndex = static_cast<std::size_t>(at - kRingers.begin()), .scale = s, .enabled = !away,
                                   .surfaceRole = ColorRole::Card, .height = chip,
                                   .onChange = [this, pid](std::size_t i) { m_client->sendSystemCommand(pid, "set-ringer", static_cast<std::uint32_t>(2 - i)); },
-                                  .configure = [](Segmented& seg) { seg.setThumbRoles(ColorRole::Label1, ColorRole::View); }}));
+                                  .configure = [](Segmented& seg) {
+                                    seg.setThumbRoles(ColorRole::Label1, ColorRole::View);
+                                    seg.setSurfaceStroke(ColorRole::Separator);
+                                  }}));
     }
     if (phone.dnd >= 0) {
       sw->addChild(capsule(i18n::tr("link.home.dnd"), "moon", phone.dnd == 1, chip, s,

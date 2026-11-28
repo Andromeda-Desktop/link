@@ -2129,7 +2129,10 @@ namespace linkapp {
                                    .selectedIndex = static_cast<std::size_t>(photos.media()), .scale = s, .compact = true,
                                    .surfaceRole = ColorRole::Card,
                                    .onChange = [this](std::size_t i) { m_client->setPhotoMedia(static_cast<Photos::Media>(i)); },
-                                   .configure = [](Segmented& seg) { seg.setThumbRoles(ColorRole::Label1, ColorRole::View); }}));
+                                   .configure = [](Segmented& seg) {
+                                    seg.setThumbRoles(ColorRole::Label1, ColorRole::View);
+                                    seg.setSurfaceStroke(ColorRole::Separator);
+                                  }}));
       if (photos.total() > 0) {
         auto count = ui::row({.paddingH = Tokens::spaceP8 * s},
                              text(i18n::tr(photos.total() == 1 ? "link.photos.item" : "link.photos.items", "count", groupedCount(photos.total())),
