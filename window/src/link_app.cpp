@@ -891,7 +891,7 @@ namespace linkapp {
   AppWindow& LinkApp::createWindow() {
     AppWindow& window = addWindow({.appId = info().id, .title = i18n::tr("link.pages.waiting"), .width = 1280, .height = 800, .minWidth = 760,
                                    .sidebarWidth = Tokens::componentSidebarWidth,
-                                   .material = AppWindow::Material::Solid});
+                                   .material = AppWindow::Material::Solid, .contentFollowsSize = true});
     m_window = &window;
     // The sky reaches the window's top: no header, the sky holds the window buttons.
     window.setContentCards(true);

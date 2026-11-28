@@ -285,7 +285,7 @@ namespace linkapp {
     [[nodiscard]] std::unique_ptr<Node> home(Renderer& renderer, float width, float height);
     [[nodiscard]] std::unique_ptr<Node> homeIdentity(const Presence& presence, float s);
     // The running cards; each card's star goes into `anchors`.
-    [[nodiscard]] std::unique_ptr<Node> homeLive(const Presence& presence, float width, float s, std::vector<SkyAnchor>& anchors);
+    [[nodiscard]] std::unique_ptr<Node> homeLive(Renderer& renderer, const Presence& presence, float width, float s, std::vector<SkyAnchor>& anchors);
     [[nodiscard]] std::unique_ptr<Flex> homeSheet(Renderer& renderer, const Presence& presence, float width, float height);
     // The column under the sky and the sheet: the sky's own colour.
     [[nodiscard]] ColorSpec skyFill() const;
@@ -440,7 +440,7 @@ namespace linkapp {
     std::size_t m_searchCaret = 0;    // the search field's caret, for the field the next build makes
     std::map<std::string, std::string> m_viewSaved; // phone path to its saved copy, from the viewer's Save
     std::pair<int, int> m_viewImage;  // the shown photo's decoded size, 0 until it decodes
-    AsyncTextureCache m_viewCache;    // the viewer's full-size decode, off the UI thread
+    AsyncTextureCache m_viewCache;    // decodes off the UI thread: the viewer's full-size photo, the live card's art
     std::unique_ptr<desk::FileChooser> m_chooser;
     Page m_page = Page::Home;
     float m_scale = 1.0F;

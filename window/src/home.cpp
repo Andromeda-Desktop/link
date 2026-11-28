@@ -422,7 +422,7 @@ namespace linkapp {
     front->setPadding(36.0F * s, 24.0F * s, 52.0F * s, 32.0F * s);
     front->addChild(homeIdentity(presence, s));
     const float liveWidth = std::min(Tokens::componentLinkLiveWidth * s, Tokens::componentLinkLiveShare * width);
-    front->addChild(homeLive(presence, liveWidth, s, anchors));
+    front->addChild(homeLive(renderer, presence, liveWidth, s, anchors));
 
     auto page = ui::column({.align = FlexAlign::Stretch, .fill = skyFill(), .width = width, .height = total});
     page->addChild(skyWithCall(renderer, skyLook(SkyMode::Hero), width, hero, std::move(front), std::move(anchors)));
@@ -500,7 +500,8 @@ namespace linkapp {
     }
 
     // Phone switches; the transport Link uses is locked on.
-    auto sw = ui::row({.align = FlexAlign::Center, .wrap = true, .gap = Tokens::spaceP8 * s, .opacity = away ? 0.4F : 1.0F});
+    // Fill width: a wrapping row breaks lines only against a known width (concept-g .sw wraps under the name).
+    auto sw = ui::row({.align = FlexAlign::Center, .wrap = true, .gap = Tokens::spaceP8 * s, .fillWidth = true, .opacity = away ? 0.4F : 1.0F});
     sw->setPadding(22.0F * s, 0.0F, 0.0F, 0.0F);
     const float chip = Tokens::sizeControlL * s;
     const std::string pid = phone.id;
@@ -542,7 +543,7 @@ namespace linkapp {
     return id;
   }
 
-  std::unique_ptr<Node> LinkApp::homeLive(const Presence& presence, float width, float s, std::vector<SkyAnchor>& anchors) {
+  std::unique_ptr<Node> LinkApp::homeLive(Renderer& renderer, const Presence& presence, float width, float s, std::vector<SkyAnchor>& anchors) {
     auto live = ui::column({.align = FlexAlign::Stretch, .gap = Tokens::spaceP8 * s, .width = width});
     live->setPadding(20.0F * s, 0.0F, 0.0F, 0.0F);
     if (presence.kind != Presence::Kind::Connected && presence.kind != Presence::Kind::Locked) return live;
@@ -572,6 +573,13 @@ namespace linkapp {
       auto art = ui::row({.align = FlexAlign::Center, .justify = FlexJustify::Center, .fill = colorSpecFromRole(ColorRole::Fill2),
                           .radius = Tokens::spaceP8 * s, .width = 36.0F * s, .height = 36.0F * s});
       art->addChild(ui::glyph({.glyph = std::string("music"), .glyphSize = Tokens::sizeSymbol * s, .color = colorSpecFromRole(ColorRole::Label2)}));
+      if (!p->art.empty()) {
+        // Over the glyph tile: a missing or unreadable file leaves the glyph.
+        Image* cover = nullptr;
+        art->addChild(ui::image({.out = &cover, .fit = ImageFit::Cover, .radius = Tokens::spaceP8 * s, .width = 36.0F * s, .height = 36.0F * s,
+                                 .participatesInLayout = false}));
+        (void)cover->setSourceFileAsync(renderer, m_viewCache, p->art, static_cast<int>(std::ceil(36.0F * s)));
+      }
       top->addChild(std::move(art));
       top->addChild(twoLines(p->title, p->artist.empty() ? p->app : p->artist + " · " + p->app, ColorRole::Label2, s));
       const float key = Tokens::sizeControlM * s;
