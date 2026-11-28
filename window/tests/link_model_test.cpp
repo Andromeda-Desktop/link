@@ -411,7 +411,7 @@ namespace {
     expect(m.matches("", 5).empty() && m.matches("m", 1).size() == 1, "matches: none for no query, at most limit", 0, 0);
     m.setTexts("phone", {{.id = 1, .thread = 7, .address = "+4915112340001", .body = "x", .atMs = 1}});
     expect(m.threadFor("0151 1234 0001") == 7 && !m.threadFor("0170 1"), "threadFor matches the number, not its format", 0, 0);
-    expect(duration(41) == "0:41" && duration(768) == "12:48" && duration(3723) == "1:02:03", "durations", 0, 0);
+    expect(duration(41) == "41 s" && duration(768) == "13 min" && duration(3723) == "1 h 2 min" && duration(7190) == "2 h", "durations", 0, 0);
   }
 
   void days() {

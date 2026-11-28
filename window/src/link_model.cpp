@@ -398,8 +398,10 @@ namespace linkapp {
   }
 
   std::string duration(std::uint32_t seconds) {
-    if (seconds >= 3600) return std::format("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60);
-    return std::format("{}:{:02}", seconds / 60, seconds % 60);
+    if (seconds < 60) return std::format("{} s", seconds);
+    const std::uint32_t minutes = (seconds + 30) / 60;
+    if (minutes < 60) return std::format("{} min", minutes);
+    return minutes % 60 == 0 ? std::format("{} h", minutes / 60) : std::format("{} h {} min", minutes / 60, minutes % 60);
   }
 
   std::string numberKey(const std::string& address) {

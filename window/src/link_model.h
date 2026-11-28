@@ -351,7 +351,7 @@ namespace linkapp {
   enum class CallLog : std::uint8_t { Ready, Off, Denied, Failed };
   [[nodiscard]] CallLog callLogFrom(const std::string& refused);
 
-  // "0:41", "12:48", "1:02:03".
+  // A call length to the nearest minute: "41 s", "13 min", "1 h 2 min", "2 h".
   [[nodiscard]] std::string duration(std::uint32_t seconds);
 
   // Whole local days from atMs to nowMs, across DST; 0 is today.
